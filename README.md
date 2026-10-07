@@ -35,15 +35,20 @@ npm run dev --workspace client   # vite sur :5173 (proxy /api et /ws vers :8080)
 
 ## Comptes joueurs
 
-Les comptes sont créés par l'administrateur (pas d'inscription publique) :
+Les comptes sont créés par l'administrateur (pas d'inscription publique). Utilitaire dédié :
 
 ```bash
-curl -X POST http://localhost:8080/api/account \
-  -H 'Content-Type: application/json' \
-  -d '{"adminSecret":"...","name":"alice","password":"motdepasse"}'
+npm run accounts                      # menu interactif
+npm run accounts -- list              # lister les comptes
+npm run accounts -- create alice      # créer (mot de passe demandé, masqué)
+npm run accounts -- passwd alice      # changer le mot de passe (sessions révoquées)
+npm run accounts -- delete alice      # supprimer un compte
+npm run accounts -- secret            # générer le secret admin
 ```
 
-Le secret admin vient de la variable `ADMIN_SECRET` ou du fichier `data/admin-secret.txt` (créez-le au premier lancement : `echo "mon-secret" > data/admin-secret.txt`).
+Le mot de passe peut aussi être passé en argument (`create alice "monmdp"`) pour l'automatisation. Les comptes sont stockés dans `data/save.json` (mots de passe hachés scrypt, jamais en clair).
+
+Créer un compte ne déconnecte pas le serveur : les créations sont visibles immédiatement au prochain login.
 
 ## Temps de jeu
 
