@@ -1,0 +1,15 @@
+{
+  "name": "pacific-chase",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Pacific Chase — course nautique temps réel multijoueur (amateur, ~20 joueurs)",
+  "type": "module",
+  "workspaces": ["server", "client"],
+  "scripts": {
+    "dev": "npm run dev --workspace server",
+    "build": "npm run build --workspace client",
+    "start": "npm run build && npm start --workspace server",
+    "test": "node --test shared/engine.test.js"
+  },
+  "engines": { "node": ">=20" }
+}
