@@ -176,6 +176,24 @@ function TopView({ snap }) {
           <line x1={wax} y1={way} x2={wbx - wux * 5} y2={wby - wuy * 5} stroke="#93c5fd" strokeWidth="1.7" />
           <polygon points={`${wbx},${wby} ${wbx - wux * 9 + wuy * 5},${wby - wuy * 9 - wux * 5} ${wbx - wux * 9 - wuy * 5},${wby - wuy * 9 + wux * 5}`} fill="#93c5fd" stroke="#06263f" strokeWidth="1.2" />
         </g>
+        {/* Navires détectés : marqueurs (azimut/distance), feu si phare la nuit */}
+        {(snap.ships || []).filter((s) => s.km <= R).map((s) => {
+          const sx = proj(s.az, s.km)[0], sy = proj(s.az, s.km)[1];
+          return (
+            <g key={s.id}>
+              <circle cx={sx} cy={sy} r={view.night ? (s.light ? 3 : 2.2) : 3.5}
+                fill={view.night ? (s.light ? "#fde68a" : "#94a3b8") : "#f1f5f9"}
+                stroke="#475569" strokeWidth="0.6" />
+              <text x={sx} y={sy - 6} fontSize="6" fill="#cbd5e1" textAnchor="middle">{s.id.slice(0, 4)} · {Math.round(s.km)} km</text>
+            </g>
+          );
+        })}
+        {(snap.ships || []).filter((s) => s.km > R).map((s) => (
+          <g key={"b" + s.id}>
+            <text x={100 + Math.sin((s.az * Math.PI) / 180) * 78} y={100 - Math.cos((s.az * Math.PI) / 180) * 78} fontSize="9" textAnchor="middle">⛵</text>
+            <text x={100 + Math.sin((s.az * Math.PI) / 180) * 78} y={100 - Math.cos((s.az * Math.PI) / 180) * 78 + 8} fontSize="6" fill="#cbd5e1" textAnchor="middle">{Math.round(s.km)} km</text>
+          </g>
+        ))}
         {/* Indicateurs de bord (au-delà de l'horizon) */}
         {[
           ...view.islands.filter((e) => e.beyond).slice(0, 2).map((e) => ({ icon: "⛰️", d: Math.round(e.km), az: e.az })),
@@ -543,6 +561,9 @@ export default function App() {
               <Btn active={player.periscope} onClick={() => cmd({ periscope: !player.periscope })}>🔭 Périscope</Btn>
             </div>
           )}
+          <div className="grid grid-cols-2 gap-2">
+            <Btn active={player.light} onClick={() => cmd({ light: !player.light })}>💡 Phare{player.light ? " — visible la nuit à 10 km" : ""}</Btn>
+          </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-slate-400">Cap</span>
             <Btn onClick={() => cmd({ heading: player.heading - 10 })}>◀</Btn>
@@ -575,6 +596,7 @@ export default function App() {
           <p className="text-xs text-slate-400">
             Vitesse (eau) : <b className="text-sky-300">{(player.vkn * KM_PER_NM).toFixed(1)} km/h</b>
             {player.grounded && <span className="ml-2 text-rose-300">⚠️ échouement — changez de cap</span>}
+            {player.collided && <span className="ml-2 text-rose-300">💥 collision — écartez-vous</span>}
           </p>
           <div className="space-y-1.5">
             <Bar label="⛽ Carburant" value={player.fuel} color="#fb923c" />

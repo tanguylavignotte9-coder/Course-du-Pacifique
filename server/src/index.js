@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distNm, DELIVERY_R_NM } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distNm, DELIVERY_R_NM, shipVisibleKm, SHIP_COLLISION_NM, KM_PER_NM } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -82,7 +82,9 @@ function persistPlayer(id) {
 }
 function ensureState(id) {
   if (!states.has(id)) {
-    const st = newPlayerState(world, { weatherSeed: (race.seed + id.length * 7) % 1000 });
+    // Météo UNIFORME : le seed météo est celui de la course — tous les
+    // joueurs vivent le même ciel aux mêmes positions.
+    const st = newPlayerState(world, { weatherSeed: race.seed % 1000 });
     st.t = gameMinutesNow();
     states.set(id, st);
     persistPlayer(id);
@@ -101,6 +103,7 @@ setInterval(() => {
       tick(st, Math.min(MAX_STEP_MIN, now - st.t), world);
     }
   }
+  multiplayerPass(now);
   if (Date.now() - lastPersist > 60000) {
     lastPersist = Date.now();
     for (const [id] of states) race.players[id] = states.get(id);
@@ -108,6 +111,99 @@ setInterval(() => {
     store.save();
   }
 }, TICK_MS);
+
+// ---------- Passe multijoueur (détection entre navires + collisions) ----------
+// Le serveur connaît les positions VRAIES : il décide qui voit qui (les
+// interactions reposent toujours sur les positions vraies, jamais sur les
+// estimés). Chaque joueur ne reçoit que les navires qu'il DÉTECTE, avec
+// azimut et distance depuis sa position vraie.
+function shipPassiveKm(target, night) {
+  return shipVisibleKm(target, night);
+}
+function multiplayerPass(now) {
+  const ids = [...states.keys()];
+  if (ids.length < 2) return;
+  const infos = new Map();
+  for (const id of ids) {
+    const st = states.get(id);
+    const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
+    const hour = (st.t / 60) % 24;
+    infos.set(id, {
+      st, w,
+      night: hour < 6 || hour >= 20,
+      observerKm: (st.location === "surface" || st.periscope) ? w.visibility * KM_PER_NM : 0,
+      seenShips: new Set(),
+    });
+  }
+  // Détection visuelle réciproque : la visibilité météo de l'OBSERVATEUR
+  // rabote la portée de la cible.
+  for (const [oid, oi] of infos) {
+    if (oi.observerKm <= 0) continue;
+    for (const [tid, ti] of infos) {
+      if (tid === oid) continue;
+      const targetRange = shipPassiveKm(ti.st, oi.night);
+      if (targetRange <= 0) continue;
+      const km = distNm(oi.st.x, oi.st.y, ti.st.x, ti.st.y) * KM_PER_NM;
+      if (km <= Math.min(oi.observerKm, targetRange)) {
+        oi.seenShips.add(tid);
+      }
+    }
+  }
+  // Journal : apparition / perte de visuel (catégorie "vision")
+  for (const [oid, oi] of infos) {
+    const st = oi.st;
+    const before = st.sawShips || [];
+    const seen = [...oi.seenShips];
+    for (const tid of seen) {
+      if (!before.includes(tid)) {
+        const ti = infos.get(tid).st;
+        const km = distNm(st.x, st.y, ti.x, ti.y) * KM_PER_NM;
+        st.notifSeq = (st.notifSeq || 0) + 1;
+        const az = Math.round((Math.atan2(ti.x - st.x, ti.y - st.y) * 180) / Math.PI + 360) % 360;
+        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⛵ Navire repéré (${tid}) : ~${Math.round(km)} km, azimut ${az}°.`, kind: "info", cat: "vision" });
+      }
+    }
+    for (const tid of before) {
+      if (!seen.includes(tid)) {
+        st.notifSeq = (st.notifSeq || 0) + 1;
+        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `👁️ Navire ${tid} perdu de vue.`, kind: "info", cat: "vision" });
+      }
+    }
+    st.sawShips = seen;
+    if (st.notifications.length > 150) st.notifications.length = 150;
+  }
+  // Collisions : navires trop proches stoppés nets (pas de dégâts).
+  // La vitesse de chaque navire en collision est remise à zéro ; ils
+  // pourront se séparer en changeant de cap.
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      const a = states.get(ids[i]), b = states.get(ids[j]);
+      if (a.location !== b.location) continue; // surface vs plongée : pas de contact
+      if (distNm(a.x, a.y, b.x, b.y) < SHIP_COLLISION_NM) {
+        for (const st of [a, b]) {
+          if (!st.collided) {
+            st.notifSeq = (st.notifSeq || 0) + 1;
+            st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "💥 Contact avec un autre navire — vitesse stoppée. Écartez-vous en changeant de cap.", kind: "warn", cat: "alertes" });
+          }
+          st.collided = true;
+          st.vkn = 0;
+        }
+      }
+    }
+  }
+  // Levée du blocage collision dès séparation
+  for (const id of ids) {
+    const st = states.get(id);
+    if (!st.collided) continue;
+    let touching = false;
+    for (const oid of ids) {
+      if (oid === id) continue;
+      const o = states.get(oid);
+      if (o.location === st.location && distNm(st.x, st.y, o.x, o.y) < SHIP_COLLISION_NM * 1.5) touching = true;
+    }
+    if (!touching) st.collided = false;
+  }
+}
 
 // ---------- HTTP ----------
 const app = express();
@@ -132,6 +228,8 @@ function publicSnapshot(id) {
       travelledNm: st.travelledNm, dailyNm: st.dailyNm,
       navFixActive: st.navFix.active,
       grounded: st.grounded,
+      collided: !!st.collided,
+      light: !!st.light,
       antBeam: st.antBeam, antOrient: st.antOrient,
       notifications: st.notifications.slice(0, 60),
       pins: st.pins, measures: st.measures,
@@ -146,6 +244,14 @@ function publicSnapshot(id) {
     },
     weather: w,
     view: computeView(st, world),
+    // Navires détectés : azimut et distance uniquement (jamais la position
+    // absolue — le client dessine depuis son estimé, comme pour les îles).
+    ships: (st.sawShips || []).map((tid) => {
+      const ts = states.get(tid);
+      const km = distNm(st.x, st.y, ts.x, ts.y) * KM_PER_NM;
+      const az = Math.round((Math.atan2(ts.x - st.x, ts.y - st.y) * 180) / Math.PI + 360) % 360;
+      return { id: tid, km: Math.round(km * 10) / 10, az, light: !!ts.light };
+    }),
   };
 }
 
@@ -319,6 +425,7 @@ wss.on("connection", (ws, req) => {
       if (typeof c.engineOn === "boolean") st.engineOn = c.engineOn;
       if (typeof c.electricOn === "boolean") st.electricOn = c.electricOn;
       if (typeof c.periscope === "boolean") st.periscope = c.periscope;
+      if (typeof c.light === "boolean") st.light = c.light;
       if (c.dive === true) { st.location = "underwater"; st.mast = false; st.engineOn = false; }
       if (c.surface === true) st.location = "surface";
       if (c.refuel === true && st.location === "surface") {
@@ -360,7 +467,7 @@ wss.on("connection", (ws, req) => {
         world.BEACONS = fresh.BEACONS; world.COAST = fresh.COAST;
         world.isLand = fresh.isLand;
         for (const [pid] of states) {
-          const nst = newPlayerState(world, { weatherSeed: (race.seed + pid.length * 7) % 1000 });
+          const nst = newPlayerState(world, { weatherSeed: race.seed % 1000 });
           nst.t = gameMinutesNow();
           states.set(pid, nst);
           race.players[pid] = nst;

@@ -294,6 +294,28 @@ export function sailPolarFactor(angle) {
   return 0;
 }
 
+// ---------- Détection entre navires (multijoueur) ----------
+// Portée de détection de la COQUE d'un navire selon son état (km). Le navire
+// observateur doit lui-même être en surface ou au périscope pour voir.
+// - surface, mât rétracté : 12 km le jour, 1 km la nuit
+// - surface, mât étendu : 18 km le jour, 3 km la nuit
+// - surface, phare allumé : 10 km la nuit (le phare ne se voit pas le jour)
+// - immersion, périscope sorti : 2 km le jour, 1 km la nuit
+// - immersion, périscope rentré : invisible
+export const SHIP_VIS_LIGHT = 10;
+export function shipVisibleKm(target, night) {
+  if (target.location === "underwater") {
+    if (!target.periscope) return 0; // plongée profonde : invisible
+    return night ? 1 : 2;
+  }
+  let km = target.mast ? (night ? 3 : 18) : (night ? 1 : 12);
+  if (night && target.light) km = Math.max(km, SHIP_VIS_LIGHT);
+  return km;
+}
+// Collision : distance sous laquelle deux navires sont stoppés nets
+// (pas de dégâts dans cette version). ~90 m.
+export const SHIP_COLLISION_NM = 0.05;
+
 // ---------- Radio ----------
 export const signalStrengthKm = (dKm) => Math.max(0, Math.round(100 * (1 - dKm / 2000)));
 export const dirSensitivity = (antBeam) => 1 + ((antBeam - 1) / 179) * 49;
@@ -337,7 +359,7 @@ export function newPlayerState(world, opts = {}) {
     sail: 0.8, engine: 0.8,
     estX: sx, estY: world.PORT.y, unc: 0,
     navFix: { active: false, startT: 0, doneNight: null, lastTryT: null },
-    location: "surface", mast: false, engineOn: false, electricOn: false, periscope: false, vkn: 0,
+    location: "surface", mast: false, engineOn: false, electricOn: false, periscope: false, vkn: 0, light: false,
     fuel: 100, battery: 100, food: 100, score: 0, codes: [],
     antBeam: 45, antOrient: 0, signals: [], notifications: [], notifSeq: 0,
     grounded: false, wasStorm: false, warnedFood: false, warnedFuel: false, warnedBatt: false,
