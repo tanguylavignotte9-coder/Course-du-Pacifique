@@ -396,6 +396,8 @@ export default function App() {
     <div className="min-h-screen p-3 text-slate-100 sm:p-4">
       {/* Scène d'ambiance animée : ciel, soleil, nuages, pluie, mer, immersion */}
       {snap && <Scene hour={hour} weather={weather} underwater={player.location === "underwater"} />}
+      {/* Contenu : au-dessus de la scène (z-10 + position) */}
+      <div className="relative z-10">
       {/* En-tête */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
         <div>
@@ -621,6 +623,7 @@ export default function App() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
