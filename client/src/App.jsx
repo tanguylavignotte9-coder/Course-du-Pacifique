@@ -224,6 +224,7 @@ function NavMap({ snap, sock }) {
   const pinch = useRef(null);
   const [tool, setTool] = useState(null);
   const [measurePend, setMeasurePend] = useState(null);
+  const [hoverPt, setHoverPt] = useState(null); // position curseur (degres) pour la previsualisation
 
   const clampVB = (v) => ({ ...v, x: clamp(v.x, 0, MAP_PX - v.w), y: clamp(v.y, 0, MAP_PX - v.w) });
   // Zoom d'un facteur autour d'un point (coordonnées viewBox)
@@ -301,6 +302,11 @@ function NavMap({ snap, sock }) {
           if (pt) { pt.x = e.clientX; pt.y = e.clientY; }
           const rect = e.currentTarget.getBoundingClientRect();
           const ids = Object.keys(ptrs.current);
+          // Prévisualisation de mesure : suit le curseur dès le 1er point posé
+          if (tool === "measure" && measurePend && !drag.current) {
+            const hp = vbPoint(vb, rect, e.clientX, e.clientY);
+            setHoverPt([hp.x / S, MAP - hp.y / S]);
+          }
           if (ids.length >= 2 && pinch.current) {
             // Pincement tactile : zoom centré entre les doigts
             const [a, b] = Object.values(ptrs.current);
@@ -372,8 +378,19 @@ function NavMap({ snap, sock }) {
             </g>
           );
         })}
-        {/* 1er point de mesure en attente */}
-        {measurePend && <circle cx={px(measurePend[0])} cy={py(measurePend[1])} r={3} fill="none" stroke="#0f2a47" strokeWidth="1.4" />}
+        {/* 1er point de mesure en attente + prévisualisation live */}
+        {measurePend && (
+          <g>
+            <circle cx={px(measurePend[0])} cy={py(measurePend[1])} r={3} fill="none" stroke="#0f2a47" strokeWidth="1.4" />
+            {hoverPt && (
+              <g>
+                <line x1={px(measurePend[0])} y1={py(measurePend[1])} x2={px(hoverPt[0])} y2={py(hoverPt[1])} stroke="#0f2a47" strokeWidth="1.2" strokeDasharray="4 4" opacity="0.8" />
+                <circle cx={px(hoverPt[0])} cy={py(hoverPt[1])} r={2} fill="#0f2a47" opacity="0.6" />
+                <text x={(px(measurePend[0]) + px(hoverPt[0])) / 2} y={(py(measurePend[1]) + py(hoverPt[1])) / 2 - 4} fontSize="11" fill="#0f2a47" fontWeight="bold" textAnchor="middle" stroke="#cfe0f0" strokeWidth="2.5" paintOrder="stroke">{Math.round(kmOf(measurePend, hoverPt))} km</text>
+              </g>
+            )}
+          </g>
+        )}
         {/* Punaises A, B, C... */}
         {player.pins.map((p, idx) => (
           <g key={idx}>
@@ -392,6 +409,15 @@ function NavMap({ snap, sock }) {
       </p>
     </div>
   );
+}
+
+// Minutes à simuler pour atteindre la prochaine heure cible (0-23) du jeu.
+// L'aube = 6 h, le jour = 8 h, le crépuscule = 18 h, la nuit = 20 h.
+function nextPhase(tMin, targetHour) {
+  const cur = tMin / 60;
+  let delta = (targetHour - (cur % 24) + 24) % 24;
+  if (delta < 0.1) delta = 24; // déjà pile à la cible : saut au prochain cycle
+  return delta * 60;
 }
 
 // ---------- Application principale ----------
@@ -468,6 +494,20 @@ export default function App() {
           {status === "connected" ? "● connecté" : "● reconnexion…"}
         </span>
       </div>
+
+      {/* Boîte à outils super utilisateur : accélération et sauts de temps */}
+      {snap.isSuper && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-amber-700/60 bg-amber-900/30 p-3">
+          <span className="text-xs font-semibold text-amber-200">⭐ Outils super user — temps :</span>
+          <Btn onClick={() => cmd({ timeSkipMin: 60 })}>⏩ +1 h</Btn>
+          <Btn onClick={() => cmd({ timeSkipMin: 360 })}>⏩ +6 h</Btn>
+          <Btn onClick={() => cmd({ timeSkipMin: Math.round(nextPhase(snap.t, 6)) })}>🌅 Aube</Btn>
+          <Btn onClick={() => cmd({ timeSkipMin: Math.round(nextPhase(snap.t, 8)) })}>☀️ Jour</Btn>
+          <Btn onClick={() => cmd({ timeSkipMin: Math.round(nextPhase(snap.t, 18)) })}>🌇 Crépuscule</Btn>
+          <Btn onClick={() => cmd({ timeSkipMin: Math.round(nextPhase(snap.t, 20)) })}>🌙 Nuit</Btn>
+          <span className="text-[11px] text-amber-200/60">La simulation minute par minute est rejouée côté serveur (pulsations et détections conservées).</span>
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2">
         {/* Navire + vue de dessus */}

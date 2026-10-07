@@ -94,7 +94,7 @@
 
   async function refresh() {
     try {
-      const { accounts } = await api("/accounts");
+      const { accounts, superusers } = await api("/accounts");
       $("count").textContent = accounts.length;
       const box = $("accounts");
       box.innerHTML = "";
@@ -108,8 +108,26 @@
         const name = document.createElement("span");
         name.className = "name";
         name.textContent = a;
+        if (superusers && superusers.includes(a)) {
+          const badge = document.createElement("span");
+          badge.textContent = "⭐";
+          badge.title = "Super utilisateur";
+          badge.style.marginLeft = "6px";
+          name.appendChild(badge);
+        }
         const actions = document.createElement("div");
         actions.className = "actions";
+        const bs = document.createElement("button");
+        bs.className = "small";
+        bs.textContent = (superusers && superusers.includes(a)) ? "⭐ Retirer super" : "⭐ Super user";
+        bs.onclick = async () => {
+          const makeSuper = !(superusers && superusers.includes(a));
+          try {
+            await api("/super", { name: a, super: makeSuper });
+            msg(makeSuper ? a + " est maintenant super utilisateur (outils de temps dans le jeu)." : "Super utilisateur retiré pour " + a + ".", true);
+            refresh();
+          } catch (e) { msg(e.message, false); }
+        };
         const bp = document.createElement("button");
         bp.className = "small";
         bp.textContent = "🔑 Mot de passe";
@@ -127,6 +145,7 @@
           try { await api("/delete", { name: a }); msg("Compte " + a + " supprimé.", true); refresh(); }
           catch (e) { msg(e.message, false); }
         };
+        actions.appendChild(bs);
         actions.appendChild(bp);
         actions.appendChild(bd);
         row.appendChild(name);

@@ -118,6 +118,7 @@ function publicSnapshot(id) {
   return {
     t: st.t,
     epoch: race.epoch || new Date(race.startedAt).getTime(),
+    isSuper: isSuper(id),
     player: {
       heading: st.heading, sail: st.sail, engine: st.engine,
       location: st.location, mast: st.mast, engineOn: st.engineOn,
@@ -216,7 +217,10 @@ function adminGuard(req, res) {
 }
 app.post("/api/admin/accounts", (req, res) => {
   if (!adminGuard(req, res)) return;
-  res.json({ accounts: Object.keys(store.data.accounts || {}).sort() });
+  res.json({
+    accounts: Object.keys(store.data.accounts || {}).sort(),
+    superusers: Object.keys(store.data.superusers || {}).sort(),
+  });
 });
 app.post("/api/admin/create", (req, res) => {
   if (!adminGuard(req, res)) return;
@@ -254,6 +258,24 @@ app.post("/api/admin/delete", (req, res) => {
   store.save();
   res.json({ ok: true });
 });
+
+// Super utilisateurs : déclarent un compte « super user » (outils de temps
+// dans le client). Liste persistée dans save.json.
+if (!store.data.superusers) store.data.superusers = {};
+app.post("/api/admin/super", (req, res) => {
+  if (!adminGuard(req, res)) return;
+  const id = String(req.body.name || "").trim().toLowerCase();
+  if (!store.data.accounts[id]) return res.status(400).json({ error: "compte inconnu" });
+  if (req.body.super === false) {
+    delete store.data.superusers[id];
+    store.save();
+    return res.json({ account: id, super: false });
+  }
+  store.data.superusers[id] = true;
+  store.save();
+  res.json({ account: id, super: true });
+});
+const isSuper = (id) => !!store.data.superusers?.[id];
 
 const server = app.listen(PORT, () => {
   console.log(`Pacific Chase — serveur prêt sur http://localhost:${PORT} (×${TIME_MULT})`);
@@ -303,6 +325,21 @@ wss.on("connection", (ws, req) => {
       }
       if (Array.isArray(c.pins)) st.pins = c.pins.slice(0, 26);
       if (Array.isArray(c.measures)) st.measures = c.measures.slice(0, 40);
+      // Saut de temps : super utilisateur uniquement. L'horloge de course est
+      // PARTAGÉE : le saut est global — l'epoch recule, le serveur simule
+      // ensuite chaque minute pour chaque navire (pulsations, détections,
+      // points aux étoiles et consommations sont conservés pour tous).
+      if (c.timeSkipMin != null && isSuper(id)) {
+        const mins = Math.round(clamp(Number(c.timeSkipMin) || 0, 1, 24 * 60));
+        race.epoch = (race.epoch || new Date(race.startedAt).getTime()) - mins * 60000 / TIME_MULT;
+        const now = gameMinutesNow();
+        for (const [, pst] of states) {
+          while (pst.t < now) tick(pst, Math.min(MAX_STEP_MIN, now - pst.t), world);
+        }
+        store.save();
+        st.notifSeq = (st.notifSeq || 0) + 1;
+        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⏱️ Saut de temps : +${mins} min (super user).`, kind: "info", cat: "navire" });
+      }
       persistPlayer(id);
       ws.send(JSON.stringify({ type: "snapshot", data: publicSnapshot(id) }));
     } else if (msg.type === "snapshot") {
