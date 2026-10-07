@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pacific Chase — Administration</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: #0f172a; color: #e2e8f0;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; align-items: center; justify-content: center; padding: 16px;
+  }
+  .card {
+    width: 100%; max-width: 480px; background: #1e293b; border: 1px solid #334155;
+    border-radius: 14px; padding: 24px; box-shadow: 0 10px 40px rgba(0,0,0,.4);
+  }
+  h1 { font-size: 18px; color: #7dd3fc; margin: 0 0 4px; }
+  h2 { font-size: 14px; color: #94a3b8; margin: 20px 0 8px; text-transform: uppercase; letter-spacing: .05em; }
+  p.sub { font-size: 12px; color: #64748b; margin: 0 0 16px; }
+  input {
+    width: 100%; padding: 9px 11px; border-radius: 8px; border: 1px solid #475569;
+    background: #0f172a; color: #e2e8f0; font-size: 14px; margin-bottom: 8px;
+  }
+  input:focus { outline: 2px solid #38bdf8; border-color: #38bdf8; }
+  button {
+    padding: 9px 16px; border: none; border-radius: 8px; font-size: 13px;
+    font-weight: 600; cursor: pointer; background: #0ea5e9; color: #001219; width: 100%;
+  }
+  button:hover { background: #38bdf8; }
+  button.small { width: auto; padding: 5px 10px; font-size: 12px; background: #475569; color: #e2e8f0; }
+  button.small:hover { background: #64748b; }
+  button.danger { background: #7f1d1d; color: #fecaca; }
+  button.danger:hover { background: #b91c1c; }
+  .row { display: flex; gap: 8px; align-items: center; justify-content: space-between;
+    padding: 8px 10px; border-radius: 8px; background: #0f172a; margin-bottom: 6px; }
+  .row .name { font-weight: 600; }
+  .row .actions { display: flex; gap: 6px; }
+  .msg { padding: 9px 11px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; display: none; }
+  .msg.ok { display: block; background: #14532d; color: #bbf7d0; }
+  .msg.err { display: block; background: #7f1d1d; color: #fecaca; }
+  .hint { font-size: 11px; color: #64748b; margin: 4px 0 0; }
+  .empty { color: #64748b; font-size: 13px; padding: 10px; text-align: center; }
+  #lock { display: block; } #panel { display: none; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>⚓ Pacific Chase — Administration</h1>
+    <p class="sub">Gestion des comptes joueurs</p>
+
+    <div id="lock">
+      <h2>Secret administrateur</h2>
+      <p class="sub" style="margin-bottom:8px">
+        Celui du fichier <code>data/admin-secret.txt</code> (ou de la variable <code>ADMIN_SECRET</code>).
+      </p>
+      <input id="secret" type="password" placeholder="Secret admin" autofocus />
+      <button id="unlock">Ouvrir la gestion</button>
+      <p class="hint">Le secret reste dans ce navigateur uniquement, jamais envoyé ailleurs que sur ce serveur.</p>
+    </div>
+
+    <div id="panel">
+      <div id="msg" class="msg"></div>
+
+      <h2>Créer un compte joueur</h2>
+      <input id="newName" placeholder="Nom du marin (ex : alice)" />
+      <input id="newPass" type="password" placeholder="Mot de passe (4 caractères min.)" />
+      <button id="create">➕ Créer le compte</button>
+
+      <h2>Comptes existants (<span id="count">0</span>)</h2>
+      <div id="accounts"><p class="empty">Aucun compte pour l'instant.</p></div>
+    </div>
+  </div>
+
+<script>
+  let SECRET = "";
+  const $ = (id) => document.getElementById(id);
+  const msg = (text, ok) => {
+    const m = $("msg");
+    m.textContent = text;
+    m.className = "msg " + (ok ? "ok" : "err");
+    setTimeout(() => { m.className = "msg"; }, 4000);
+  };
+  const api = (path, body) =>
+    fetch("/api/admin" + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ adminSecret: SECRET, ...body }),
+    }).then(async (r) => {
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "erreur " + r.status);
+      return j;
+    });
+
+  async function refresh() {
+    try {
+      const { accounts } = await api("/accounts");
+      $("count").textContent = accounts.length;
+      const box = $("accounts");
+      box.innerHTML = "";
+      if (accounts.length === 0) {
+        box.innerHTML = '<p class="empty">Aucun compte pour l\'instant.</p>';
+        return;
+      }
+      for (const a of accounts) {
+        const row = document.createElement("div");
+        row.className = "row";
+        const name = document.createElement("span");
+        name.className = "name";
+        name.textContent = a;
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const bp = document.createElement("button");
+        bp.className = "small";
+        bp.textContent = "🔑 Mot de passe";
+        bp.onclick = async () => {
+          const p = prompt("Nouveau mot de passe pour " + a + " :");
+          if (!p) return;
+          try { await api("/passwd", { name: a, password: p }); msg("Mot de passe changé pour " + a + " (sessions déconnectées).", true); refresh(); }
+          catch (e) { msg(e.message, false); }
+        };
+        const bd = document.createElement("button");
+        bd.className = "small danger";
+        bd.textContent = "🗑 Supprimer";
+        bd.onclick = async () => {
+          if (!confirm("Supprimer vraiment le compte « " + a + " » ?")) return;
+          try { await api("/delete", { name: a }); msg("Compte " + a + " supprimé.", true); refresh(); }
+          catch (e) { msg(e.message, false); }
+        };
+        actions.appendChild(bp);
+        actions.appendChild(bd);
+        row.appendChild(name);
+        row.appendChild(actions);
+        box.appendChild(row);
+      }
+    } catch (e) {
+      msg(e.message, false);
+    }
+  }
+
+  $("unlock").onclick = async () => {
+    SECRET = $("secret").value.trim();
+    try {
+      await api("/accounts");
+      $("lock").style.display = "none";
+      $("panel").style.display = "block";
+      refresh();
+    } catch (e) {
+      msg(e.message, false);
+    }
+  };
+  $("secret").addEventListener("keydown", (e) => { if (e.key === "Enter") $("unlock").click(); });
+
+  $("create").onclick = async () => {
+    const name = $("newName").value.trim();
+    const pass = $("newPass").value;
+    if (!name || !pass) return msg("Nom et mot de passe requis.", false);
+    try {
+      await api("/create", { name, password: pass });
+      msg("Compte créé : " + name.toLowerCase(), true);
+      $("newName").value = ""; $("newPass").value = "";
+      refresh();
+    } catch (e) {
+      msg(e.message, false);
+    }
+  };
+
+  $("newPass").addEventListener("keydown", (e) => { if (e.key === "Enter") $("create").click(); });
+</script>
+</body>
+</html>
