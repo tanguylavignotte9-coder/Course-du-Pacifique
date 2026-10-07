@@ -16,6 +16,10 @@ data/              Sauvegardes (créé au premier lancement) — non versionné
 
 ## Démarrage (votre PC)
 
+**En un clic** : double-cliquez `Start Pacific Chase.bat` (Windows) ou lancez `./start.sh` (macOS/Linux). Le script installe et build si nécessaire, démarre le serveur sur http://localhost:8080 et ouvre le navigateur.
+
+Manuellement :
+
 ```bash
 npm install
 npm run build        # build du client
