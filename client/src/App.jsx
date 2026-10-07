@@ -226,6 +226,49 @@ function TopView({ snap }) {
   );
 }
 
+// ---------- Clavier radio VHF (appel « Position ? ») ----------
+// Clavier cliquable immersif : touches 0-9, effacer (⌫), effacer tout (C).
+// Le bouton d'appel n'est actif qu'avec 4 chiffres composés. L'émission
+// utilise l'antenne TELLE QU'ELLE EST RÉGLÉE (viser avant d'appeler).
+function VhfKeypad({ dialed, onDial, onCall, radioOk, portee }) {
+  const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "C", "0", "⌫"];
+  const press = (k) => {
+    if (k === "C") return onDial("");
+    if (k === "⌫") return onDial(dialed.slice(0, -1));
+    if (dialed.length < 4) onDial(dialed + k);
+  };
+  return (
+    <div className="rounded-xl border border-slate-600 bg-slate-900/80 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[10px] uppercase tracking-wider text-slate-400">Appel « Position ? »</span>
+        <span className="text-[10px] text-slate-500">portée dir. : {portee} km</span>
+      </div>
+      {/* Afficheur du numéro composé */}
+      <div className="mb-2 flex items-center justify-center gap-1 rounded-lg border border-sky-900 bg-sky-950/70 px-3 py-2">
+        {[0, 1, 2, 3].map((i) => (
+          <span key={i} className={`w-7 rounded text-center font-mono text-lg font-bold ${i < dialed.length ? "text-sky-300" : "text-slate-700"}`}>
+            {dialed[i] || "–"}
+          </span>
+        ))}
+      </div>
+      <div className="grid grid-cols-3 gap-1.5">
+        {keys.map((k) => (
+          <button
+            key={k}
+            onClick={() => press(k)}
+            className={`rounded-lg py-2 font-mono text-sm font-bold transition-colors ${k === "C" || k === "⌫" ? "bg-rose-900/50 text-rose-200 hover:bg-rose-800/60" : "bg-slate-700/80 text-slate-100 hover:bg-slate-600"}`}
+          >{k}</button>
+        ))}
+      </div>
+      <button
+        disabled={dialed.length !== 4 || !radioOk}
+        onClick={() => { onCall(dialed); onDial(""); }}
+        className={`mt-2 w-full rounded-lg py-2 text-sm font-bold transition-colors ${dialed.length === 4 && radioOk ? "bg-amber-500 text-slate-950 hover:bg-amber-400" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+      >📡 Émettre (0,5 % batteries)</button>
+    </div>
+  );
+}
+
 // ---------- Carte de navigation (outil papier : estimé + punaises) ----------
 // Reprise fidèle du proto : zoom molette/pincement centré curseur, pan par
 // glissement, outils punaise (1 clic) et mesure (2 clics) avec conversion
@@ -447,6 +490,7 @@ export default function App() {
   const sockRef = useRef(null);
   const [shopOpen, setShopOpen] = useState(false);
   const [wxOpen, setWxOpen] = useState(false);
+  const [dial, setDial] = useState("");
   const [wxH, setWxH] = useState(0);
   const [wxData, setWxData] = useState(null);
 
@@ -666,6 +710,16 @@ export default function App() {
             <p className="text-[11px] text-slate-500">
               Directionnelle : capte dès <b className="text-purple-300">{antSens}%</b> (≈ {Math.round(2000 * (1 - antSens / 100))} km) si la balise est centrée · omnidirectionnelle : dès 75 % (≈ 500 km), azimut inconnu.
             </p>
+            <p className="text-[11px] text-slate-400">
+              Code du navire : <b className="font-mono text-sm text-sky-300">{player.code}</b> — c'est votre numéro radio (donnez-le aux autres navires pour qu'ils vous appellent).
+            </p>
+            <VhfKeypad
+              dialed={dial}
+              onDial={setDial}
+              onCall={(code) => cmd({ call: code })}
+              radioOk={radioOk}
+              portee={Math.round(1000 + 4000 * (180 - player.antBeam) / 179)}
+            />
           </div>
 
           <div className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">

@@ -72,6 +72,23 @@ export function distToLine(px, py, pts) {
   return best;
 }
 
+// ---------- Codes d'identification radio ----------
+// Chaque système (balise ET navire) possède un code unique à 4 chiffres
+// (0000-9999), comme un numéro de téléphone. Les balises tirent leurs codes
+// à la création du monde (déterministe par graine), le navire au sien.
+export function assignCodes(beacons, rng) {
+  const used = new Set();
+  const pick = () => {
+    let c;
+    do { c = String(Math.floor(rng() * 10000)).padStart(4, "0"); }
+    while (used.has(c));
+    used.add(c);
+    return c;
+  };
+  for (const b of beacons) b.code = pick();
+  return pick; // pour tirer ensuite le code du navire sans collision
+}
+
 // ---------- Raretés des balises ----------
 export const RARITY_STYLE = {
   commune: { color: "#4ade80", pts: 1 },
@@ -204,6 +221,7 @@ export function buildWorld(seed) {
     }
     return out;
   })();
+  assignCodes(BEACONS, rng);
 
   return { seed, CONTINENT, PORT, ISLANDS, OUTPOSTS, BEACONS, COAST, isLand };
 }
@@ -386,7 +404,7 @@ export function detectBeacon(st, b, world) {
   const strength = signalStrengthKm(dKm);
   const brg = bearingTo(st.x, st.y, b.x, b.y);
   let got = null;
-  if (strength >= 75) got = { t: st.t, beaconId: b.id, bearing: null, strength, source: "omni" };
+  if (strength >= 75) got = { t: st.t, beaconId: b.code, bearing: null, strength, source: "omni" };
   const sens = dirSensitivity(st.antBeam);
   const antHeading = (st.heading + st.antOrient + 720) % 360;
   const signedDiff = angDiff(brg, antHeading);
@@ -398,9 +416,77 @@ export function detectBeacon(st, b, world) {
       : signedDiff > 0
         ? (diff < st.antBeam / 4 ? "D1" : "D2")
         : (diff < st.antBeam / 4 ? "G1" : "G2");
-    got = { t: st.t, beaconId: b.id, bearing: Math.round(antHeading), beam: st.antBeam, side, strength, source: "dir" };
+    got = { t: st.t, beaconId: b.code, bearing: Math.round(antHeading), beam: st.antBeam, side, strength, source: "dir" };
   }
   return got;
+}
+
+// ---------- Émission « Position ? » ----------
+// L'appel part SIMULTANÉMENT sur deux chemins :
+// - Omnidirectionnel : 100 % à la source, 0 % à 500 km.
+// - Directionnel : portée = 1000 + 4000 × (180 − ouverture)/179 km
+//   (1000 km à 180°, 5000 km à 1°), force 100 % à la source, 0 % à la
+//   portée du faisceau. Malus de bord symétrique de la réception.
+// Les balises écoutent tout message de force reçue >= 1 % : la balise
+// composée — et elle seule — répond immédiatement en PRIVÉ avec ses
+// coordonnées exactes. La réponse suit les règles de réception
+// habituelles (décroissance 2000 km) : on peut joindre une balise à
+// ~4950 km au faisceau 1° et ne pas entendre sa réponse au-delà de ~1980 km.
+export const CALL_BATTERY_COST = 0.5;
+export function dirRangeKm(antBeam) {
+  return 1000 + 4000 * (180 - antBeam) / 179;
+}
+// Force reçue par une cible à dKm de la source (émission double chemin).
+export function callStrengthAtKm(st, dKm, targetBrg) {
+  const omni = Math.max(0, 100 * (1 - dKm / 500));
+  const range = dirRangeKm(st.antBeam);
+  const antHeading = (st.heading + st.antOrient + 720) % 360;
+  const diff = Math.abs(angDiff(targetBrg, antHeading));
+  if (diff > st.antBeam / 2) return { strength: omni, path: "omni" };
+  const ratio = clamp(diff / (st.antBeam / 2), 0, 1);
+  const edgeMalus = 1 - 0.2 * ratio;
+  const effRange = range * edgeMalus;
+  const dir = Math.max(0, 100 * (1 - dKm / effRange));
+  return dir > omni ? { strength: dir, path: "dir" } : { strength: omni, path: "omni" };
+}
+// Traite un appel « Position ? » vers le code composé. Le silence (mauvais
+// numéro, hors faisceau, hors de portée, réponse inaudible) EST
+// l'information : aucune notification d'échec. Coût : 0,5 % de batteries.
+export function callPosition(st, code, world) {
+  const radioOk = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
+  if (!radioOk) return;
+  st.battery = Math.max(0, st.battery - CALL_BATTERY_COST);
+  const target = world.BEACONS.find((b) => b.code === code && b.active);
+  if (!target) return;
+  const d = distNm(st.x, st.y, target.x, target.y);
+  const dKm = d * KM_PER_NM;
+  const brg = bearingTo(st.x, st.y, target.x, target.y);
+  const { strength } = callStrengthAtKm(st, dKm, brg);
+  if (strength < 1) return;
+  const respStrength = signalStrengthKm(dKm);
+  if (respStrength <= 0) return;
+  const dEst = Math.round(2000 * (1 - respStrength / 100));
+  const dErr = Math.round(dEst * 0.2);
+  st.notifSeq = (st.notifSeq || 0) + 1;
+  st.notifications.unshift({
+    id: st.notifSeq, t: st.t,
+    text: `📡 Position de ${code} : ${target.y.toFixed(2)}°N ${target.x.toFixed(2)}°E (signal ${respStrength}%, distance estimée ${dEst} ± ${dErr} km, azimut ${Math.round(brg)}°).`,
+    kind: "good", cat: "radio",
+  });
+}
+// Brouillage : un tiers qui capte un message privé sans en être le
+// destinataire détecte une TRANSMISSION BROUILLÉE — niveau de signal (et
+// azimut en directionnel), mais AUCUN contenu.
+export function scrambledIntercept(strength, source, antBeam, antOrient, heading, brg) {
+  const dEst = Math.round(2000 * (1 - strength / 100));
+  const antHeading = (heading + antOrient + 720) % 360;
+  if (source === "dir") {
+    const signedDiff = angDiff(brg, antHeading);
+    const diff = Math.abs(signedDiff);
+    const side = diff < 1 ? "centre" : signedDiff > 0 ? (diff < antBeam / 4 ? "D1" : "D2") : (diff < antBeam / 4 ? "G1" : "G2");
+    return { text: `📡 Transmission brouillée captée (directionnelle) — signal ${strength}%, azimut ${Math.round(antHeading)}°, zone ${side}, distance estimée ${dEst} ± ${Math.round(dEst * 0.2)} km. Contenu : illisible.`, cat: "radio" };
+  }
+  return { text: `📡 Transmission brouillée captée (omnidirectionnelle) — signal ${strength}%. Contenu : illisible, origine inconnue.`, cat: "radio" };
 }
 
 // ---------- État du joueur ----------
@@ -421,6 +507,7 @@ export function newPlayerState(world, opts = {}) {
     grounded: false, wasStorm: false, warnedFood: false, warnedFuel: false, warnedBatt: false,
     ffEvents: [], travelledNm: 0, dailyNm: 0, dayIdx: 0,
     weatherSeed: opts.weatherSeed ?? Math.floor(Math.random() * 1000), weatherName: null,
+    code: opts.shipCode ?? String(Math.floor(Math.random() * 10000)).padStart(4, "0"),
     sawIsland: false, sawBeaconId: null, sawPort: false, sawCont: false, sawOutpostIds: [], pins: [], measures: [],
     seaDouglas: null,
     // Défauts d'instruments fixes pour toute la course, inconnus du navigateur
@@ -583,8 +670,8 @@ export function tick(st, dtMin, world) {
         if (st.signals.length > 30) st.signals.pop();
         const dEst = Math.round(2000 * (1 - got.strength / 100));
         const txt = got.source === "omni"
-          ? `📡 Balise ${b.id} — signal ${got.strength}% (distance estimée : ${dEst} ± ${Math.round(dEst * 0.2)} km, omnidirectionnelle, azimut inconnu)`
-          : `📡 Balise ${b.id} — azimut ${got.bearing}°, signal ${got.strength}% (distance estimée : ${dEst} ± ${Math.round(dEst * 0.2)} km), partie ${got.side} du cône (ouverture ${got.beam}°)`;
+          ? `📡 Ping ${b.code} — signal ${got.strength}% (distance estimée : ${dEst} ± ${Math.round(dEst * 0.2)} km, omnidirectionnelle, azimut inconnu)`
+          : `📡 Ping ${b.code} — azimut ${got.bearing}°, signal ${got.strength}% (distance estimée : ${dEst} ± ${Math.round(dEst * 0.2)} km), partie ${got.side} du cône (ouverture ${got.beam}°)`;
         notify(st, txt, "info", "radio");
       }
     }

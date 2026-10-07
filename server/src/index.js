@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distNm, DELIVERY_R_NM, shipVisibleKm, shipsCollide, KM_PER_NM } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distNm, DELIVERY_R_NM, shipVisibleKm, shipsCollide, KM_PER_NM, callPosition, callStrengthAtKm, scrambledIntercept, bearingTo, angDiff } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -238,6 +238,7 @@ function publicSnapshot(id) {
       collided: !!st.collided,
       light: !!st.light,
       antBeam: st.antBeam, antOrient: st.antOrient,
+      code: st.code,
       notifications: st.notifications.slice(0, 60),
       pins: st.pins, measures: st.measures,
     },
@@ -247,6 +248,7 @@ function publicSnapshot(id) {
       islands: world.ISLANDS.map((i) => i.verts),
       outposts: world.OUTPOSTS,
       activeBeaconIds: world.BEACONS.filter((b) => b.active).map((b) => b.id),
+      beaconCodes: world.BEACONS.map((b) => ({ id: b.id, code: b.code, active: b.active })),
       beaconCount: world.BEACONS.length,
     },
     weather: w,
@@ -435,6 +437,42 @@ wss.on("connection", (ws, req) => {
       if (typeof c.light === "boolean") st.light = c.light;
       if (c.dive === true) { st.location = "underwater"; st.mast = false; st.engineOn = false; }
       if (c.surface === true) st.location = "surface";
+      // Appel « Position ? » : coût batteries, réponse privée de la balise,
+      // et TRANSMISSION BROUILLÉE pour tout autre navire qui capte l'émission
+      // sans en être destinataire (« émettre, c'exister »).
+      if (typeof c.call === "string" && /^\d{4}$/.test(c.call)) {
+        const before = st.battery;
+        callPosition(st, c.call, world);
+        // broadcast physique : les AUTRES navires captent l'activité radio
+        const emitted = before - st.battery >= 0; // coût débité = émission partie
+        if (emitted && before > 0) {
+          for (const [oid, ost] of states) {
+            if (oid === id) continue;
+            const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
+            if (!otherRadioOk) continue;
+            const dKm = distNm(ost.x, ost.y, st.x, st.y) * KM_PER_NM;
+            const brg = bearingTo(ost.x, ost.y, st.x, st.y);
+            // le tiers écoute selon SES antennes : omnidirectionnelle (>= 75
+            // % de la portée d'émission de 500 km) ou directionnelle
+            let caught = null;
+            const omniStrength = Math.max(0, 100 * (1 - dKm / 500));
+            if (omniStrength >= 75) caught = { strength: omniStrength, source: "omni" };
+            const antHeading = (ost.heading + ost.antOrient + 720) % 360;
+            const diff = Math.abs(angDiff(brg, antHeading));
+            if (diff <= ost.antBeam / 2) {
+              const effSens = 1 + ((ost.antBeam - 1) / 179) * 49;
+              const ratio = Math.min(1, diff / (ost.antBeam / 2));
+              const sensEff = 100 - (100 - effSens) * (1 - 0.2 * ratio);
+              if (omniStrength >= sensEff) caught = { strength: omniStrength, source: "dir", brg };
+            }
+            if (caught) {
+              ost.notifSeq = (ost.notifSeq || 0) + 1;
+              const info = scrambledIntercept(Math.round(caught.strength), caught.source, ost.antBeam, ost.antOrient, ost.heading, brg);
+              ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: info.text, kind: "info", cat: info.cat });
+            }
+          }
+        }
+      }
       if (c.refuel === true && st.location === "surface") {
         st.fuel = 100; st.food = 100;
         st.notifSeq = (st.notifSeq || 0) + 1;
