@@ -473,6 +473,29 @@ wss.on("connection", (ws, req) => {
           }
         }
       }
+      // SOS (mode diffusion) : message lisible par TOUS les navires à portée
+      // de l'émission double chemin. Le contenu inclut la position ESTIMÉE
+      // de l'émetteur (ce qu'il croit — ses instruments, pas la vérité).
+      if (c.sos === true) {
+        const radioOkSos = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
+        if (radioOkSos) {
+          st.battery = Math.max(0, st.battery - 0.5);
+          const sosText = `🆘 SOS du navire ${st.code} — position déclarée : ${st.estY.toFixed(2)}°N ${st.estX.toFixed(2)}°E (±${Math.round(st.unc)} km).`;
+          st.notifSeq = (st.notifSeq || 0) + 1;
+          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `${sosText} Diffusion émise.`, kind: "warn", cat: "radio" });
+          for (const [oid, ost] of states) {
+            if (oid === id) continue;
+            const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
+            if (!otherRadioOk) continue;
+            const dKm = distNm(ost.x, ost.y, st.x, st.y) * KM_PER_NM;
+            const brg = bearingTo(ost.x, ost.y, st.x, st.y);
+            const { strength } = callStrengthAtKm(st, dKm, brg);
+            if (strength < 1) continue;
+            ost.notifSeq = (ost.notifSeq || 0) + 1;
+            ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: sosText, kind: "bad", cat: "radio" });
+          }
+        }
+      }
       if (c.refuel === true && st.location === "surface") {
         st.fuel = 100; st.food = 100;
         st.notifSeq = (st.notifSeq || 0) + 1;

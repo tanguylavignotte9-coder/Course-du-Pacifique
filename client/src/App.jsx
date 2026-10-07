@@ -491,6 +491,7 @@ export default function App() {
   const [shopOpen, setShopOpen] = useState(false);
   const [wxOpen, setWxOpen] = useState(false);
   const [dial, setDial] = useState("");
+  const [radioMode, setRadioMode] = useState("prive"); // prive | diffusion
   const [wxH, setWxH] = useState(0);
   const [wxData, setWxData] = useState(null);
 
@@ -713,13 +714,31 @@ export default function App() {
             <p className="text-[11px] text-slate-400">
               Code du navire : <b className="font-mono text-sm text-sky-300">{player.code}</b> — c'est votre numéro radio (donnez-le aux autres navires pour qu'ils vous appellent).
             </p>
-            <VhfKeypad
-              dialed={dial}
-              onDial={setDial}
-              onCall={(code) => cmd({ call: code })}
-              radioOk={radioOk}
-              portee={Math.round(1000 + 4000 * (180 - player.antBeam) / 179)}
-            />
+            {/* Mode radio : privé (appels) ou diffusion (SOS) */}
+            <div className="flex gap-1.5">
+              <Btn active={radioMode === "prive"} onClick={() => setRadioMode("prive")}>🔒 Privé — appels</Btn>
+              <Btn active={radioMode === "diffusion"} onClick={() => setRadioMode("diffusion")}>📢 Diffusion — SOS</Btn>
+            </div>
+            {radioMode === "prive" ? (
+              <VhfKeypad
+                dialed={dial}
+                onDial={setDial}
+                onCall={(code) => cmd({ call: code })}
+                radioOk={radioOk}
+                portee={Math.round(1000 + 4000 * (180 - player.antBeam) / 179)}
+              />
+            ) : (
+              <div className="rounded-xl border border-rose-800/60 bg-rose-950/40 p-3">
+                <p className="mb-2 text-[11px] leading-snug text-rose-200/80">
+                  Message <b>SOS</b> en diffusion générale : tous les navires à portée de l'émission le lisent, avec votre position <b>estimée</b> et son incertitude — ce que vous croyez, pas la vérité. Coût : 0,5 % de batteries.
+                </p>
+                <button
+                  disabled={!radioOk}
+                  onClick={() => cmd({ sos: true })}
+                  className={`w-full rounded-lg py-2 text-sm font-bold transition-colors ${radioOk ? "bg-rose-600 text-white hover:bg-rose-500" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+                >🆘 Émettre un SOS</button>
+              </div>
+            )}
           </div>
 
           <div className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
