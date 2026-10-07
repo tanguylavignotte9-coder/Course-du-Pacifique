@@ -260,11 +260,6 @@ function VhfKeypad({ dialed, onDial, onAction, radioOk, portee }) {
           >{k}</button>
         ))}
       </div>
-      <button
-        disabled={dialed.length !== 4 || !radioOk}
-        onClick={() => { onAction("beacon", dialed); onDial(""); }}
-        className={`mt-2 w-full rounded-lg py-2 text-xs font-bold transition-colors ${dialed.length === 4 && radioOk ? "bg-amber-500 text-slate-950 hover:bg-amber-400" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
-      >🛟 Appel balise — réponse auto (0,5 %)</button>
       <div className="mt-2 grid grid-cols-2 gap-1.5">
         <button
           disabled={dialed.length !== 4 || !radioOk}
@@ -278,7 +273,7 @@ function VhfKeypad({ dialed, onDial, onAction, radioOk, portee }) {
         >📍 Ma position</button>
       </div>
       <p className="mt-1.5 text-[10px] leading-snug text-slate-500">
-        « Position ? » pose la question — rien d'automatique, le destinataire décide. « Ma position » communique volontairement votre position <b>estimée</b>. (0,5 % batteries par message)
+        « Position ? » est un message littéral : un <b>navire</b> le lit et décide seul de répondre ; une <b>balise</b> l'interprète et répond automatiquement (c'est sa fonction). « Ma position » communique volontairement votre position <b>estimée</b>. (0,5 % batteries par message)
       </p>
     </div>
   );
@@ -738,7 +733,7 @@ export default function App() {
               <VhfKeypad
                 dialed={dial}
                 onDial={setDial}
-                onAction={(kind, code) => kind === "beacon" ? cmd({ call: code }) : cmd({ shipMsg: { kind, to: code } })}
+                onAction={(kind, code) => cmd({ shipMsg: { kind, to: code } })}
                 radioOk={radioOk}
                 portee={Math.round(1000 + 4000 * (180 - player.antBeam) / 179)}
               />

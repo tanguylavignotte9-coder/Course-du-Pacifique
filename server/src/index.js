@@ -91,7 +91,14 @@ function ensureState(id) {
       store.save();
     }
     const spawnIdx = race.spawnOrder[id];
-    const st = newPlayerState(world, { weatherSeed: race.seed % 1000, spawnIdx });
+    // Code radio du navire : unique, SANS collision avec les codes des
+    // balises — un code désigne exactement un système du monde.
+    let shipCode;
+    do {
+      shipCode = String(Math.floor(Math.random() * 10000)).padStart(4, "0");
+    } while (world.BEACONS.some((b) => b.code === shipCode)
+      || [...states.values()].some((s) => s.code === shipCode));
+    const st = newPlayerState(world, { weatherSeed: race.seed % 1000, spawnIdx, shipCode });
     st.t = gameMinutesNow();
     states.set(id, st);
     persistPlayer(id);
@@ -440,39 +447,6 @@ wss.on("connection", (ws, req) => {
       // Appel « Position ? » : coût batteries, réponse privée de la balise,
       // et TRANSMISSION BROUILLÉE pour tout autre navire qui capte l'émission
       // sans en être destinataire (« émettre, c'exister »).
-      if (typeof c.call === "string" && /^\d{4}$/.test(c.call)) {
-        const before = st.battery;
-        callPosition(st, c.call, world);
-        // broadcast physique : les AUTRES navires captent l'activité radio
-        const emitted = before - st.battery >= 0; // coût débité = émission partie
-        if (emitted && before > 0) {
-          for (const [oid, ost] of states) {
-            if (oid === id) continue;
-            const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
-            if (!otherRadioOk) continue;
-            const dKm = distNm(ost.x, ost.y, st.x, st.y) * KM_PER_NM;
-            const brg = bearingTo(ost.x, ost.y, st.x, st.y);
-            // le tiers écoute selon SES antennes : omnidirectionnelle (>= 75
-            // % de la portée d'émission de 500 km) ou directionnelle
-            let caught = null;
-            const omniStrength = Math.max(0, 100 * (1 - dKm / 500));
-            if (omniStrength >= 75) caught = { strength: omniStrength, source: "omni" };
-            const antHeading = (ost.heading + ost.antOrient + 720) % 360;
-            const diff = Math.abs(angDiff(brg, antHeading));
-            if (diff <= ost.antBeam / 2) {
-              const effSens = 1 + ((ost.antBeam - 1) / 179) * 49;
-              const ratio = Math.min(1, diff / (ost.antBeam / 2));
-              const sensEff = 100 - (100 - effSens) * (1 - 0.2 * ratio);
-              if (omniStrength >= sensEff) caught = { strength: omniStrength, source: "dir", brg };
-            }
-            if (caught) {
-              ost.notifSeq = (ost.notifSeq || 0) + 1;
-              const info = scrambledIntercept(Math.round(caught.strength), caught.source, ost.antBeam, ost.antOrient, ost.heading, brg);
-              ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: info.text, kind: "info", cat: info.cat });
-            }
-          }
-        }
-      }
       // SOS (mode diffusion) : message lisible par TOUS les navires à portée
       // de l'émission double chemin. Le contenu inclut la position ESTIMÉE
       // de l'émetteur (ce qu'il croit — ses instruments, pas la vérité).
@@ -514,6 +488,14 @@ wss.on("connection", (ws, req) => {
           const label = c.shipMsg.kind === "posq" ? "« Position ? »" : "« Ma position »";
           st.notifSeq = (st.notifSeq || 0) + 1;
           st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `📡 Message ${label} ${isBroadcast ? "diffusé" : `émis vers ${c.shipMsg.to}`} (0,5 % batteries).`, kind: "info", cat: "radio" });
+          // « Position ? » adressé : si le code composé est une BALISE, elle
+          // l'interprète automatiquement et répond (réponse gratuite : le coût
+          // a déjà été débité par l'émission du message). Si c'est un navire,
+          // il lit la question — rien d'automatique.
+          if (c.shipMsg.kind === "posq" && !isBroadcast) {
+            const targetBeacon = world.BEACONS.find((b) => b.code === c.shipMsg.to && b.active);
+            if (targetBeacon) callPosition(st, c.shipMsg.to, world, true);
+          }
           for (const [oid, ost] of states) {
             if (oid === id) continue;
             const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;

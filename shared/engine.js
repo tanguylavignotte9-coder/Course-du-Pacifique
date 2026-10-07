@@ -452,10 +452,10 @@ export function callStrengthAtKm(st, dKm, targetBrg) {
 // Traite un appel « Position ? » vers le code composé. Le silence (mauvais
 // numéro, hors faisceau, hors de portée, réponse inaudible) EST
 // l'information : aucune notification d'échec. Coût : 0,5 % de batteries.
-export function callPosition(st, code, world) {
+export function callPosition(st, code, world, noCost = false) {
   const radioOk = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
   if (!radioOk) return;
-  st.battery = Math.max(0, st.battery - CALL_BATTERY_COST);
+  if (!noCost) st.battery = Math.max(0, st.battery - CALL_BATTERY_COST);
   const target = world.BEACONS.find((b) => b.code === code && b.active);
   if (!target) return;
   const d = distNm(st.x, st.y, target.x, target.y);
