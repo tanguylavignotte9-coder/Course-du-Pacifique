@@ -43,7 +43,10 @@ function loadOrCreateRace() {
     // redonne l'heure réelle affichée au joueur.
     const epoch = new Date();
     epoch.setHours(0, 0, 0, 0);
-    r = { seed: Math.floor(Math.random() * 1e9), epoch: epoch.getTime(), startedAt: new Date().toISOString(), players: {} };
+    // displayEpoch : ancre FIXE (minuit Paris du lancement) pour l'affichage.
+    // epoch : ancre de l'invariant t = temps réel écoulé (décalée par les
+    // sauts de temps). L'affichage suit t : une seule trame temporelle.
+    r = { seed: Math.floor(Math.random() * 1e9), epoch: epoch.getTime(), displayEpoch: epoch.getTime(), startedAt: new Date().toISOString(), players: {} };
     store.data.races["default"] = r;
     store.save();
   }
@@ -117,7 +120,7 @@ function publicSnapshot(id) {
   const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
   return {
     t: st.t,
-    epoch: race.epoch || new Date(race.startedAt).getTime(),
+    epoch: race.displayEpoch ?? race.epoch ?? new Date(race.startedAt).getTime(),
     isSuper: isSuper(id),
     player: {
       heading: st.heading, sail: st.sail, engine: st.engine,
@@ -333,12 +336,38 @@ wss.on("connection", (ws, req) => {
         const mins = Math.round(clamp(Number(c.timeSkipMin) || 0, 1, 24 * 60));
         race.epoch = (race.epoch || new Date(race.startedAt).getTime()) - mins * 60000 / TIME_MULT;
         const now = gameMinutesNow();
+        // (displayEpoch reste fixe : l'heure affichée avance avec t)
         for (const [, pst] of states) {
           while (pst.t < now) tick(pst, Math.min(MAX_STEP_MIN, now - pst.t), world);
         }
         store.save();
         st.notifSeq = (st.notifSeq || 0) + 1;
         st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⏱️ Saut de temps : +${mins} min (super user).`, kind: "info", cat: "navire" });
+      }
+      // Reset de la course : nouvelle graine (nouveau monde, nouvelles
+      // balises), navires remis à neuf, horloge re-synchronisée sur Paris.
+      if (c.resetRace === true && isSuper(id)) {
+        const epoch = new Date();
+        epoch.setHours(0, 0, 0, 0);
+        race.seed = Math.floor(Math.random() * 1e9);
+        race.epoch = epoch.getTime();
+        race.displayEpoch = epoch.getTime();
+        race.startedAt = new Date().toISOString();
+        race.beacons = undefined;
+        const fresh = buildWorld(race.seed);
+        world.PORT = fresh.PORT; world.CONTINENT = fresh.CONTINENT;
+        world.ISLANDS = fresh.ISLANDS; world.OUTPOSTS = fresh.OUTPOSTS;
+        world.BEACONS = fresh.BEACONS; world.COAST = fresh.COAST;
+        world.isLand = fresh.isLand;
+        for (const [pid] of states) {
+          const nst = newPlayerState(world, { weatherSeed: (race.seed + pid.length * 7) % 1000 });
+          nst.t = gameMinutesNow();
+          states.set(pid, nst);
+          race.players[pid] = nst;
+        }
+        store.save();
+        st.notifSeq = (st.notifSeq || 0) + 1;
+        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🔄 Course réinitialisée : nouveau monde, nouvelles balises, navires à quai. Horloge re-synchronisée sur Paris.", kind: "good", cat: "navire" });
       }
       persistPlayer(id);
       ws.send(JSON.stringify({ type: "snapshot", data: publicSnapshot(id) }));

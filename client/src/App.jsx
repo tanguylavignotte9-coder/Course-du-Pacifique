@@ -505,7 +505,9 @@ export default function App() {
           <Btn onClick={() => cmd({ timeSkipMin: Math.round(nextPhase(snap.t, 8)) })}>☀️ Jour</Btn>
           <Btn onClick={() => cmd({ timeSkipMin: Math.round(nextPhase(snap.t, 18)) })}>🌇 Crépuscule</Btn>
           <Btn onClick={() => cmd({ timeSkipMin: Math.round(nextPhase(snap.t, 20)) })}>🌙 Nuit</Btn>
-          <span className="text-[11px] text-amber-200/60">La simulation minute par minute est rejouée côté serveur (pulsations et détections conservées).</span>
+          <span className="mx-1 text-amber-700">|</span>
+          <Btn className="!bg-rose-900/70 hover:!bg-rose-800" onClick={() => { if (confirm("Réinitialiser la course ? Nouveau monde, nouvelles balises, tous les navires à quai, scores remis à zéro. Irréversible.")) cmd({ resetRace: true }); }}>🔄 Reset course</Btn>
+          <span className="text-[11px] text-amber-200/60">Sauts : la simulation est rejouée minute par minute. Après un saut, l'heure affichée avance devant l'heure de Paris (le jeu vit plus vite) — le bouton Reset re-synchronise sur Paris.</span>
         </div>
       )}
 

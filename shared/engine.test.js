@@ -83,3 +83,15 @@ test("livraison au port marque les points", () => {
   assert.ok(st.score > 0, "les points doivent rentrer");
   assert.equal(st.codes.length, 0);
 });
+
+test("point aux étoiles : réussit la nuit sous ciel clair et réduit l'incertitude", () => {
+  const w = buildWorld(7);
+  // conditions claires la nuit (seed 0, position 45,45, t=1500 = 1h)
+  const st = newPlayerState(w, { weatherSeed: 0 });
+  st.t = 1500; st.x = 45; st.y = 45; st.heading = 90;
+  st.unc = 25;
+  for (let i = 0; i < 200; i++) tick(st, 1, w);
+  assert.ok(st.unc < 25, `l'incertitude doit diminuer (actuel: ${st.unc})`);
+  const navNotifs = st.notifications.filter((n) => n.cat === "nav").map((n) => n.text);
+  assert.ok(navNotifs.some((t) => t.includes("Point aux étoiles")), "une notif point aux étoiles doit exister");
+});
