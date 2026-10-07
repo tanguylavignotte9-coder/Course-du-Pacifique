@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { login, GameSocket } from "./net.js";
+import Scene from "./Scene.jsx";
 import {
   MAP, KM_PER_DEG, KM_PER_NM, DEG_NM, RARITY_STYLE,
   distNm, dirSensitivity, DOUGLAS_LABEL,
@@ -369,7 +370,8 @@ export default function App() {
   const sock = sockRef.current;
   const player = snap?.player;
   const weather = snap?.weather;
-  const hour = snap ? (snap.t / 60) % 24 : 12;
+  // Heure de jeu : la vraie heure de Paris dérivée de l'epoch + minutes de jeu
+  const hour = snap ? ((new Date(snap.epoch + snap.t * 60000).getHours() + new Date(snap.epoch + snap.t * 60000).getMinutes() / 60)) : 12;
   const daylight = hour >= 6 && hour < 20;
   const cmd = (data) => sock && sock.command(data);
 
@@ -392,6 +394,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen p-3 text-slate-100 sm:p-4">
+      {/* Scène d'ambiance animée : ciel, soleil, nuages, pluie, mer, immersion */}
+      {snap && <Scene hour={hour} weather={weather} underwater={player.location === "underwater"} />}
       {/* En-tête */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
         <div>
