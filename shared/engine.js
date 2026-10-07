@@ -312,9 +312,64 @@ export function shipVisibleKm(target, night) {
   if (night && target.light) km = Math.max(km, SHIP_VIS_LIGHT);
   return km;
 }
-// Collision : distance sous laquelle deux navires sont stoppés nets
-// (pas de dégâts dans cette version). ~90 m.
-export const SHIP_COLLISION_NM = 0.05;
+// ---------- Dimensions du navire et collision précise ----------
+// Coque : 15 m de long, 5 m de large. Collision = rectangles orientés
+// (OBB) qui s'intersectent (SAT) — précis au mètre, pas un simple rayon.
+export const SHIP_LEN_M = 15;
+export const SHIP_WID_M = 5;
+export const M_PER_DEG = 111120; // 1 deg = 111.12 km
+// Vrai test d'intersection entre les deux coques orientées (deg units).
+// SAT sur les 4 axes (2 par rectangle).
+export function shipsCollide(ax, ay, aHead, bx, by, bHead) {
+  const ha = SHIP_LEN_M / 2 / M_PER_DEG; // demi-longueur en degres
+  const wa = SHIP_WID_M / 2 / M_PER_DEG;
+  const dx = bx - ax, dy = by - ay;
+  // pré-écart rapide : si les centres sont à plus d'une diagonale, pas de contact
+  if (dx * dx + dy * dy > (2 * ha) * (2 * ha) * 1.2) return false;
+  const axes = [];
+  for (const h of [aHead, bHead]) {
+    const r = (h * Math.PI) / 180;
+    axes.push([Math.sin(r), Math.cos(r)]); // axe longitudinal
+    axes.push([Math.cos(r), -Math.sin(r)]); // axe transversal
+  }
+  const corners = (x, y, h) => {
+    const r = (h * Math.PI) / 180;
+    const lx = Math.sin(r) * ha, ly = Math.cos(r) * ha;
+    const wx = Math.cos(r) * wa, wy = -Math.sin(r) * wa;
+    return [
+      [x + lx + wx, y + ly + wy], [x + lx - wx, y + ly - wy],
+      [x - lx + wx, y - ly + wy], [x - lx - wx, y - ly - wy],
+    ];
+  };
+  const ca = corners(ax, ay, aHead), cb = corners(bx, by, bHead);
+  for (const [ux, uy] of axes) {
+    let aMin = Infinity, aMax = -Infinity, bMin = Infinity, bMax = -Infinity;
+    for (const [cx, cy] of ca) {
+      const d = cx * ux + cy * uy;
+      aMin = Math.min(aMin, d); aMax = Math.max(aMax, d);
+    }
+    for (const [cx, cy] of cb) {
+      const d = cx * ux + cy * uy;
+      bMin = Math.min(bMin, d); bMax = Math.max(bMax, d);
+    }
+    if (aMax < bMin || bMax < aMin) return false; // axe séparant trouvé
+  }
+  return true;
+}
+// Position de spawn d'un navire au port : quai décalé le long de la côte
+// pour que les navires ne se chevauchent pas (espacement 40 m, dans la
+// zone d'accostage de 500 m). idx = rangée d'amarrage du joueur.
+export function spawnPosition(world, idx) {
+  const eastCoast = world.CONTINENT.x1 <= MAP / 2;
+  const sx = eastCoast ? world.PORT.x + 0.0027 : world.PORT.x - 0.0027;
+  const sy = world.PORT.y;
+  if (!idx) return { x: sx, y: sy };
+  // décalage perpendiculaire au cap de sortie (le long de la côte)
+  const dir = eastCoast ? 1 : -1; // vers le large selon le coin
+  const slot = Math.ceil(idx / 2) * (idx % 2 === 0 ? 1 : -1); // +1, -1, +2, -2...
+  const off = (slot * 40) / M_PER_DEG; // 40 m par slot d'amarrage
+  return { x: sx, y: sy + off * dir * (eastCoast ? 1 : 1) };
+}
 
 // ---------- Radio ----------
 export const signalStrengthKm = (dKm) => Math.max(0, Math.round(100 * (1 - dKm / 2000)));
@@ -352,12 +407,13 @@ export function detectBeacon(st, b, world) {
 // tMin : minutes de jeu écoulées depuis le départ de la course (référence
 // partagée par tous les joueurs — même horloge de course).
 export function newPlayerState(world, opts = {}) {
+  const sp = spawnPosition(world, opts.spawnIdx || 0);
+  const sx = sp.x;
   const eastCoast = world.CONTINENT.x1 <= MAP / 2;
-  const sx = eastCoast ? world.PORT.x + 0.0027 : world.PORT.x - 0.0027;
   return {
-    t: 0, x: sx, y: world.PORT.y, heading: eastCoast ? 90 : 270,
+    t: 0, x: sp.x, y: sp.y, heading: eastCoast ? 90 : 270,
     sail: 0.8, engine: 0.8,
-    estX: sx, estY: world.PORT.y, unc: 0,
+    estX: sp.x, estY: sp.y, unc: 0,
     navFix: { active: false, startT: 0, doneNight: null, lastTryT: null },
     location: "surface", mast: false, engineOn: false, electricOn: false, periscope: false, vkn: 0, light: false,
     fuel: 100, battery: 100, food: 100, score: 0, codes: [],

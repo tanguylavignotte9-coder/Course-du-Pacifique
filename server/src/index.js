@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distNm, DELIVERY_R_NM, shipVisibleKm, SHIP_COLLISION_NM, KM_PER_NM } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distNm, DELIVERY_R_NM, shipVisibleKm, shipsCollide, KM_PER_NM } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -84,7 +84,14 @@ function ensureState(id) {
   if (!states.has(id)) {
     // Météo UNIFORME : le seed météo est celui de la course — tous les
     // joueurs vivent le même ciel aux mêmes positions.
-    const st = newPlayerState(world, { weatherSeed: race.seed % 1000 });
+    // Spawn : slot d'amarrage unique par joueur (pas de chevauchement).
+    if (!race.spawnOrder) race.spawnOrder = {};
+    if (race.spawnOrder[id] == null) {
+      race.spawnOrder[id] = Object.keys(race.spawnOrder).length;
+      store.save();
+    }
+    const spawnIdx = race.spawnOrder[id];
+    const st = newPlayerState(world, { weatherSeed: race.seed % 1000, spawnIdx });
     st.t = gameMinutesNow();
     states.set(id, st);
     persistPlayer(id);
@@ -172,14 +179,14 @@ function multiplayerPass(now) {
     st.sawShips = seen;
     if (st.notifications.length > 150) st.notifications.length = 150;
   }
-  // Collisions : navires trop proches stoppés nets (pas de dégâts).
-  // La vitesse de chaque navire en collision est remise à zéro ; ils
-  // pourront se séparer en changeant de cap.
+  // Collisions : coques 15 m x 5 m en rectangles ORIENTÉS (OBB/SAT),
+  // précises au mètre. La vitesse de chaque navire en contact est stoppée.
+  const HIST_NM = 0.016; // ~30 m : hystérésis pour débloquer (une demi-longueur)
   for (let i = 0; i < ids.length; i++) {
     for (let j = i + 1; j < ids.length; j++) {
       const a = states.get(ids[i]), b = states.get(ids[j]);
       if (a.location !== b.location) continue; // surface vs plongée : pas de contact
-      if (distNm(a.x, a.y, b.x, b.y) < SHIP_COLLISION_NM) {
+      if (shipsCollide(a.x, a.y, a.heading + (a.compDev || 0), b.x, b.y, b.heading + (b.compDev || 0))) {
         for (const st of [a, b]) {
           if (!st.collided) {
             st.notifSeq = (st.notifSeq || 0) + 1;
@@ -191,7 +198,7 @@ function multiplayerPass(now) {
       }
     }
   }
-  // Levée du blocage collision dès séparation
+  // Levée du blocage dès séparation nette des coques (hystérésis)
   for (const id of ids) {
     const st = states.get(id);
     if (!st.collided) continue;
@@ -199,7 +206,7 @@ function multiplayerPass(now) {
     for (const oid of ids) {
       if (oid === id) continue;
       const o = states.get(oid);
-      if (o.location === st.location && distNm(st.x, st.y, o.x, o.y) < SHIP_COLLISION_NM * 1.5) touching = true;
+      if (o.location === st.location && distNm(st.x, st.y, o.x, o.y) < HIST_NM) touching = true;
     }
     if (!touching) st.collided = false;
   }
@@ -461,6 +468,7 @@ wss.on("connection", (ws, req) => {
         race.displayEpoch = epoch.getTime();
         race.startedAt = new Date().toISOString();
         race.beacons = undefined;
+        race.spawnOrder = {};
         const fresh = buildWorld(race.seed);
         world.PORT = fresh.PORT; world.CONTINENT = fresh.CONTINENT;
         world.ISLANDS = fresh.ISLANDS; world.OUTPOSTS = fresh.OUTPOSTS;
