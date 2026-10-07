@@ -209,6 +209,9 @@ function TopView({ snap }) {
 }
 
 // ---------- Carte de navigation (outil papier : estimé + punaises) ----------
+// Reprise fidèle du proto : zoom molette/pincement centré curseur, pan par
+// glissement, outils punaise (1 clic) et mesure (2 clics) avec conversion
+// letterbox exacte, suppression, indicateur du 1er point.
 function NavMap({ snap, sock }) {
   const S = 10;
   const MAP_PX = MAP * S;
@@ -216,9 +219,28 @@ function NavMap({ snap, sock }) {
   const py = (y) => (MAP - y) * S;
   const [vb, setVB] = useState({ x: 0, y: 0, w: MAP_PX });
   const svgRef = useRef(null);
+  const ptrs = useRef({});
   const drag = useRef(null);
+  const pinch = useRef(null);
   const [tool, setTool] = useState(null);
+  const [measurePend, setMeasurePend] = useState(null);
+
   const clampVB = (v) => ({ ...v, x: clamp(v.x, 0, MAP_PX - v.w), y: clamp(v.y, 0, MAP_PX - v.w) });
+  // Zoom d'un facteur autour d'un point (coordonnées viewBox)
+  const zoomAt = (v, factor, zx, zy) => {
+    const w = clamp(v.w / factor, MAP_PX / 8, MAP_PX);
+    const k = w / v.w;
+    return clampVB({ x: zx - (zx - v.x) * k, y: zy - (zy - v.y) * k, w });
+  };
+  // Conversion écran -> viewBox : gère le letterbox (aspect-ratio préservé)
+  const vbPoint = (v, rect, cx, cy) => {
+    const scale = Math.min(rect.width / v.w, rect.height / v.w);
+    const ox = (rect.width - v.w * scale) / 2;
+    const oy = (rect.height - v.w * scale) / 2;
+    return { x: v.x + (cx - rect.left - ox) / scale, y: v.y + (cy - rect.top - oy) / scale };
+  };
+
+  // Molette : zoom centré curseur
   useEffect(() => {
     const el = svgRef.current;
     if (!el) return;
@@ -226,65 +248,98 @@ function NavMap({ snap, sock }) {
       e.preventDefault();
       const rect = el.getBoundingClientRect();
       setVB((v) => {
-        const scale = Math.min(rect.width / v.w, rect.height / v.w);
-        const zx = v.x + (e.clientX - rect.left) / scale;
-        const zy = v.y + (e.clientY - rect.top) / scale;
-        const w = clamp(v.w / Math.exp(-e.deltaY * 0.0012), MAP_PX / 8, MAP_PX);
-        const k = w / v.w;
-        return clampVB({ x: zx - (zx - v.x) * k, y: zy - (zy - v.y) * k, w });
+        const p = vbPoint(v, rect, e.clientX, e.clientY);
+        return zoomAt(v, Math.exp(-e.deltaY * 0.0012), p.x, p.y);
       });
     };
     el.addEventListener("wheel", onW, { passive: false });
     return () => el.removeEventListener("wheel", onW);
   }, []);
+
   const world = snap.world;
   const player = snap.player;
   const kmOf = (a, b) => distNm(a[0], a[1], b[0], b[1]) * KM_PER_NM;
+
   return (
     <div className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
       <h2 className="text-sm font-semibold text-sky-300">Carte de navigation</h2>
       <div className="grid grid-cols-2 gap-2">
-        <Btn active={tool === "pin"} onClick={() => setTool(tool === "pin" ? null : "pin")}>📌 Punaise</Btn>
-        <Btn active={tool === "measure"} onClick={() => setTool(tool === "measure" ? null : "measure")}>📏 Mesure</Btn>
+        <Btn active={tool === "pin"} onClick={() => { setTool(tool === "pin" ? null : "pin"); setMeasurePend(null); }}>📌 Punaise{tool === "pin" ? " — cliquer la carte" : ""}</Btn>
+        <Btn active={tool === "measure"} onClick={() => { setTool(tool === "measure" ? null : "measure"); setMeasurePend(null); }}>📏 Mesure{tool === "measure" ? (measurePend ? " — 2ᵉ point" : " — 1ᵉʳ point") : ""}</Btn>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Btn onClick={() => sock.command({ pins: player.pins.slice(0, -1) })}>🗑 Dernière punaise</Btn>
+        <Btn onClick={() => sock.command({ measures: [] })}>🗑 Mesures</Btn>
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex gap-1.5">
+          <Btn className="!px-2.5" onClick={() => setVB((v) => zoomAt(v, 1.5, v.x + v.w / 2, v.y + v.w / 2))}>➕</Btn>
+          <Btn className="!px-2.5" onClick={() => setVB((v) => zoomAt(v, 1 / 1.5, v.x + v.w / 2, v.y + v.w / 2))}>➖</Btn>
+          <Btn className="!px-2.5" onClick={() => setVB({ x: 0, y: 0, w: MAP_PX })}>⤢</Btn>
+        </div>
+        <span className="text-xs tabular-nums text-slate-400">Zoom ×{((MAP * S) / vb.w).toFixed(1)}</span>
       </div>
       <svg
         ref={svgRef}
-        viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.w}`}
-        className="w-full rounded-lg"
+        viewBox={`${vb.x.toFixed(2)} ${vb.y.toFixed(2)} ${vb.w.toFixed(2)} ${vb.w.toFixed(2)}`}
+        className={`w-full rounded-lg ${tool ? "cursor-crosshair" : "cursor-grab"}`}
         style={{ background: "#8fb4d4", touchAction: "none" }}
         onPointerDown={(e) => {
           e.currentTarget.setPointerCapture(e.pointerId);
-          drag.current = { sx: e.clientX, sy: e.clientY, vb, moved: 0, pend: null };
+          ptrs.current[e.pointerId] = { x: e.clientX, y: e.clientY };
+          const ids = Object.keys(ptrs.current);
+          if (ids.length === 1) {
+            drag.current = { id: e.pointerId, sx: e.clientX, sy: e.clientY, vb, moved: 0 };
+          } else if (ids.length === 2) {
+            drag.current = null;
+            const [a, b] = Object.values(ptrs.current);
+            pinch.current = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, vb };
+          }
         }}
         onPointerMove={(e) => {
-          const d = drag.current;
-          if (!d) return;
+          const pt = ptrs.current[e.pointerId];
+          if (pt) { pt.x = e.clientX; pt.y = e.clientY; }
           const rect = e.currentTarget.getBoundingClientRect();
-          const scale = Math.min(rect.width / d.vb.w, rect.height / d.vb.w);
-          d.moved = Math.max(d.moved, Math.hypot(e.clientX - d.sx, e.clientY - d.sy));
-          setVB(clampVB({ x: d.vb.x - (e.clientX - d.sx) / scale, y: d.vb.y - (e.clientY - d.sy) / scale, w: d.vb.w }));
+          const ids = Object.keys(ptrs.current);
+          if (ids.length >= 2 && pinch.current) {
+            // Pincement tactile : zoom centré entre les doigts
+            const [a, b] = Object.values(ptrs.current);
+            const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+            const p = vbPoint(pinch.current.vb, rect, (a.x + b.x) / 2, (a.y + b.y) / 2);
+            setVB(zoomAt(pinch.current.vb, d / pinch.current.d0, p.x, p.y));
+          } else if (drag.current && e.pointerId === drag.current.id) {
+            const d = drag.current;
+            const scale = Math.min(rect.width / d.vb.w, rect.height / d.vb.w);
+            d.moved = Math.max(d.moved, Math.hypot(e.clientX - d.sx, e.clientY - d.sy));
+            setVB(clampVB({ x: d.vb.x - (e.clientX - d.sx) / scale, y: d.vb.y - (e.clientY - d.sy) / scale, w: d.vb.w }));
+          }
         }}
         onPointerUp={(e) => {
+          delete ptrs.current[e.pointerId];
           const d = drag.current;
           drag.current = null;
-          if (!d || d.moved > 5 || !tool) return;
+          // Clic franc (pas un glissement) : outils punaise / mesure
+          if (Object.keys(ptrs.current).length > 0 || !d || d.moved > 5 || !tool) return;
           const rect = e.currentTarget.getBoundingClientRect();
-          const scale = Math.min(rect.width / d.vb.w, rect.height / d.vb.w);
-          const xDeg = (d.vb.x + (e.clientX - rect.left) / scale) / S;
-          const yDeg = MAP - (d.vb.y + (e.clientY - rect.top) / scale) / S;
+          const p = vbPoint(d.vb, rect, e.clientX, e.clientY);
+          const xDeg = p.x / S;
+          const yDeg = MAP - p.y / S;
           if (tool === "pin") {
-            const pins = [...player.pins, { label: String.fromCharCode(65 + player.pins.length), x: xDeg, y: yDeg }];
-            sock.command({ pins });
+            if (player.pins.length < 26) {
+              sock.command({ pins: [...player.pins, { label: String.fromCharCode(65 + player.pins.length), x: xDeg, y: yDeg }] });
+            }
           } else if (tool === "measure") {
-            if (!d.pend) {
-              drag.current = { ...d, pend: [xDeg, yDeg] };
+            if (!measurePend) {
+              setMeasurePend([xDeg, yDeg]);
             } else {
-              sock.command({ measures: [...player.measures, { a: d.pend, b: [xDeg, yDeg] }] });
+              sock.command({ measures: [...player.measures, { a: measurePend, b: [xDeg, yDeg] }] });
+              setMeasurePend(null);
             }
           }
         }}
+        onPointerLeave={(e) => { delete ptrs.current[e.pointerId]; }}
       >
-        {/* Graticule 5° / 15° */}
+        {/* Graticule 5° / 15°, labels flottants */}
         {Array.from({ length: 11 }, (_, k) => (k + 1) * 5).map((d) => (
           <g key={d}>
             <line x1={d * S} y1={0} x2={d * S} y2={MAP_PX} stroke="rgba(15,42,71,0.35)" strokeWidth={d % 15 === 0 ? 1 : 0.5} />
@@ -304,19 +359,22 @@ function NavMap({ snap, sock }) {
             <text x={px(o.x) + 7} y={py(o.y) + 3} fontSize="9" fill="#3d2f14">Poste</text>
           </g>
         ))}
-        {/* Mesures */}
+        {/* Mesures : segments pointillés + distance */}
         {player.measures.map((m, idx) => {
           const km = Math.round(kmOf(m.a, m.b));
+          const mx = (px(m.a[0]) + px(m.b[0])) / 2, my = (py(m.a[1]) + py(m.b[1])) / 2;
           return (
             <g key={idx}>
               <line x1={px(m.a[0])} y1={py(m.a[1])} x2={px(m.b[0])} y2={py(m.b[1])} stroke="#0f2a47" strokeWidth="1.4" strokeDasharray="6 4" />
               <circle cx={px(m.a[0])} cy={py(m.a[1])} r={2.5} fill="#0f2a47" />
               <circle cx={px(m.b[0])} cy={py(m.b[1])} r={2.5} fill="#0f2a47" />
-              <text x={(px(m.a[0]) + px(m.b[0])) / 2} y={(py(m.a[1]) + py(m.b[1])) / 2 - 4} fontSize="11" fill="#0f2a47" fontWeight="bold" textAnchor="middle" stroke="#cfe0f0" strokeWidth="2.5" paintOrder="stroke">{km} km</text>
+              <text x={mx} y={my - 4} fontSize="11" fill="#0f2a47" fontWeight="bold" textAnchor="middle" stroke="#cfe0f0" strokeWidth="2.5" paintOrder="stroke">{km} km</text>
             </g>
           );
         })}
-        {/* Punaises */}
+        {/* 1er point de mesure en attente */}
+        {measurePend && <circle cx={px(measurePend[0])} cy={py(measurePend[1])} r={3} fill="none" stroke="#0f2a47" strokeWidth="1.4" />}
+        {/* Punaises A, B, C... */}
         {player.pins.map((p, idx) => (
           <g key={idx}>
             <circle cx={px(p.x)} cy={py(p.y)} r={5} fill="#dc2626" stroke="#7f1d1d" strokeWidth="1" />
@@ -329,7 +387,7 @@ function NavMap({ snap, sock }) {
         <line x1={px(player.estX)} y1={py(player.estY)} x2={px(player.estX) + Math.sin((player.heading * Math.PI) / 180) * 16} y2={py(player.estY) - Math.cos((player.heading * Math.PI) / 180) * 16} stroke="#dc2626" strokeWidth="1.2" />
       </svg>
       <p className="text-[11px] leading-snug text-slate-500">
-        🔴 position estimée — cercle = incertitude, échelle exacte · molette : zoom · glisser : déplacer
+        Terres et avant-postes connus · 🔴 position estimée — cercle = incertitude, échelle exacte · trait rouge = cap · molette/pincement : zoom (×1–×8) · glisser : déplacer
         {player.pins.length > 0 && ` · 📌 ${player.pins.map((p) => `${p.label} ${p.y.toFixed(1)}°N ${p.x.toFixed(1)}°E`).join(" · ")}`}
       </p>
     </div>
