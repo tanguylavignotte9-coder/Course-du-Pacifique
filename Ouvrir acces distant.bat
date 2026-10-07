@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM Pacific Chase — acces distant automatique (tunnel Cloudflare)
+REM Pacific Chase - acces distant automatique (tunnel Cloudflare)
 REM 1 clic : telecharge cloudflared si absent, demarre le jeu,
 REM ouvre le tunnel, affiche l'URL a donner aux joueurs.
 REM ============================================================
@@ -8,7 +8,7 @@ setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 echo ============================================================
-echo   Pacific Chase — ouverture de l'acces distant
+echo   Pacific Chase - ouverture de l'acces distant
 echo ============================================================
 echo.
 
@@ -17,7 +17,6 @@ set CF=cloudflared.exe
 if not exist "%CF%" (
   where cloudflared >nul 2>nul
   if not errorlevel 1 (
-    echo cloudflared trouve sur le systeme : copie dans le dossier du projet...
     for /f "delims=" %%p in ('where cloudflared') do copy /y "%%p" cloudflared.exe >nul
   ) else (
     echo cloudflared absent : telechargement automatique...
@@ -31,10 +30,9 @@ if not exist "%CF%" (
   pause
   exit /b 1
 )
-REM verification : l'exe doit vraiment s'executer
 cloudflared.exe --version >nul 2>&1
 if errorlevel 1 (
-  echo [ERREUR] cloudflared.exe ne s'execute pas (telechargement incomplet ?).
+  echo [ERREUR] cloudflared.exe ne s'execute pas correctement.
   echo Supprimez cloudflared.exe du dossier du projet et relancez ce script.
   pause
   exit /b 1
@@ -46,6 +44,7 @@ powershell -NoProfile -Command "try{Invoke-WebRequest -UseBasicParsing -Uri 'htt
 if errorlevel 1 (
   echo Demarrage du serveur de jeu...
   start "Pacific Chase serveur" /min cmd /c ""%~dp0Start Pacific Chase.bat""
+  echo Attente du demarrage du serveur ^(8 s^)...
   timeout /t 8 /nobreak >nul
 ) else (
   echo Serveur de jeu deja en cours.
@@ -57,7 +56,7 @@ if not exist data mkdir data
 del /q data\tunnel.log 2>nul
 start "Pacific Chase tunnel" /min cmd /c cloudflared.exe tunnel --url http://localhost:8080 ^>data\tunnel.log 2^>^&1
 
-echo Recherche de l'URL publique (jusqu'a 30 s)...
+echo Recherche de l'URL publique ^(jusqu'a 30 s^)...
 set URL=
 for /l %%i in (1,1,30) do (
   if not defined URL (
@@ -85,7 +84,7 @@ echo.
 echo   URL a donner a vos joueurs :
 echo   %URL%
 echo.
-echo   (aussi enregistree dans data\tunnel-url.txt)
+echo   ^(aussi enregistree dans data\tunnel-url.txt^)
 echo   Pour couper : "Fermer acces distant.bat"
 echo ============================================================
 echo.

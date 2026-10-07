@@ -1,5 +1,5 @@
 @echo off
-REM Pacific Chase — demarrage en un clic (Windows)
+REM Pacific Chase - demarrage en un clic (Windows)
 REM Installe et build si necessaire, lance le serveur, ouvre le navigateur.
 REM Rebuild automatique quand les sources du client sont plus recentes
 REM que le build (evite de servir une vielle interface).
@@ -18,7 +18,7 @@ if not exist node_modules (
   call npm install || goto :fail
 )
 
-REM Rebuild si le build est absent OU si une source est plus recente que le build
+REM Rebuild si le build est absent OU si une source est plus recente
 set NEEDBUILD=0
 if not exist client\dist\index.html set NEEDBUILD=1
 if "%NEEDBUILD%"=="0" (
