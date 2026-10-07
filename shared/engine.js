@@ -237,8 +237,8 @@ const fbm = (x, y, s) =>
   0.6 * vnoise(x, y, s) + 0.3 * vnoise(x * 2.1, y * 2.1, s + 1.3) + 0.1 * vnoise(x * 4.3, y * 4.3, s + 2.7);
 
 // Météo à (x, y) au temps tMin (minutes de jeu). Champs fBm 3 octaves avec
-// advection ouest→est, remappage quantile vers les archétypes, grand banc de
-// brouillard dédié. Déterministe : identique serveur/client.
+// advection ouest→est, remappage quantile vers les archétypes. Déterministe :
+// identique serveur/client. Le brouillard est uniquement l'archétype dédié.
 export function weatherAt(x, y, tMin, seed) {
   const p = seed || 0;
   const h = tMin / 60;
@@ -260,8 +260,6 @@ export function weatherAt(x, y, tMin, seed) {
   const rain = clamp(mix(A.rain, B.rain), 0, 100);
   let visibility = Math.max(0.3, mix(A.vis, B.vis));
   const storm = mix(A.storm ? 1 : 0, B.storm ? 1 : 0) > 0.5;
-  const bank = vnoise((x - 0.15 * h) / 20, (y + 0.02 * h) / 20, p + 5.7);
-  if (bank > 0.87) visibility = Math.min(visibility, 0.5);
   const fog = visibility < 0.8 && !storm;
   const windDir = (220 + 120 * Math.sin(x * 0.08 + y * 0.06 + h * 0.05 + p * 1.7) + 360) % 360;
   const temp = 22 + 6 * Math.sin(y * 0.1) + mix(A.temp, B.temp);
