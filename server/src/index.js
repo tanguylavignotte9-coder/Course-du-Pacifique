@@ -1,0 +1,250 @@
+import fsSync from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import express from "express";
+import { WebSocketServer } from "ws";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distNm, DELIVERY_R_NM } from "../../shared/engine.js";
+import { Store } from "./store.js";
+import { Auth } from "./auth.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, "../..");
+const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
+// Multiplicateur de temps (debug uniquement ; production = temps réel ×1).
+const TIME_MULT = process.env.TIME_MULT ? Number(process.env.TIME_MULT) : 1;
+const TICK_MS = 1000; // tick serveur : 1 s réelle
+const MAX_STEP_MIN = 5; // pas de simulation max 5 min de jeu (design)
+const clamp01 = (v) => clamp(v, 0, 1);
+
+// ---------- Persistance & comptes ----------
+const store = new Store(path.join(ROOT, "data"));
+const auth = new Auth(store);
+
+function readAdminSecret() {
+  try {
+    return fsSync.readFileSync(path.join(ROOT, "data/admin-secret.txt"), "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+
+// ---------- Course ----------
+// Une course unique par défaut (solo d'abord). Le temps de jeu est le temps
+// réel écoulé depuis `startedAt` (heure de Paris en mémoire, ISO en base),
+// accéléré par TIME_MULT pour le debug.
+function loadOrCreateRace() {
+  let r = store.data.races["default"];
+  let fresh = false;
+  if (!r) {
+    fresh = true;
+    r = { seed: Math.floor(Math.random() * 1e9), startedAt: new Date().toISOString(), players: {} };
+    store.data.races["default"] = r;
+    store.save();
+  }
+  const world = buildWorld(r.seed);
+  if (!fresh && r.beacons) {
+    for (const b of world.BEACONS) {
+      const s = r.beacons[b.id];
+      if (s && !s.active) b.active = false;
+    }
+  }
+  return { race: r, world };
+}
+const { race, world } = loadOrCreateRace();
+
+// Minutes de jeu écoulées depuis le départ (temps réel × TIME_MULT)
+function gameMinutesNow() {
+  const ms = Date.now() - new Date(race.startedAt).getTime();
+  return Math.max(0, ms / 60000) * TIME_MULT;
+}
+
+const states = new Map(); // accountId -> player state (engine)
+for (const [id, saved] of Object.entries(race.players || {})) {
+  if (saved) {
+    states.set(id, saved);
+    states.get(id).t = gameMinutesNow();
+  }
+}
+function persistPlayer(id) {
+  race.players[id] = states.get(id);
+  store.save();
+}
+function ensureState(id) {
+  if (!states.has(id)) {
+    const st = newPlayerState(world, { weatherSeed: (race.seed + id.length * 7) % 1000 });
+    st.t = gameMinutesNow();
+    states.set(id, st);
+    persistPlayer(id);
+  }
+  return states.get(id);
+}
+
+// ---------- Boucle de simulation ----------
+// Le serveur est AUTORITATIF : chaque seconde réelle, il avance chaque navire
+// au temps de course courant, par pas bornés (5 min de jeu max, design).
+let lastPersist = 0;
+setInterval(() => {
+  const now = gameMinutesNow();
+  for (const [, st] of states) {
+    while (st.t < now) {
+      tick(st, Math.min(MAX_STEP_MIN, now - st.t), world);
+    }
+  }
+  if (Date.now() - lastPersist > 60000) {
+    lastPersist = Date.now();
+    for (const [id] of states) race.players[id] = states.get(id);
+    race.beacons = Object.fromEntries(world.BEACONS.map((b) => [b.id, { active: b.active }]));
+    store.save();
+  }
+}, TICK_MS);
+
+// ---------- HTTP ----------
+const app = express();
+app.use(express.json());
+app.use(express.static(path.join(ROOT, "client/dist")));
+
+function publicSnapshot(id) {
+  const st = ensureState(id);
+  const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
+  return {
+    t: st.t,
+    player: {
+      heading: st.heading, sail: st.sail, engine: st.engine,
+      location: st.location, mast: st.mast, engineOn: st.engineOn,
+      electricOn: st.electricOn, periscope: st.periscope, vkn: st.vkn,
+      fuel: st.fuel, battery: st.battery, food: st.food,
+      score: st.score, codes: st.codes, unc: st.unc,
+      estX: st.estX, estY: st.estY,
+      travelledNm: st.travelledNm, dailyNm: st.dailyNm,
+      navFixActive: st.navFix.active,
+      grounded: st.grounded,
+      antBeam: st.antBeam, antOrient: st.antOrient,
+      notifications: st.notifications.slice(0, 60),
+      pins: st.pins, measures: st.measures,
+    },
+    world: {
+      continent: world.CONTINENT.verts,
+      port: world.PORT,
+      islands: world.ISLANDS.map((i) => i.verts),
+      outposts: world.OUTPOSTS,
+      activeBeaconIds: world.BEACONS.filter((b) => b.active).map((b) => b.id),
+      beaconCount: world.BEACONS.length,
+    },
+    weather: w,
+    view: computeView(st, world),
+  };
+}
+
+app.post("/api/login", (req, res) => {
+  const { name, password } = req.body || {};
+  const token = auth.login(name, password);
+  if (!token) return res.status(401).json({ error: "identifiants invalides" });
+  const id = auth.accountOf(token);
+  ensureState(id);
+  res.setHeader("Set-Cookie", `pc_token=${token}; Path=/; HttpOnly; SameSite=Lax`);
+  res.json({ token, account: id });
+});
+app.post("/api/account", (req, res) => {
+  const secret = process.env.ADMIN_SECRET || readAdminSecret();
+  if (!secret || !req.body || req.body.adminSecret !== secret)
+    return res.status(403).json({ error: "secret admin invalide" });
+  try {
+    const id = auth.createAccount(req.body.name, req.body.password);
+    res.json({ account: id });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Service météo de quai (prévision parfaite J+15, design). Réservé aux
+// joueurs amarrés : port principal ou avant-poste, en surface. La grille 2°
+// est calculée à l'instant demandé (t + h heures).
+app.get("/api/wx", (req, res) => {
+  const token = req.headers.authorization?.replace(/^Bearer /, "")
+    || (req.headers.cookie || "").match(/pc_token=([^;]+)/)?.[1];
+  const account = token && auth.accountOf(token);
+  if (!account) return res.status(401).json({ error: "auth requise" });
+  const st = ensureState(account);
+  const atDock = st.location === "surface" &&
+    (distNm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_NM ||
+     world.OUTPOSTS.some((o) => distNm(st.x, st.y, o.x, o.y) < DELIVERY_R_NM));
+  if (!atDock) return res.status(403).json({ error: "service disponible à quai uniquement" });
+  const h = clamp(Number(req.query.h) || 0, 0, 15 * 24);
+  const cells = [];
+  for (let gx = 0; gx < 30; gx++)
+    for (let gy = 0; gy < 30; gy++) {
+      const w = weatherAt(gx * 2 + 1, gy * 2 + 1, st.t + h * 60, st.weatherSeed);
+      cells.push({ x: gx * 2 + 1, y: gy * 2 + 1, clouds: w.clouds, rain: w.rain, storm: w.storm, fog: w.fog });
+    }
+  const here = weatherAt(st.x, st.y, st.t + h * 60, st.weatherSeed);
+  res.json({ t: st.t, h, cells, here });
+});
+
+const server = app.listen(PORT, () => {
+  console.log(`Pacific Chase — serveur prêt sur http://localhost:${PORT} (×${TIME_MULT})`);
+  console.log(`Départ de la course : ${race.startedAt}`);
+});
+const wss = new WebSocketServer({ server });
+
+const sockets = new Map(); // accountId -> Set<ws>
+wss.on("connection", (ws, req) => {
+  let token = null;
+  const m = (req.headers.cookie || "").match(/pc_token=([^;]+)/);
+  if (m) token = m[1];
+  const url = new URL(req.url, "http://localhost");
+  if (!token) token = url.searchParams.get("token");
+  const account = token && auth.accountOf(token);
+  if (!account) { ws.close(4401, "auth requise"); return; }
+  const id = account;
+  ensureState(id);
+  if (!sockets.has(id)) sockets.set(id, new Set());
+  sockets.get(id).add(ws);
+
+  ws.send(JSON.stringify({ type: "snapshot", data: publicSnapshot(id) }));
+
+  ws.on("message", (buf) => {
+    let msg;
+    try { msg = JSON.parse(buf.toString()); } catch { return; }
+    const st = ensureState(id);
+    if (msg.type === "command") {
+      const c = msg.data || {};
+      if (typeof c.heading === "number") st.heading = ((Math.round(c.heading) % 360) + 360) % 360;
+      if (typeof c.sail === "number") st.sail = clamp01(c.sail);
+      if (typeof c.engine === "number") st.engine = clamp01(c.engine);
+      if (typeof c.antBeam === "number") st.antBeam = Math.round(clamp(c.antBeam, 1, 180));
+      if (typeof c.antOrient === "number") st.antOrient = Math.round(clamp(c.antOrient, -180, 180));
+      if (typeof c.mast === "boolean") st.mast = c.mast;
+      if (typeof c.engineOn === "boolean") st.engineOn = c.engineOn;
+      if (typeof c.electricOn === "boolean") st.electricOn = c.electricOn;
+      if (typeof c.periscope === "boolean") st.periscope = c.periscope;
+      if (c.dive === true) { st.location = "underwater"; st.mast = false; st.engineOn = false; }
+      if (c.surface === true) st.location = "surface";
+      if (c.refuel === true && st.location === "surface") {
+        st.fuel = 100; st.food = 100;
+        st.notifSeq = (st.notifSeq || 0) + 1;
+        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🛒 Avitaillement complet : carburant et vivres à 100 %.", kind: "good", cat: "navire" });
+      }
+      if (Array.isArray(c.pins)) st.pins = c.pins.slice(0, 26);
+      if (Array.isArray(c.measures)) st.measures = c.measures.slice(0, 40);
+      persistPlayer(id);
+      ws.send(JSON.stringify({ type: "snapshot", data: publicSnapshot(id) }));
+    } else if (msg.type === "snapshot") {
+      ws.send(JSON.stringify({ type: "snapshot", data: publicSnapshot(id) }));
+    }
+  });
+
+  ws.on("close", () => {
+    sockets.get(id)?.delete(ws);
+    persistPlayer(id);
+  });
+});
+
+// Pousse un snapshot à chaque joueur connecté, toutes les secondes réelles —
+// en temps réel les mouvements sont lents, 1 Hz suffit.
+setInterval(() => {
+  for (const [id, set] of sockets) {
+    if (set.size === 0) continue;
+    const msg = JSON.stringify({ type: "snapshot", data: publicSnapshot(id) });
+    for (const ws of set) if (ws.readyState === 1) ws.send(msg);
+  }
+}, TICK_MS);
