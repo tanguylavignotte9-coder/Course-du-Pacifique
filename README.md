@@ -35,7 +35,11 @@ npm run dev --workspace client   # vite sur :5173 (proxy /api et /ws vers :8080)
 
 ## Comptes joueurs
 
-Les comptes sont créés par l'administrateur (pas d'inscription publique). Utilitaire dédié :
+Les comptes sont créés par l'administrateur (pas d'inscription publique).
+
+**Interface web (recommandée)** : démarrez le serveur puis ouvrez **http://localhost:8080/admin**. Entrez le secret admin (voir ci-dessous) et gérez les comptes avec des boutons : créer, changer mot de passe, supprimer. Le secret est demandé au premier usage — il est alors généré automatiquement et affiché dans la console du serveur (`data/admin-secret.txt`).
+
+**En ligne de commande** (alternative) :
 
 ```bash
 npm run accounts                      # menu interactif
@@ -43,12 +47,9 @@ npm run accounts -- list              # lister les comptes
 npm run accounts -- create alice      # créer (mot de passe demandé, masqué)
 npm run accounts -- passwd alice      # changer le mot de passe (sessions révoquées)
 npm run accounts -- delete alice      # supprimer un compte
-npm run accounts -- secret            # générer le secret admin
 ```
 
-Le mot de passe peut aussi être passé en argument (`create alice "monmdp"`) pour l'automatisation. Les comptes sont stockés dans `data/save.json` (mots de passe hachés scrypt, jamais en clair).
-
-Créer un compte ne déconnecte pas le serveur : les créations sont visibles immédiatement au prochain login.
+Les mots de passe sont hachés (scrypt) dans `data/save.json`, jamais stockés en clair. Créations et suppressions sont effectives immédiatement, sans redémarrage du serveur.
 
 ## Temps de jeu
 

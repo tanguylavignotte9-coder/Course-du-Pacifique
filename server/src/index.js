@@ -1,11 +1,12 @@
 import fsSync from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
 import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distNm, DELIVERY_R_NM } from "../../shared/engine.js";
 import { Store } from "./store.js";
-import { Auth } from "./auth.js";
+import { Auth, hashPassword } from "./auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "../..");
@@ -102,6 +103,7 @@ setInterval(() => {
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(ROOT, "client/dist")));
+app.get("/admin", (req, res) => res.sendFile(path.join(ROOT, "server/public/admin.html")));
 
 function publicSnapshot(id) {
   const st = ensureState(id);
@@ -178,6 +180,71 @@ app.get("/api/wx", (req, res) => {
     }
   const here = weatherAt(st.x, st.y, st.t + h * 60, st.weatherSeed);
   res.json({ t: st.t, h, cells, here });
+});
+
+// ---------- API d'administration (interface /admin) ----------
+// Toutes les routes exigent le secret admin (ADMIN_SECRET ou
+// data/admin-secret.txt). Génération automatique au premier usage.
+function getAdminSecret() {  const env = process.env.ADMIN_SECRET;
+  if (env) return env;
+  try {
+    return fsSync.readFileSync(path.join(ROOT, "data/admin-secret.txt"), "utf8").trim();
+  } catch {
+    // Premier lancement : génération du secret (le fichier data/ existe déjà,
+    // créé par le Store).
+    const s = crypto.randomBytes(12).toString("hex");
+    fsSync.writeFileSync(path.join(ROOT, "data/admin-secret.txt"), s + "\n", { mode: 0o600 });
+    console.log("Secret admin généré : data/admin-secret.txt — notez-le pour la page /admin");
+    return s;
+  }
+}
+function adminGuard(req, res) {
+  const secret = getAdminSecret();
+  if (!secret || !req.body || req.body.adminSecret !== secret) {
+    res.status(403).json({ error: "secret admin invalide" });
+    return false;
+  }
+  return true;
+}
+app.post("/api/admin/accounts", (req, res) => {
+  if (!adminGuard(req, res)) return;
+  res.json({ accounts: Object.keys(store.data.accounts || {}).sort() });
+});
+app.post("/api/admin/create", (req, res) => {
+  if (!adminGuard(req, res)) return;
+  try {
+    const id = auth.createAccount(req.body.name, req.body.password);
+    res.json({ account: id });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.post("/api/admin/passwd", (req, res) => {
+  if (!adminGuard(req, res)) return;
+  const id = String(req.body.name || "").trim().toLowerCase();
+  const acc = store.data.accounts[id];
+  if (!acc) return res.status(400).json({ error: "compte inconnu" });
+  if (!req.body.password || req.body.password.length < 4)
+    return res.status(400).json({ error: "mot de passe trop court (4 caractères min.)" });
+  const { salt, hash } = hashPassword(req.body.password);
+  store.data.accounts[id] = { salt, hash };
+  for (const [t, owner] of Object.entries(store.data.tokens || {})) {
+    if (owner === id) delete store.data.tokens[t];
+  }
+  store.save();
+  res.json({ ok: true });
+});
+app.post("/api/admin/delete", (req, res) => {
+  if (!adminGuard(req, res)) return;
+  const id = String(req.body.name || "").trim().toLowerCase();
+  if (!store.data.accounts[id]) return res.status(400).json({ error: "compte inconnu" });
+  for (const [t, owner] of Object.entries(store.data.tokens || {})) {
+    if (owner === id) delete store.data.tokens[t];
+  }
+  delete store.data.accounts[id];
+  if (store.data.races?.default?.players) delete store.data.races.default.players[id];
+  store.save();
+  res.json({ ok: true });
 });
 
 const server = app.listen(PORT, () => {
