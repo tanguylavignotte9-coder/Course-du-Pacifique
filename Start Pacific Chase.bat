@@ -1,6 +1,8 @@
 @echo off
 REM Pacific Chase — demarrage en un clic (Windows)
 REM Installe et build si necessaire, lance le serveur, ouvre le navigateur.
+REM Rebuild automatique quand les sources du client sont plus recentes
+REM que le build (evite de servir une vielle interface).
 setlocal
 cd /d "%~dp0"
 
@@ -16,8 +18,15 @@ if not exist node_modules (
   call npm install || goto :fail
 )
 
-if not exist client\dist\index.html (
-  echo Build du client ^(une seule fois^)...
+REM Rebuild si le build est absent OU si une source est plus recente que le build
+set NEEDBUILD=0
+if not exist client\dist\index.html set NEEDBUILD=1
+if "%NEEDBUILD%"=="0" (
+  powershell -NoProfile -Command "$src=(Get-ChildItem -Recurse client\src | Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime; $pkg=(Get-Item package.json).LastWriteTime; $out=(Get-Item client\dist\index.html).LastWriteTime; if($src -gt $out -or $pkg -gt $out){exit 1}else{exit 0}"
+  if errorlevel 1 set NEEDBUILD=1
+)
+if "%NEEDBUILD%"=="1" (
+  echo Build du client...
   call npm run build || goto :fail
 )
 

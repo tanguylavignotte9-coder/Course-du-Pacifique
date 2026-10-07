@@ -405,7 +405,7 @@ export default function App() {
         </span>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 md:grid-cols-2">
         {/* Navire + vue de dessus */}
         <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
           <h2 className="text-sm font-semibold text-sky-300">Navire — {session.account}</h2>
@@ -498,7 +498,7 @@ export default function App() {
       </div>
 
       {/* Météo + radio + journal : en dessous, pleine largeur */}
-      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+      <div className="mt-4 grid gap-4 md:grid-cols-3">
         <div className="space-y-4">
           <div className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
             <h2 className="text-sm font-semibold text-sky-300">Météo</h2>
