@@ -250,6 +250,8 @@ app.post("/api/admin/delete", (req, res) => {
 const server = app.listen(PORT, () => {
   console.log(`Pacific Chase — serveur prêt sur http://localhost:${PORT} (×${TIME_MULT})`);
   console.log(`Départ de la course : ${race.startedAt}`);
+  console.log(`Interface d'administration : http://localhost:${PORT}/admin`);
+  console.log(`Secret admin (page /admin) : ${getAdminSecret()}`);
 });
 const wss = new WebSocketServer({ server });
 
