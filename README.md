@@ -55,9 +55,20 @@ Les mots de passe sont hachés (scrypt) dans `data/save.json`, jamais stockés e
 
 Le temps de jeu est le **temps réel** calé sur l'heure de Paris (fuseau de la machine serveur) : le serveur prend l'heure système au lancement de la course et simule par pas d'au plus 5 minutes de jeu. Pour le debug, `TIME_MULT=60 npm start` accélère ×60.
 
-## Réseau
+## Accès distant pour vos joueurs (tunnel Cloudflare, gratuit)
 
-En local : `http://localhost:8080`. Pour vos joueurs à distance, exposez le port 8080 de votre PC via votre box (redirection de port) — le protocole est `http` + `ws` ; un reverse-proxy HTTPS devant est recommandé si vous passez par un nom de domaine.
+Pas de port ouvert sur votre box : le tunnel Cloudflare sort en HTTPS et sert votre serveur local sur une URL publique.
+
+1. Installez `cloudflared` (une fois) : [téléchargements cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) — Windows : téléchargez le `.exe` et mettez-le dans votre PATH (ou dans le dossier du projet). macOS : `brew install cloudflared`.
+2. Double-cliquez `Ouvrir acces distant.bat` (Windows) ou lancez `./ouvrir-acces-distant.sh` (macOS/Linux).
+3. Le script démarre le jeu s'il ne tourne pas, puis affiche une URL du type **`https://xxx-xxx-xxx.trycloudflare.com`** — c'est celle que vous donnez à vos joueurs (elle change à chaque redémarrage du tunnel ; un tunnel « nommé » fixe existe aussi, voir la doc Cloudflare).
+4. Les joueurs ouvrent cette URL dans leur navigateur (PC ou mobile) et se connectent avec leur compte.
+
+Notes :
+- HTTPS et WebSocket (wss) fonctionnent automatiquement à travers le tunnel — le client s'adapte au domaine visité.
+- Tant que le script tourne, l'accès est ouvert ; fermez-le pour couper l'accès distant (le jeu continue en local).
+- La page d'administration `/admin` est aussi accessible à distance : ne partagez **que l'URL joueurs** avec vos joueurs, et gardez le secret admin pour vous.
+- Ce service « quick tunnel » de Cloudflare ne demande aucun compte pour démarrer ; pour un nom de domaine fixe, il faut un compte Cloudflare gratuit et un tunnel nommé.
 
 ## Notes de conception
 
