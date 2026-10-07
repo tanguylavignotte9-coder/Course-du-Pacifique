@@ -496,6 +496,49 @@ wss.on("connection", (ws, req) => {
           }
         }
       }
+      // Messages entre navires. AUCUNE ACTION AUTOMATIQUE : « Position ? » est
+      // une question littérale, « Ma position » est un envoi volontaire de sa
+      // position ESTIMÉE (jamais la vraie). Seules les balises répondent
+      // automatiquement (c'est leur fonction).
+      // shipMsg: { kind: "posq" | "mypos", to?: "1234" } — sans `to` : diffusion.
+      if (c.shipMsg && ["posq", "mypos"].includes(c.shipMsg.kind)) {
+        const radioOkMsg = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
+        if (radioOkMsg) {
+          st.battery = Math.max(0, st.battery - 0.5);
+          const isBroadcast = !c.shipMsg.to;
+          const buildText = (recipientEst) => {
+            if (c.shipMsg.kind === "posq") return `❓ Navire ${st.code} demande : « Position ? »`;
+            return `📍 Navire ${st.code} communique sa position : ${st.estY.toFixed(2)}°N ${st.estX.toFixed(2)}°E (±${Math.round(st.unc)} km)`;
+          };
+          const text = buildText();
+          const label = c.shipMsg.kind === "posq" ? "« Position ? »" : "« Ma position »";
+          st.notifSeq = (st.notifSeq || 0) + 1;
+          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `📡 Message ${label} ${isBroadcast ? "diffusé" : `émis vers ${c.shipMsg.to}`} (0,5 % batteries).`, kind: "info", cat: "radio" });
+          for (const [oid, ost] of states) {
+            if (oid === id) continue;
+            const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
+            if (!otherRadioOk) continue;
+            const dKm = distNm(ost.x, ost.y, st.x, st.y) * KM_PER_NM;
+            const brg = bearingTo(ost.x, ost.y, st.x, st.y);
+            const { strength } = callStrengthAtKm(st, dKm, brg);
+            if (strength < 1) continue;
+            ost.notifSeq = (ost.notifSeq || 0) + 1;
+            if (isBroadcast) {
+              // diffusion : contenu lisible par tous
+              ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text, kind: "info", cat: "radio" });
+            } else if (ost.code === c.shipMsg.to) {
+              // destinataire : contenu privé lisible
+              ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text, kind: "good", cat: "radio" });
+            } else {
+              // tiers : transmission brouillée, aucun contenu
+              const antHeading = (ost.heading + ost.antOrient + 720) % 360;
+              const caughtDir = Math.abs(angDiff(brg, antHeading)) <= ost.antBeam / 2;
+              const info = scrambledIntercept(Math.round(strength), caughtDir ? "dir" : "omni", ost.antBeam, ost.antOrient, ost.heading, brg);
+              ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: info.text, kind: "info", cat: info.cat });
+            }
+          }
+        }
+      }
       if (c.refuel === true && st.location === "surface") {
         st.fuel = 100; st.food = 100;
         st.notifSeq = (st.notifSeq || 0) + 1;

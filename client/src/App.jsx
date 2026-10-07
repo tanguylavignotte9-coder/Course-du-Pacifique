@@ -230,7 +230,7 @@ function TopView({ snap }) {
 // Clavier cliquable immersif : touches 0-9, effacer (⌫), effacer tout (C).
 // Le bouton d'appel n'est actif qu'avec 4 chiffres composés. L'émission
 // utilise l'antenne TELLE QU'ELLE EST RÉGLÉE (viser avant d'appeler).
-function VhfKeypad({ dialed, onDial, onCall, radioOk, portee }) {
+function VhfKeypad({ dialed, onDial, onAction, radioOk, portee }) {
   const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "C", "0", "⌫"];
   const press = (k) => {
     if (k === "C") return onDial("");
@@ -262,9 +262,24 @@ function VhfKeypad({ dialed, onDial, onCall, radioOk, portee }) {
       </div>
       <button
         disabled={dialed.length !== 4 || !radioOk}
-        onClick={() => { onCall(dialed); onDial(""); }}
-        className={`mt-2 w-full rounded-lg py-2 text-sm font-bold transition-colors ${dialed.length === 4 && radioOk ? "bg-amber-500 text-slate-950 hover:bg-amber-400" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
-      >📡 Émettre (0,5 % batteries)</button>
+        onClick={() => { onAction("beacon", dialed); onDial(""); }}
+        className={`mt-2 w-full rounded-lg py-2 text-xs font-bold transition-colors ${dialed.length === 4 && radioOk ? "bg-amber-500 text-slate-950 hover:bg-amber-400" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+      >🛟 Appel balise — réponse auto (0,5 %)</button>
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
+        <button
+          disabled={dialed.length !== 4 || !radioOk}
+          onClick={() => { onAction("posq", dialed); onDial(""); }}
+          className={`rounded-lg py-2 text-xs font-bold transition-colors ${dialed.length === 4 && radioOk ? "bg-sky-500 text-slate-950 hover:bg-sky-400" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+        >❓ Position ?</button>
+        <button
+          disabled={dialed.length !== 4 || !radioOk}
+          onClick={() => { onAction("mypos", dialed); onDial(""); }}
+          className={`rounded-lg py-2 text-xs font-bold transition-colors ${dialed.length === 4 && radioOk ? "bg-emerald-500 text-slate-950 hover:bg-emerald-400" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+        >📍 Ma position</button>
+      </div>
+      <p className="mt-1.5 text-[10px] leading-snug text-slate-500">
+        « Position ? » pose la question — rien d'automatique, le destinataire décide. « Ma position » communique volontairement votre position <b>estimée</b>. (0,5 % batteries par message)
+      </p>
     </div>
   );
 }
@@ -723,20 +738,32 @@ export default function App() {
               <VhfKeypad
                 dialed={dial}
                 onDial={setDial}
-                onCall={(code) => cmd({ call: code })}
+                onAction={(kind, code) => kind === "beacon" ? cmd({ call: code }) : cmd({ shipMsg: { kind, to: code } })}
                 radioOk={radioOk}
                 portee={Math.round(1000 + 4000 * (180 - player.antBeam) / 179)}
               />
             ) : (
-              <div className="rounded-xl border border-rose-800/60 bg-rose-950/40 p-3">
-                <p className="mb-2 text-[11px] leading-snug text-rose-200/80">
-                  Message <b>SOS</b> en diffusion générale : tous les navires à portée de l'émission le lisent, avec votre position <b>estimée</b> et son incertitude — ce que vous croyez, pas la vérité. Coût : 0,5 % de batteries.
-                </p>
-                <button
-                  disabled={!radioOk}
-                  onClick={() => cmd({ sos: true })}
-                  className={`w-full rounded-lg py-2 text-sm font-bold transition-colors ${radioOk ? "bg-rose-600 text-white hover:bg-rose-500" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
-                >🆘 Émettre un SOS</button>
+              <div className="space-y-2">
+                <div className="rounded-xl border border-emerald-800/60 bg-emerald-950/40 p-3">
+                  <p className="mb-2 text-[11px] leading-snug text-emerald-200/80">
+                    « Ma position » en <b>diffusion</b> : tous les navires à portée lisent votre position <b>estimée</b> et son incertitude.
+                  </p>
+                  <button
+                    disabled={!radioOk}
+                    onClick={() => cmd({ shipMsg: { kind: "mypos" } })}
+                    className={`w-full rounded-lg py-2 text-sm font-bold transition-colors ${radioOk ? "bg-emerald-600 text-white hover:bg-emerald-500" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+                  >📍 Diffuser ma position (0,5 %)</button>
+                </div>
+                <div className="rounded-xl border border-rose-800/60 bg-rose-950/40 p-3">
+                  <p className="mb-2 text-[11px] leading-snug text-rose-200/80">
+                    <b>SOS</b> en diffusion générale : tous les navires à portée le lisent, avec votre position <b>estimée</b>.
+                  </p>
+                  <button
+                    disabled={!radioOk}
+                    onClick={() => cmd({ sos: true })}
+                    className={`w-full rounded-lg py-2 text-sm font-bold transition-colors ${radioOk ? "bg-rose-600 text-white hover:bg-rose-500" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+                  >🆘 Émettre un SOS (0,5 %)</button>
+                </div>
               </div>
             )}
           </div>
