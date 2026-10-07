@@ -59,10 +59,10 @@ Le temps de jeu est le **temps réel** calé sur l'heure de Paris (fuseau de la 
 
 Pas de port ouvert sur votre box : le tunnel Cloudflare sort en HTTPS et sert votre serveur local sur une URL publique.
 
-1. Installez `cloudflared` (une fois) : [téléchargements cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) — Windows : téléchargez le `.exe` et mettez-le dans votre PATH (ou dans le dossier du projet). macOS : `brew install cloudflared`.
-2. Double-cliquez `Ouvrir acces distant.bat` (Windows) ou lancez `./ouvrir-acces-distant.sh` (macOS/Linux).
-3. Le script démarre le jeu s'il ne tourne pas, puis affiche une URL du type **`https://xxx-xxx-xxx.trycloudflare.com`** — c'est celle que vous donnez à vos joueurs (elle change à chaque redémarrage du tunnel ; un tunnel « nommé » fixe existe aussi, voir la doc Cloudflare).
-4. Les joueurs ouvrent cette URL dans leur navigateur (PC ou mobile) et se connectent avec leur compte.
+1. Double-cliquez **`Ouvrir acces distant.bat`** (Windows) ou lancez **`./ouvrir-acces-distant.sh`** (macOS/Linux). C'est tout.
+2. Le script fait tout automatiquement : il **télécharge `cloudflared`** s'il est absent (dans le dossier du projet, sans installation), démarre le jeu s'il ne tourne pas, ouvre le tunnel, puis affiche bien lisiblement l'URL du type **`https://xxx-xxx-xxx.trycloudflare.com`** et l'ouvre dans votre navigateur pour vérification.
+3. Cette URL est celle que vous donnez à vos joueurs — elle est aussi enregistrée dans `data/tunnel-url.txt` (elle change à chaque ouverture du tunnel).
+4. Pour couper l'accès distant : double-cliquez **`Fermer acces distant.bat`** (ou `./fermer-acces-distant.sh`). Le jeu continue en local.
 
 Notes :
 - HTTPS et WebSocket (wss) fonctionnent automatiquement à travers le tunnel — le client s'adapte au domaine visité.
