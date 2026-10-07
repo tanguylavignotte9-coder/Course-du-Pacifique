@@ -38,7 +38,12 @@ function loadOrCreateRace() {
   let fresh = false;
   if (!r) {
     fresh = true;
-    r = { seed: Math.floor(Math.random() * 1e9), startedAt: new Date().toISOString(), players: {} };
+    // L'horloge de jeu est la VRAIE heure de Paris : l'epoch est minuit
+    // local du jour du lancement. t (minutes de jeu) ajouté à l'epoch
+    // redonne l'heure réelle affichée au joueur.
+    const epoch = new Date();
+    epoch.setHours(0, 0, 0, 0);
+    r = { seed: Math.floor(Math.random() * 1e9), epoch: epoch.getTime(), startedAt: new Date().toISOString(), players: {} };
     store.data.races["default"] = r;
     store.save();
   }
@@ -55,7 +60,9 @@ const { race, world } = loadOrCreateRace();
 
 // Minutes de jeu écoulées depuis le départ (temps réel × TIME_MULT)
 function gameMinutesNow() {
-  const ms = Date.now() - new Date(race.startedAt).getTime();
+  // Minutes de jeu = temps réel écoulé depuis minuit Paris du jour du
+  // lancement (epoch). ×TIME_MULT pour le debug uniquement.
+  const ms = Date.now() - (race.epoch || new Date(race.startedAt).getTime());
   return Math.max(0, ms / 60000) * TIME_MULT;
 }
 
@@ -110,6 +117,7 @@ function publicSnapshot(id) {
   const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
   return {
     t: st.t,
+    epoch: race.epoch || new Date(race.startedAt).getTime(),
     player: {
       heading: st.heading, sail: st.sail, engine: st.engine,
       location: st.location, mast: st.mast, engineOn: st.engineOn,

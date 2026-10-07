@@ -11,11 +11,12 @@ const mixHex = (a, b, t) => {
   const pb = [1, 3, 5].map((i) => parseInt(b.slice(i, i + 2), 16));
   return "#" + pa.map((v, i) => Math.round(v + (pb[i] - v) * t).toString(16).padStart(2, "0")).join("");
 };
-const fmtT = (t) => {
-  const d = Math.floor(t / 1440) + 1;
-  const h = Math.floor((t / 60) % 24);
-  const m = Math.floor(t % 60);
-  return `J${d} ${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+const fmtT = (t, epoch) => {
+  // Heure de jeu affichée = vraie heure de Paris (epoch + minutes de jeu).
+  const d = new Date((epoch || 0) + t * 60000);
+  const date = d.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" });
+  const time = d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  return `${date} ${time}`;
 };
 
 // ---------- Écran de connexion ----------
@@ -396,7 +397,7 @@ export default function App() {
         <div>
           <h1 className="text-xl font-semibold">⚓ Pacific Chase</h1>
           <p className="text-xs text-slate-400">
-            {daylight ? "☀️ Jour" : "🌙 Nuit"} · {fmtT(snap.t)} (heure de Paris, temps réel) · Score : <span className="font-semibold text-sky-300">{player.score} pts</span> · Codes à bord : {player.codes.length} · Balises restantes : {snap.world.activeBeaconIds.length}/{snap.world.beaconCount}
+            {daylight ? "☀️ Jour" : "🌙 Nuit"} · {fmtT(snap.t, snap.epoch)} (heure de Paris) · Score : <span className="font-semibold text-sky-300">{player.score} pts</span> · Codes à bord : {player.codes.length} · Balises restantes : {snap.world.activeBeaconIds.length}/{snap.world.beaconCount}
           </p>
         </div>
         <span className={`text-xs ${status === "connected" ? "text-emerald-300" : "text-amber-300"}`}>
@@ -492,7 +493,12 @@ export default function App() {
           </div>
         </div>
 
-        {/* Météo + radio + journal */}
+        {/* Carte de navigation : côte à côte avec le navire (PC) */}
+        <NavMap snap={snap} sock={sock} />
+      </div>
+
+      {/* Météo + radio + journal : en dessous, pleine largeur */}
+      <div className="mt-4 grid gap-4 lg:grid-cols-3">
         <div className="space-y-4">
           <div className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
             <h2 className="text-sm font-semibold text-sky-300">Météo</h2>
@@ -554,15 +560,11 @@ export default function App() {
                 <p className="text-xs text-slate-500">Rien à signaler.</p>
               ) : logNotifs.map((n) => (
                 <p key={n.id} className={`text-[11px] leading-snug ${n.kind === "good" ? "text-emerald-300" : n.kind === "warn" ? "text-amber-300" : n.kind === "bad" ? "text-rose-300" : "text-slate-300"}`}>
-                  <span className="mr-1 tabular-nums text-slate-500">{fmtT(n.t)}</span>{n.text}
+                  <span className="mr-1 tabular-nums text-slate-500">{fmtT(n.t, snap.epoch)}</span>{n.text}
                 </p>
               ))}
             </div>
           </div>
-        </div>
-
-        <div className="lg:col-span-2">
-          <NavMap snap={snap} sock={sock} />
         </div>
       </div>
 
