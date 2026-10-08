@@ -6,6 +6,7 @@ import {
   sailAutoDrive, apparentWind, SAIL_SPD_KMH, clamp, callPosition, RARITY_MIN, bearingTo, segDistKm,
   longStrengthKm, strengthKm, SHORT_DECAY_KM, recvCapture, detectBeacon, onProximityPing,
   proxPingIntervalS, captureBeacon, beaconLockTick, pushBeaconSignal, SIGNAL_LOG_MAX,
+  scrambledIntercept,
 } from "./engine.js";
 
 // Navire de test en pleine eau (loin du port et des terres), pleine vitesse.
@@ -428,6 +429,28 @@ test("réponse de balise : lue à 600 km faisceau pointé, silence faisceau oppo
   assert.ok(answered2, "broadcast tiers émis aussi (la station a entendu)");
   assert.ok(!opposite.notifications.some((n) => n.text.includes("Position de " + b.code)),
     "faisceau opposé : réponse non captée, silence pour l'appelant");
+});
+
+test("textes radio : la réponse « Position ? » n'affiche pas d'azimut", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 300 / DEG_KM;
+  st.antBeam = 5; st.heading = 0; st.antOrient = 0; st.headingOrder = 0;
+  callPosition(st, b.code, w);
+  const resp = st.notifications.find((n) => n.text.includes("Position de " + b.code));
+  assert.ok(resp, "réponse lue à 300 km faisceau pointé");
+  assert.ok(!resp.text.includes("azimut"), `sans azimut dans le texte (obtenu : ${resp.text})`);
+  assert.ok(resp.text.includes("signal"), "la force du signal reste affichée");
+});
+
+test("scrambledIntercept : zone sans azimut (nouvelle signature)", () => {
+  const dir = scrambledIntercept(50, "dir", "D1");
+  assert.ok(!dir.text.includes("azimut"), `sans azimut (obtenu : ${dir.text})`);
+  assert.ok(dir.text.includes("zone D1"), "zone du faisceau affichée");
+  const omni = scrambledIntercept(50, "omni");
+  assert.ok(!omni.text.includes("azimut"), "sans azimut en omni");
+  assert.ok(omni.text.includes("signal 50%"), "force affichée");
 });
 
 test("journal des signaux : borné à 10 après 15 pings", () => {

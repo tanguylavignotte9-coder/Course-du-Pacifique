@@ -281,9 +281,9 @@ function multiplayerPass(now) {
 }
 
 // Émission OMNIDIRECTIONNELLE depuis un point (balise répondante) vers tous
-// les navires tiers : chacun capte selon la LOI UNIQUE (omni ≥ 75 % sans
-// azimut / directionnel ≥ sens) une TRANSMISSION BROUILLÉE — signal, azimut
-// si directionnel — jamais le contenu. « Émettre, c'exister ».
+// les navires tiers : chacun capte selon la LOI UNIQUE (omni ≥ 75 % / directionnel
+// ≥ sens) une TRANSMISSION BROUILLÉE — signal, zone du faisceau si directionnel —
+// jamais le contenu, jamais d'azimut. « Émettre, c'exister ».
 function broadcastScrambledFrom(fromX, fromY, exceptId) {
   for (const [oid, ost] of states) {
     if (oid === exceptId) continue;
@@ -296,7 +296,7 @@ function broadcastScrambledFrom(fromX, fromY, exceptId) {
     const cap = recvCapture(ost, brg, strength);
     if (!cap) continue; // ne capte pas : silence
     ost.notifSeq = (ost.notifSeq || 0) + 1;
-    const info = scrambledIntercept(Math.round(strength), cap.source, ost.antBeam, ost.antOrient, ost.heading, brg);
+    const info = scrambledIntercept(Math.round(strength), cap.source, cap.side);
     ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: info.text, kind: "info", cat: info.cat });
   }
 }
@@ -621,7 +621,7 @@ wss.on("connection", (ws, req) => {
               ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text, kind: "good", cat: "radio" });
             } else {
               // tiers : transmission brouillée, aucun contenu
-              const info = scrambledIntercept(Math.round(strength), cap.source, ost.antBeam, ost.antOrient, ost.heading, brg);
+              const info = scrambledIntercept(Math.round(strength), cap.source, cap.side);
               ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: info.text, kind: "info", cat: info.cat });
             }
           }

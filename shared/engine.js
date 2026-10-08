@@ -531,6 +531,11 @@ export function spawnPosition(world, taken = []) {
 }
 
 // ---------- Radio ----------
+// PRINCIPE D'AFFICHAGE : une position se révèle en clair (coordonnées que
+// l'émetteur met lui-même dans son message) ou en gisement (le faisceau du
+// récepteur, zone D1/D2/G1/G2/centre) — jamais en azimut imprimé. Exception
+// interne assumée : le scan du verrou balise-vigie (onProximityPing) utilise
+// l'azimut vrai en interne, sans jamais l'afficher.
 // Force d'un signal à la distance dKm pour une famille de décroissance donnée.
 export const strengthKm = (dKm, decayKm) => Math.max(0, Math.round(100 * (1 - dKm / decayKm)));
 export const longStrengthKm = (dKm) => strengthKm(dKm, LONG_DECAY_KM);
@@ -542,9 +547,11 @@ export function dirEffSensitivity(antBeam, diff, sens) {
 }
 
 // Réception — LOI UNIQUE (« lire exige capter ») :
-// - canal omni : force ≥ OMNI_DETECT_PCT → existence + force, SANS azimut ;
+// - canal omni : force ≥ OMNI_DETECT_PCT → existence + force, sans gisement ;
 // - canal directionnel : force ≥ sens(faisceau), dans le faisceau, malus de
-//   bord → azimut (celui de l'antenne) + zone. Le directionnel l'emporte.
+//   bord → gisement (zone du faisceau du récepteur). Le directionnel l'emporte.
+// Les champs bearing/beam restent dans les objets de capture (usage interne,
+// ex. verrou) — ils ne sont jamais imprimés dans les textes.
 export function recvCapture(st, brg, strength) {
   let got = null;
   if (strength >= OMNI_DETECT_PCT) got = { bearing: null, strength, source: "omni" };
@@ -606,7 +613,7 @@ export function callPosition(st, code, world, noCost = false) {
       st.pins.push({ label: code, x: target.x, y: target.y });
     st.notifications.unshift({
       id: st.notifSeq, t: st.t,
-      text: `📡 Position de ${code} : ${target.y.toFixed(2)}°N ${target.x.toFixed(2)}°E (signal ${respStrength}%${cap.bearing != null ? `, azimut ${cap.bearing}°` : ", sans azimut"}).`,
+      text: `📡 Position de ${code} : ${target.y.toFixed(2)}°N ${target.x.toFixed(2)}°E (signal ${respStrength}%).`,
       kind: "good", cat: "radio",
     });
   }
@@ -614,16 +621,13 @@ export function callPosition(st, code, world, noCost = false) {
   // serveur). Le silence pour l'appelant EST l'information.
   return { x: target.x, y: target.y };
 }
-// Brouillage : un tiers qui capte un message privé sans en être le
-// destinataire détecte une TRANSMISSION BROUILLÉE — niveau de signal (et
-// azimut en directionnel), mais AUCUN contenu.
-export function scrambledIntercept(strength, source, antBeam, antOrient, heading, brg) {
-  const antHeading = (heading + antOrient + 720) % 360;
+// Brouillage : un tiers qui capte un message sans en être le destinataire
+// détecte une TRANSMISSION BROUILLÉE — force, et zone du faisceau en
+// directionnel — mais AUCUN contenu et AUCUN azimut : la direction, c'est le
+// geste du joueur (pointer son antenne), pas une donnée du message.
+export function scrambledIntercept(strength, source, side) {
   if (source === "dir") {
-    const signedDiff = angDiff(brg, antHeading);
-    const diff = Math.abs(signedDiff);
-    const side = diff < 1 ? "centre" : signedDiff > 0 ? (diff < antBeam / 4 ? "D1" : "D2") : (diff < antBeam / 4 ? "G1" : "G2");
-    return { text: `📡 Transmission brouillée captée (directionnelle) — signal ${strength}%, azimut ${Math.round(antHeading)}°, zone ${side}. Contenu : illisible.`, cat: "radio" };
+    return { text: `📡 Transmission brouillée captée (directionnelle) — signal ${strength}%, zone ${side}. Contenu : illisible.`, cat: "radio" };
   }
   return { text: `📡 Transmission brouillée captée (omnidirectionnelle) — signal ${strength}%. Contenu : illisible, origine inconnue.`, cat: "radio" };
 }
@@ -981,8 +985,8 @@ export function tick(st, dtMin, world) {
       if (got) {
         pushBeaconSignal(st, got);
         const txt = got.source === "omni"
-          ? `📡 Ping ${b.code} — signal ${got.strength}% (omnidirectionnelle, azimut inconnu)`
-          : `📡 Ping ${b.code} — azimut ${got.bearing}°, signal ${got.strength}%, partie ${got.side} du cône (ouverture ${got.beam}°)`;
+          ? `📡 Ping ${b.code} — signal ${got.strength}% (omnidirectionnelle)`
+          : `📡 Ping ${b.code} — signal ${got.strength}%, zone ${got.side} du cône`;
         notify(st, txt, "info", "radio");
       }
     }

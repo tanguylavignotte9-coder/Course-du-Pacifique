@@ -737,7 +737,7 @@ export default function App() {
           <p className="text-[11px] text-slate-500">
             {uw && !player.periscope && "🕳️ Périscope rentré : aucune observation visuelle · "}
             {!daylight && "🌙 Nuit : seuls les feux sont visibles · "}
-            Antenne : azimut {Math.round(antHeading)}°, ouverture {player.antBeam}°
+            Antenne : direction d'écoute {Math.round(antHeading)}°, ouverture {player.antBeam}°
           </p>
           <div className="grid grid-cols-2 gap-2">
             <Btn active={player.location === "surface"} onClick={() => cmd({ surface: true })}>☀️ Surface</Btn>
@@ -874,7 +874,7 @@ export default function App() {
               <span className="w-10 text-right text-xs tabular-nums text-purple-300">{player.antOrient}°</span>
             </div>
             <p className="text-[11px] text-slate-500">
-              Émission : omnidirectionnelle, {LONG_DECAY_KM} km. Écoute : omni dès {OMNI_DETECT_PCT} % (sans azimut) ; faisceau serré = sensible et pointé, large = sourd et panoramique.
+              Émission : omnidirectionnelle, {LONG_DECAY_KM} km. Écoute : omni dès {OMNI_DETECT_PCT} % (sans gisement) ; faisceau serré = sensible et pointé, large = sourd et panoramique.
             </p>
             <p className="text-[11px] text-slate-400">
               Code du navire : <b className="font-mono text-sm text-sky-300">{player.code}</b> — c'est votre numéro radio (donnez-le aux autres navires pour qu'ils vous appellent).
@@ -885,7 +885,7 @@ export default function App() {
                 <div className="space-y-0.5">
                   {[...player.signals].reverse().map((sg, i) => (
                     <p key={i} className={`text-[10px] leading-snug tabular-nums ${sg.kind === "prox" ? "text-purple-300" : "text-slate-400"}`}>
-                      {sg.kind === "prox" ? "⚡" : "📡"} {sg.beaconId} — signal {sg.strength}%{sg.bearing != null ? `, azimut ${sg.bearing}°, ${sg.side}` : ", sans azimut"}
+                      {sg.kind === "prox" ? "⚡" : "📡"} {sg.beaconId} — signal {sg.strength}%{sg.side ? `, zone ${sg.side}` : ""}
                     </p>
                   ))}
                 </div>
