@@ -72,7 +72,10 @@ Notes :
 
 ## Notes de conception
 
+- Échelle fictive : **1° = 50 km** (sur Terre, 1° ≈ 111 km) — carte de 3000 × 3000 km. Toutes les unités du jeu sont en **km et km/h**.
 - Capture et livraison : **500 m** (zone d'accostage et d'amarrage, point de départ inclus).
-- 21 balises (10 communes, 6 rares, 4 légendaires, 1 inconnue), pulsations radio toutes les 30 min de jeu, phase aléatoire par balise.
+- **40 balises** (20 communes, 10 rares, 5 légendaires, 5 inconnues), pulsation radio **horaire**, phase aléatoire par balise ; décroissance du signal : 100 % à la balise, 0 % à **1000 km**.
+- **10 îles**, **5 avant-postes** sur 5 îles distinctes (placement le plus écarté possible).
+- Contraintes de placement par rareté (km) : distances minimales au port, aux avant-postes et entre balises (règle du seuil le plus strict).
 - Navigation à l'estime : le client ne voit jamais la position vraie ; le serveur ne renvoie que les objets détectés (azimut/distance) et l'estimé avec son incertitude.
 - Défauts d'instruments fixes par navire (déviation compas, erreur de loch) — propres à chaque joueur.

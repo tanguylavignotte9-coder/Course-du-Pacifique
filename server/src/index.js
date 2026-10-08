@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distNm, DELIVERY_R_NM, shipVisibleKm, shipsCollide, KM_PER_NM, callPosition, callStrengthAtKm, scrambledIntercept, bearingTo, angDiff, spawnPosition, MAP } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, shipVisibleKm, shipsCollide, callPosition, callStrengthAtKm, scrambledIntercept, signalStrengthKm, bearingTo, angDiff, spawnPosition, MAP } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -98,10 +98,10 @@ if (!race.migrated) {
     for (let j = i + 1; j < ids.length; j++) {
       const a = states.get(ids[i]), b = states.get(ids[j]);
       const bothAtPort =
-        distNm(a.x, a.y, world.PORT.x, world.PORT.y) * 1852 < 500 &&
-        distNm(b.x, b.y, world.PORT.x, world.PORT.y) * 1852 < 500;
-      const dm = distNm(a.x, a.y, b.x, b.y) * 1852;
-      if (dm < 50 && bothAtPort) {
+        distKm(a.x, a.y, world.PORT.x, world.PORT.y) < 0.5 &&
+        distKm(b.x, b.y, world.PORT.x, world.PORT.y) < 0.5;
+      const dm = distKm(a.x, a.y, b.x, b.y);
+      if (dm < 0.05 && bothAtPort) {
         // re-loger via la spirale : le premier garde sa place (ou en trouve
         // une nouvelle), le second est repoussé au prochain point valide.
         const fresh = [];
@@ -185,7 +185,7 @@ function multiplayerPass(now) {
     infos.set(id, {
       st, w,
       night: hour < 6 || hour >= 20,
-      observerKm: (st.location === "surface" || st.periscope) ? w.visibility * KM_PER_NM : 0,
+      observerKm: (st.location === "surface" || st.periscope) ? w.visibility * DEG_KM : 0,
       seenShips: new Set(),
     });
   }
@@ -197,7 +197,7 @@ function multiplayerPass(now) {
       if (tid === oid) continue;
       const targetRange = shipPassiveKm(ti.st, oi.night);
       if (targetRange <= 0) continue;
-      const km = distNm(oi.st.x, oi.st.y, ti.st.x, ti.st.y) * KM_PER_NM;
+      const km = distKm(oi.st.x, oi.st.y, ti.st.x, ti.st.y) * DEG_KM;
       if (km <= Math.min(oi.observerKm, targetRange)) {
         oi.seenShips.add(tid);
       }
@@ -211,7 +211,7 @@ function multiplayerPass(now) {
     for (const tid of seen) {
       if (!before.includes(tid)) {
         const ti = infos.get(tid).st;
-        const km = distNm(st.x, st.y, ti.x, ti.y) * KM_PER_NM;
+        const km = distKm(st.x, st.y, ti.x, ti.y) * DEG_KM;
         st.notifSeq = (st.notifSeq || 0) + 1;
         const az = Math.round((Math.atan2(ti.x - st.x, ti.y - st.y) * 180) / Math.PI + 360) % 360;
         st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⛵ Navire repéré (${infos.get(tid).st.code}) : ~${Math.round(km)} km, azimut ${az}°.`, kind: "info", cat: "vision" });
@@ -228,7 +228,7 @@ function multiplayerPass(now) {
   }
   // Collisions : coques 15 m x 5 m en rectangles ORIENTÉS (OBB/SAT),
   // précises au mètre. La vitesse de chaque navire en contact est stoppée.
-  const HIST_NM = 0.016; // ~30 m : hystérésis pour débloquer (une demi-longueur)
+  const HIST_KM = 0.03; // ~30 m : hystérésis pour débloquer (une demi-longueur)
   for (let i = 0; i < ids.length; i++) {
     for (let j = i + 1; j < ids.length; j++) {
       const a = states.get(ids[i]), b = states.get(ids[j]);
@@ -240,7 +240,7 @@ function multiplayerPass(now) {
             st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "💥 Contact avec un autre navire — vitesse stoppée. Écartez-vous en changeant de cap.", kind: "warn", cat: "alertes" });
           }
           st.collided = true;
-          st.vkn = 0;
+          st.vkmh = 0;
         }
       }
     }
@@ -253,7 +253,7 @@ function multiplayerPass(now) {
     for (const oid of ids) {
       if (oid === id) continue;
       const o = states.get(oid);
-      if (o.location === st.location && distNm(st.x, st.y, o.x, o.y) < HIST_NM) touching = true;
+      if (o.location === st.location && distKm(st.x, st.y, o.x, o.y) < HIST_KM) touching = true;
     }
     if (!touching) st.collided = false;
   }
@@ -268,7 +268,7 @@ function broadcastScrambledFrom(fromX, fromY, exceptId) {
     if (oid === exceptId) continue;
     const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
     if (!otherRadioOk) continue;
-    const dKm = distNm(fromX, fromY, ost.x, ost.y) * KM_PER_NM;
+    const dKm = distKm(fromX, fromY, ost.x, ost.y) * DEG_KM;
     const strength = signalStrengthKm(dKm);
     if (strength < 1) continue;
     const brg = bearingTo(ost.x, ost.y, fromX, fromY);
@@ -296,11 +296,11 @@ function publicSnapshot(id) {
     player: {
       heading: st.heading, headingOrder: st.headingOrder ?? st.heading, sail: st.sail, engine: st.engine,
       location: st.location, mast: st.mast, engineOn: st.engineOn,
-      electricOn: st.electricOn, periscope: st.periscope, vkn: st.vkn,
+      electricOn: st.electricOn, periscope: st.periscope, vkmh: st.vkmh,
       fuel: st.fuel, battery: st.battery, food: st.food,
       score: st.score, codes: st.codes, unc: st.unc,
       estX: st.estX, estY: st.estY,
-      travelledNm: st.travelledNm, dailyNm: st.dailyNm,
+      travelledKm: st.travelledKm, dailyKm: st.dailyKm,
       waypoints: st.waypoints || [], wpIdx: st.wpIdx || 0, autopilot: !!st.autopilot,
       navFixActive: st.navFix.active,
       grounded: st.grounded,
@@ -326,7 +326,7 @@ function publicSnapshot(id) {
     // absolue — le client dessine depuis son estimé, comme pour les îles).
     ships: (st.sawShips || []).map((tid) => {
       const ts = states.get(tid);
-      const km = distNm(st.x, st.y, ts.x, ts.y) * KM_PER_NM;
+      const km = distKm(st.x, st.y, ts.x, ts.y) * DEG_KM;
       const az = Math.round((Math.atan2(ts.x - st.x, ts.y - st.y) * 180) / Math.PI + 360) % 360;
       return { id: ts.code, km: Math.round(km * 10) / 10, az, light: !!ts.light };
     }),
@@ -364,8 +364,8 @@ app.get("/api/wx", (req, res) => {
   if (!account) return res.status(401).json({ error: "auth requise" });
   const st = ensureState(account);
   const atDock = st.location === "surface" &&
-    (distNm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_NM ||
-     world.OUTPOSTS.some((o) => distNm(st.x, st.y, o.x, o.y) < DELIVERY_R_NM));
+    (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
+     world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM));
   if (!atDock) return res.status(403).json({ error: "service disponible à quai uniquement" });
   const h = clamp(Number(req.query.h) || 0, 0, 15 * 24);
   const cells = [];
@@ -527,7 +527,7 @@ wss.on("connection", (ws, req) => {
             if (oid === id) continue;
             const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
             if (!otherRadioOk) continue;
-            const dKm = distNm(ost.x, ost.y, st.x, st.y) * KM_PER_NM;
+            const dKm = distKm(ost.x, ost.y, st.x, st.y) * DEG_KM;
             const brg = bearingTo(ost.x, ost.y, st.x, st.y);
             const { strength } = callStrengthAtKm(st, dKm, brg);
             if (strength < 1) continue;
@@ -567,7 +567,7 @@ wss.on("connection", (ws, req) => {
             if (oid === id) continue;
             const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
             if (!otherRadioOk) continue;
-            const dKm = distNm(ost.x, ost.y, st.x, st.y) * KM_PER_NM;
+            const dKm = distKm(ost.x, ost.y, st.x, st.y) * DEG_KM;
             const brg = bearingTo(ost.x, ost.y, st.x, st.y);
             const { strength } = callStrengthAtKm(st, dKm, brg);
             if (strength < 1) continue;

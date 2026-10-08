@@ -2,17 +2,16 @@
 // PACIFIC CHASE — moteur de simulation partagé (client/serveur)
 // Pures fonctions déterministes : aucun accès réseau, DOM ni fs.
 // Référence : document de design v3 + proto Canvas React.
-// Unités : 1 degré = 60 NM ; 1 NM = 1,852 km ; cartes 60° de côté.
+// Unités : 1 degré = 50 km (échelle fictive) ; cartes 60° = 3000 km de côté.
 // ============================================================
 
 export const MAP = 60; // degres
-export const DEG_NM = 60; // 1 degre = 60 milles nautiques
-export const KM_PER_NM = 1.852;
-export const KM_PER_DEG = DEG_NM * KM_PER_NM;
-export const PULSE_MIN = 30; // pulsation radio toutes les 30 min de jeu
-export const CAPTURE_R_NM = 500 / 1000 / KM_PER_NM; // capture à 500 m
-export const DELIVERY_R_NM = 500 / 1000 / KM_PER_NM; // livraison à 500 m
-export const WP_R_NM = 100 / 1000 / KM_PER_NM; // validation des points de passage : 100 m
+export const DEG_KM = 50; // 1° = 50 km -> carte 3000x3000 km (échelle fictive)
+export const PULSE_MIN = 60; // pulsation radio horaire
+export const RADIO_DECAY_KM = 1000; // décroissance du signal : 0 % à 1000 km
+export const CAPTURE_R_KM = 0.5;  // capture à 500 m
+export const DELIVERY_R_KM = 0.5; // livraison à 500 m
+export const WP_R_KM = 0.1;       // validation des points de passage : 100 m
 
 // ---------- Utilitaires ----------
 export function mulberry32(a) {
@@ -24,21 +23,21 @@ export function mulberry32(a) {
   };
 }
 export const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-export const distNm = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by) * DEG_NM;
+export const distKm = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by) * DEG_KM;
 export const bearingTo = (ax, ay, bx, by) =>
   ((Math.atan2(bx - ax, by - ay) * 180) / Math.PI + 360) % 360;
 export const angDiff = (a, b) => ((a - b + 540) % 360) - 180;
-// Distance (NM) d'un point P au segment [A,B] — évite de traverser une zone
+// Distance (km) d'un point P au segment [A,B] — évite de traverser une zone
 // (capture, livraison) lors d'un grand pas de simulation.
-export function segDistNm(px, py, ax, ay, bx, by) {
+export function segDistKm(px, py, ax, ay, bx, by) {
   const vx = bx - ax, vy = by - ay;
   const wx = px - ax, wy = py - ay;
   const c1 = vx * wx + vy * wy;
-  if (c1 <= 0) return distNm(px, py, ax, ay);
+  if (c1 <= 0) return distKm(px, py, ax, ay);
   const c2 = vx * vx + vy * vy;
-  if (c2 <= c1) return distNm(px, py, bx, by);
+  if (c2 <= c1) return distKm(px, py, bx, by);
   const t = c1 / c2;
-  return distNm(px, py, ax + t * vx, ay + t * vy);
+  return distKm(px, py, ax + t * vx, ay + t * vy);
 }
 function inPoly(px, py, verts) {
   let inside = false;
@@ -99,6 +98,16 @@ export const RARITY_STYLE = {
 };
 export const RARITY_LABEL = { legendaire: "légendaire" };
 
+// Contraintes de placement des balises (km) : port = distance min au port
+// principal, outpost = distance min à un avant-poste, beacon = distance
+// min à toute autre balise (le seuil le plus strict des deux s'applique).
+export const RARITY_MIN = {
+  commune: { port: 500, outpost: 200, beacon: 250 },
+  rare: { port: 1000, outpost: 300, beacon: 300 },
+  legendaire: { port: 1500, outpost: 350, beacon: 350 },
+  inconnue: { port: 1000, outpost: 300, beacon: 250 },
+};
+
 // ---------- Génération du monde ----------
 // Toute la géométrie (continent, port, îles, avant-postes, balises) est
 // dérivée d'une graine — rejouable à l'identique serveur et client.
@@ -153,7 +162,7 @@ export function buildWorld(seed) {
   ISLANDS = (() => {
     const out = [];
     let guard = 0;
-    while (out.length < 7 && guard++ < 2000) {
+    while (out.length < 10 && guard++ < 2000) {
       let best = null, bestScore = -1;
       for (let k = 0; k < 12; k++) {
         const x = 12 + rng() * 46;
@@ -165,13 +174,13 @@ export function buildWorld(seed) {
         );
         if (cDist < r * 1.4 + 0.3) continue;
         const b = blob(x, y, r, 12);
-        const score = out.length === 0 ? Infinity : Math.min(...out.map((i) => distNm(i.x, i.y, x, y)));
+        const score = out.length === 0 ? Infinity : Math.min(...out.map((i) => distKm(i.x, i.y, x, y)));
         if (score > bestScore) {
           bestScore = score;
           best = { x, y, r, verts: b.verts, radii: b.radii, maxR: Math.max(...b.radii.map((p) => p.rad)) };
         }
       }
-      if (bestScore > 200) out.push(best);
+      if (bestScore > 166.68) out.push(best); // 166.68 km de séparation minimale entre îles
     }
     return out;
   })();
@@ -179,15 +188,28 @@ export function buildWorld(seed) {
   OUTPOSTS = (() => {
     const out = [];
     const taken = [];
-    let guard = 0;
-    while (out.length < Math.min(3, ISLANDS.length) && guard++ < 200) {
-      const idx = Math.floor(rng() * ISLANDS.length);
-      if (taken.includes(idx)) continue;
-      const i = ISLANDS[idx];
-      const brg = rng() * Math.PI * 2;
-      const rr = isleRadAt(i, brg);
-      taken.push(idx);
-      out.push({ island: idx, x: i.x + Math.sin(brg) * rr * 0.995, y: i.y + Math.cos(brg) * rr * 0.995 });
+    const target = Math.min(5, ISLANDS.length);
+    // Placement glouton « point le plus éloigné » : chaque nouvel
+    // avant-poste est posé sur l'île qui maximise son écart minimal aux
+    // avant-postes déjà placés (au port pour le premier → garantit une
+    // île à l'opposé du continent). Objectif d'écart 2000 km (non
+    // contraignant : à défaut, l'île la plus écartée, jamais du hasard).
+    const score = (p) => (out.length === 0
+      ? distKm(p.x, p.y, PORT.x, PORT.y)
+      : Math.min(...out.map((o) => distKm(o.x, o.y, p.x, p.y))));
+    while (out.length < target) {
+      let bestIdx = -1, bestP = null, bestScore = -1;
+      for (let k = 0; k < ISLANDS.length; k++) {
+        if (taken.includes(k)) continue;
+        const i = ISLANDS[k];
+        const brg = rng() * Math.PI * 2;
+        const rr = isleRadAt(i, brg);
+        const p = { x: i.x + Math.sin(brg) * rr * 0.995, y: i.y + Math.cos(brg) * rr * 0.995 };
+        const sc = score(p);
+        if (sc > bestScore) { bestScore = sc; bestIdx = k; bestP = p; }
+      }
+      taken.push(bestIdx);
+      out.push({ island: bestIdx, ...bestP });
     }
     return out;
   })();
@@ -198,26 +220,28 @@ export function buildWorld(seed) {
 
   BEACONS = (() => {
     const out = [];
-    const place = (minD, maxD) => {
-      let best = null, bestScore = -1;
-      for (let i = 0; i < 400; i++) {
-        const x = 2 + rng() * 56;
-        const y = 2 + rng() * 56;
-        if (isLand(x, y)) continue;
-        const d = distNm(x, y, PORT.x, PORT.y);
-        if (d < 6 * DEG_NM || d < minD || d > maxD) continue;
-        if (out.some((b) => distNm(b.x, b.y, x, y) < 100)) continue;
-        const score = out.length === 0 ? 1 : Math.min(...out.map((b) => distNm(b.x, b.y, x, y)));
-        if (score > bestScore) { bestScore = score; best = { x, y }; }
-      }
-      return best || { x: MAP / 2, y: MAP / 2 };
-    };
-    const bands = { commune: [500, 1600], rare: [900, 2200], legendaire: [2200, 3400], inconnue: [1600, 2600] };
-    const counts = { commune: 10, rare: 6, legendaire: 4, inconnue: 1 };
+    // 40 balises : 20 communes, 10 rares, 5 légendaires, 5 inconnues.
+    // Tirage aléatoire sur toute la carte ; si une condition échoue
+    // (terre, distance au port, à un avant-poste ou à une autre balise),
+    // une nouvelle position est tirée. Garde-fou : 200 000 essais.
+    // Entre deux balises, le seuil le PLUS STRICT des deux s'applique
+    // (une légendaire interdit 350 km à quiconque, même posée en premier).
+    const counts = { commune: 20, rare: 10, legendaire: 5, inconnue: 5 };
+    const minBcnOf = (r) => RARITY_MIN[r].beacon;
     for (const [rarity, n] of Object.entries(counts)) {
+      const m = RARITY_MIN[rarity];
+      const minPort = m.port, minOut = m.outpost, minBcn = m.beacon; // km
       for (let i = 0; i < n; i++) {
-        const p = place(bands[rarity][0], bands[rarity][1]);
-        out.push({ id: `${rarity[0]}${i}`, x: p.x, y: p.y, rarity, pts: RARITY_STYLE[rarity].pts, active: true, phase: Math.floor(rng() * PULSE_MIN) });
+        let x = 0, y = 0, ok = false, tries = 0;
+        while (tries++ < 200000 && !ok) {
+          x = 2 + rng() * 56;
+          y = 2 + rng() * 56;
+          ok = !isLand(x, y)
+            && distKm(x, y, PORT.x, PORT.y) >= minPort
+            && !OUTPOSTS.some((o) => distKm(x, y, o.x, o.y) < minOut)
+            && !out.some((b) => distKm(x, y, b.x, b.y) < Math.max(minBcn, minBcnOf(b.rarity)));
+        }
+        out.push({ id: `${rarity[0]}${i}`, x, y, rarity, pts: RARITY_STYLE[rarity].pts, active: true, phase: Math.floor(rng() * PULSE_MIN) });
       }
     }
     return out;
@@ -229,13 +253,13 @@ export function buildWorld(seed) {
 
 // ---------- Météo ----------
 export const ARCHETYPES = [
-  { name: "Soleil calme", clouds: 10, wind: 6, rain: 0, vis: 13.5, temp: 4, storm: false, fog: false },
-  { name: "Brouillard", clouds: 55, wind: 3, rain: 0, vis: 0.32, temp: 1, storm: false, fog: true },
-  { name: "Soleil venteux", clouds: 20, wind: 20, rain: 0, vis: 10.8, temp: 2, storm: false, fog: false },
-  { name: "Nuageux", clouds: 70, wind: 12, rain: 0, vis: 6.5, temp: 0, storm: false, fog: false },
-  { name: "Nuageux pluie faible", clouds: 85, wind: 16, rain: 35, vis: 4.3, temp: -2, storm: false, fog: false },
-  { name: "Pluie forte", clouds: 95, wind: 26, rain: 80, vis: 2.2, temp: -3, storm: false, fog: false },
-  { name: "Orage", clouds: 98, wind: 44, rain: 100, vis: 0.81, temp: -5, storm: true, fog: true },
+  { name: "Soleil calme", clouds: 10, wind: 11.1, rain: 0, vis: 25, temp: 4, storm: false, fog: false },
+  { name: "Brouillard", clouds: 55, wind: 5.6, rain: 0, vis: 0.6, temp: 1, storm: false, fog: true },
+  { name: "Soleil venteux", clouds: 20, wind: 37.0, rain: 0, vis: 20, temp: 2, storm: false, fog: false },
+  { name: "Nuageux", clouds: 70, wind: 22.2, rain: 0, vis: 12, temp: 0, storm: false, fog: false },
+  { name: "Nuageux pluie faible", clouds: 85, wind: 29.6, rain: 35, vis: 8, temp: -2, storm: false, fog: false },
+  { name: "Pluie forte", clouds: 95, wind: 48.2, rain: 80, vis: 4, temp: -3, storm: false, fog: false },
+  { name: "Orage", clouds: 98, wind: 81.5, rain: 100, vis: 1.5, temp: -5, storm: true, fog: true },
 ];
 export const DOUGLAS_LABEL = ["calme", "belle", "peu agitée", "agitée", "forte", "très forte", "grosse", "très grosse", "énorme", "monstrueuse"];
 export const douglasOf = (hs) =>
@@ -283,8 +307,8 @@ export function weatherAt(x, y, tMin, seed) {
   const windDir = (220 + 120 * Math.sin(x * 0.08 + y * 0.06 + h * 0.05 + p * 1.7) + 360) % 360;
   const temp = 22 + 6 * Math.sin(y * 0.1) + mix(A.temp, B.temp);
   const curDir = (x * 7 + y * 13 + h * 1.2) % 360;
-  const curSpd = 1.2 + Math.abs(Math.sin(x * 0.3 + y * 0.2));
-  const u = windSpd * 0.514;
+  const curSpd = 2.2 + Math.abs(Math.sin(x * 0.3 + y * 0.2)) * 1.9; // 2,2 à 4,1 km/h
+  const u = windSpd / 3.6; // vent en m/s
   const hs = Math.round(0.0212 * u * u * 10) / 10;
   const period = Math.round(Math.min(14, Math.max(2, 0.7 * u)) * 10) / 10;
   const douglas = douglasOf(hs);
@@ -334,14 +358,13 @@ export function shipVisibleKm(target, night) {
 // ---------- Dimensions du navire et collision précise ----------
 // Coque : 15 m de long, 5 m de large. Collision = rectangles orientés
 // (OBB) qui s'intersectent (SAT) — précis au mètre, pas un simple rayon.
-export const SHIP_LEN_M = 15;
-export const SHIP_WID_M = 5;
-export const M_PER_DEG = 111120; // 1 deg = 111.12 km
+export const SHIP_LEN_KM = 0.015; // coque : 15 m
+export const SHIP_WID_KM = 0.005; // largeur : 5 m
 // Vrai test d'intersection entre les deux coques orientées (deg units).
 // SAT sur les 4 axes (2 par rectangle).
 export function shipsCollide(ax, ay, aHead, bx, by, bHead) {
-  const ha = SHIP_LEN_M / 2 / M_PER_DEG; // demi-longueur en degres
-  const wa = SHIP_WID_M / 2 / M_PER_DEG;
+  const ha = SHIP_LEN_KM / 2 / DEG_KM; // demi-longueur en degres
+  const wa = SHIP_WID_KM / 2 / DEG_KM;
   const dx = bx - ax, dy = by - ay;
   // pré-écart rapide : si les centres sont à plus d'une diagonale, pas de contact
   if (dx * dx + dy * dy > (2 * ha) * (2 * ha) * 1.2) return false;
@@ -386,8 +409,8 @@ export function spawnPosition(world, taken = []) {
   const PORT = world.PORT;
   const okSpot = (x, y) =>
     !world.isLand(x, y) &&
-    distToLine(x, y, world.COAST) * M_PER_DEG >= 50 &&
-    taken.every((t) => Math.hypot(t.x - x, t.y - y) * M_PER_DEG >= 50);
+    distToLine(x, y, world.COAST) * DEG_KM >= 0.05 &&
+    taken.every((t) => Math.hypot(t.x - x, t.y - y) * DEG_KM >= 0.05);
   const candidate = (x, y) => {
     if (!okSpot(x, y)) return null;
     const pos = { x, y };
@@ -396,8 +419,8 @@ export function spawnPosition(world, taken = []) {
   };
   // spirale : rayon croissant, tous les 10° — ordre = proximité au port,
   // donc les navires se placent naturellement au plus près du quai.
-  for (let r = 60; r <= 5000; r += 40) {
-    const rd = r / M_PER_DEG;
+  for (let r = 0.06; r <= 5; r += 0.04) { // rayon en km, du quai jusqu'à 5 km
+    const rd = r / DEG_KM;
     for (let a = 0; a < 360; a += 10) {
       const rad = (a * Math.PI) / 180;
       const x = PORT.x + Math.sin(rad) * rd;
@@ -413,7 +436,7 @@ export function spawnPosition(world, taken = []) {
 }
 
 // ---------- Radio ----------
-export const signalStrengthKm = (dKm) => Math.max(0, Math.round(100 * (1 - dKm / 2000)));
+export const signalStrengthKm = (dKm) => Math.max(0, Math.round(100 * (1 - dKm / RADIO_DECAY_KM)));
 export const dirSensitivity = (antBeam) => 1 + ((antBeam - 1) / 179) * 49;
 export function dirEffSensitivity(antBeam, diff, sens) {
   const ratio = clamp(diff / (antBeam / 2), 0, 1);
@@ -422,8 +445,8 @@ export function dirEffSensitivity(antBeam, diff, sens) {
 
 // Détection d'une émission par les capteurs radio du navire.
 export function detectBeacon(st, b, world) {
-  const d = distNm(st.x, st.y, b.x, b.y);
-  const dKm = d * KM_PER_NM;
+  const d = distKm(st.x, st.y, b.x, b.y);
+  const dKm = d;
   const strength = signalStrengthKm(dKm);
   const brg = bearingTo(st.x, st.y, b.x, b.y);
   let got = null;
@@ -446,22 +469,22 @@ export function detectBeacon(st, b, world) {
 
 // ---------- Émission « Position ? » ----------
 // L'appel part SIMULTANÉMENT sur deux chemins :
-// - Omnidirectionnel : 100 % à la source, 0 % à 500 km.
-// - Directionnel : portée = 1000 + 4000 × (180 − ouverture)/179 km
-//   (1000 km à 180°, 5000 km à 1°), force 100 % à la source, 0 % à la
+// - Omnidirectionnel : 100 % à la source, 0 % à 250 km.
+// - Directionnel : portée = 500 + 2000 × (180 − ouverture)/179 km
+//   (500 km à 180°, 2500 km à 1°), force 100 % à la source, 0 % à la
 //   portée du faisceau. Malus de bord symétrique de la réception.
 // Les balises écoutent tout message de force reçue >= 1 % : la balise
 // composée — et elle seule — répond immédiatement en PRIVÉ avec ses
 // coordonnées exactes. La réponse suit les règles de réception
-// habituelles (décroissance 2000 km) : on peut joindre une balise à
-// ~4950 km au faisceau 1° et ne pas entendre sa réponse au-delà de ~1980 km.
+// habituelles (décroissance 1000 km) : on peut joindre une balise à
+// ~2475 km au faisceau 1° et ne pas entendre sa réponse au-delà de ~980 km.
 export const CALL_BATTERY_COST = 0.5;
 export function dirRangeKm(antBeam) {
-  return 1000 + 4000 * (180 - antBeam) / 179;
+  return 500 + 2000 * (180 - antBeam) / 179; // 500 km à 180°, 2500 km à 1°
 }
 // Force reçue par une cible à dKm de la source (émission double chemin).
 export function callStrengthAtKm(st, dKm, targetBrg) {
-  const omni = Math.max(0, 100 * (1 - dKm / 500));
+  const omni = Math.max(0, 100 * (1 - dKm / 250));
   const range = dirRangeKm(st.antBeam);
   const antHeading = (st.heading + st.antOrient + 720) % 360;
   const diff = Math.abs(angDiff(targetBrg, antHeading));
@@ -485,15 +508,15 @@ export function callPosition(st, code, world, noCost = false) {
   if (!noCost) st.battery = Math.max(0, st.battery - CALL_BATTERY_COST);
   const target = world.BEACONS.find((b) => b.code === code && b.active);
   if (!target) return null;
-  const d = distNm(st.x, st.y, target.x, target.y);
-  const dKm = d * KM_PER_NM;
+  const d = distKm(st.x, st.y, target.x, target.y);
+  const dKm = d;
   const brg = bearingTo(st.x, st.y, target.x, target.y);
   const { strength } = callStrengthAtKm(st, dKm, brg);
   if (strength < 1) return null;
   const respStrength = signalStrengthKm(dKm);
   // réponse audible par l'appelant : contenu privé complet (inchangé)
   if (respStrength > 0) {
-    const dEst = Math.round(2000 * (1 - respStrength / 100));
+    const dEst = Math.round(RADIO_DECAY_KM * (1 - respStrength / 100));
     const dErr = Math.round(dEst * 0.2);
     st.notifSeq = (st.notifSeq || 0) + 1;
     st.notifications.unshift({
@@ -510,7 +533,7 @@ export function callPosition(st, code, world, noCost = false) {
 // destinataire détecte une TRANSMISSION BROUILLÉE — niveau de signal (et
 // azimut en directionnel), mais AUCUN contenu.
 export function scrambledIntercept(strength, source, antBeam, antOrient, heading, brg) {
-  const dEst = Math.round(2000 * (1 - strength / 100));
+  const dEst = Math.round(RADIO_DECAY_KM * (1 - strength / 100));
   const antHeading = (heading + antOrient + 720) % 360;
   if (source === "dir") {
     const signedDiff = angDiff(brg, antHeading);
@@ -533,12 +556,12 @@ export function newPlayerState(world, opts = {}) {
     sail: 0.8, engine: 0.8,
     estX: sp.x, estY: sp.y, unc: 0,
     navFix: { active: false, startT: 0, doneNight: null, lastTryT: null },
-    location: "surface", mast: false, engineOn: false, electricOn: false, periscope: false, vkn: 0, light: false,
+    location: "surface", mast: false, engineOn: false, electricOn: false, periscope: false, vkmh: 0, light: false,
     fuel: 100, battery: 100, food: 100, score: 0, codes: [],
     waypoints: [], wpIdx: 0, autopilot: false,
     antBeam: 45, antOrient: 0, signals: [], notifications: [], notifSeq: 0,
     grounded: false, wasStorm: false, warnedFood: false, warnedFuel: false, warnedBatt: false,
-    ffEvents: [], travelledNm: 0, dailyNm: 0, dayIdx: 0,
+    ffEvents: [], travelledKm: 0, dailyKm: 0, dayIdx: 0,
     weatherSeed: opts.weatherSeed ?? Math.floor(Math.random() * 1000), weatherName: null,
     code: opts.shipCode ?? String(Math.floor(Math.random() * 10000)).padStart(4, "0"),
     sawIsland: false, sawBeaconId: null, sawPort: false, sawCont: false, sawOutpostIds: [], pins: [], measures: [],
@@ -559,21 +582,21 @@ function ev(st, kind, text, cat) {
   notify(st, text, kind === "signal" ? "info" : "warn", cat);
 }
 
-function speedKn(st, w) {
-  let kn = 0;
+function speedKmh(st, w) {
+  let v = 0;
   if (st.location === "surface") {
     if (st.mast) {
       const windTo = (w.windDir + 180) % 360;
       const angle = Math.abs(angDiff(st.heading + (st.compDev || 0), windTo));
-      const wf = clamp(w.windSpd / 20, 0, 1.1);
-      kn += 17 * wf * st.sail * sailPolarFactor(angle);
+      const wf = clamp(w.windSpd / 37.04, 0, 1.1); // vent de référence 20 km/h -> 37,04
+      v += 31.484 * wf * st.sail * sailPolarFactor(angle);
     }
-    if (st.engineOn && st.fuel > 0) kn += 15 * st.engine;
-    kn = Math.min(kn, 20);
+    if (st.engineOn && st.fuel > 0) v += 27.78 * st.engine;
+    v = Math.min(v, 37.04);
   } else {
-    if (st.electricOn && st.battery > 0) kn += (st.periscope ? 6 : 4) * st.engine;
+    if (st.electricOn && st.battery > 0) v += (st.periscope ? 11.112 : 7.408) * st.engine;
   }
-  return kn;
+  return v;
 }
 
 // Un tick = dtMin minutes de jeu. Le monde (balises actives) est partagé
@@ -613,14 +636,14 @@ export function tick(st, dtMin, world) {
   // CONSIGNE (headingOrder) à un taux borné. À pleine vitesse en surface,
   // 270 °/min : un virage de 90° prend ~20 s de jeu. À l'arrêt, une part de
   // la giration reste disponible (barre/hélice) — un navire échoué ou en
-  // collision (vkn = 0) peut toujours virer pour se dégager.
+  // collision (vkmh = 0) peut toujours virer pour se dégager.
   const surface = st.location === "surface";
   {
     const order = st.headingOrder ?? st.heading; // migration des états anciens
     const TURN_MAX = surface ? 270 : 90;              // °/min
     const STEER_AT_REST = surface ? 0.25 : 0.15;
-    const vRef = surface ? 20 : 6;
-    const rate = TURN_MAX * (STEER_AT_REST + (1 - STEER_AT_REST) * clamp(st.vkn / vRef, 0, 1));
+    const vRef = surface ? 37.04 : 11.112;
+    const rate = TURN_MAX * (STEER_AT_REST + (1 - STEER_AT_REST) * clamp(st.vkmh / vRef, 0, 1));
     // SOUS-DÉCOUPAGE : à haut taux, un grand pas de rattrapage ne doit pas
     // intégrer 1350° d'un coup. Tant que la rotation restante du pas dépasse
     // 45°, on avance par sous-pas (~10 s de jeu), en intégrant la POSITION
@@ -632,16 +655,16 @@ export function tick(st, dtMin, world) {
       const cdr = (w.curDir * Math.PI) / 180;
       const rad = (st.heading * Math.PI) / 180; // cap affiché (estime)
       const moored = surface &&
-        (distNm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_NM ||
-         world.OUTPOSTS.some((o) => distNm(st.x, st.y, o.x, o.y) < DELIVERY_R_NM));
-      st.x += Math.sin(rT) * (st.vkn / 3600) * minutes * (1 + st.logErr / 100)
-            + (moored ? 0 : Math.sin(cdr) * (w.curSpd / 3600) * minutes);
-      st.y += Math.cos(rT) * (st.vkn / 3600) * minutes * (1 + st.logErr / 100)
-            + (moored ? 0 : Math.cos(cdr) * (w.curSpd / 3600) * minutes);
+        (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
+         world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM));
+      st.x += Math.sin(rT) * (st.vkmh / 60 / DEG_KM) * minutes * (1 + st.logErr / 100)
+            + (moored ? 0 : Math.sin(cdr) * (w.curSpd / 60 / DEG_KM) * minutes);
+      st.y += Math.cos(rT) * (st.vkmh / 60 / DEG_KM) * minutes * (1 + st.logErr / 100)
+            + (moored ? 0 : Math.cos(cdr) * (w.curSpd / 60 / DEG_KM) * minutes);
       // estime : même convention que le bloc mouvement (cap affiché, sans
       // logErr, sans courant) — l'estime doit couvrir les sous-pas aussi
-      st.estX += Math.sin(rad) * (st.vkn / 3600) * minutes;
-      st.estY += Math.cos(rad) * (st.vkn / 3600) * minutes;
+      st.estX += Math.sin(rad) * (st.vkmh / 60 / DEG_KM) * minutes;
+      st.estY += Math.cos(rad) * (st.vkmh / 60 / DEG_KM) * minutes;
     };
     let remaining = dtMin;
     let integrated = 0; // temps de position déjà intégré (sous-pas)
@@ -668,27 +691,27 @@ export function tick(st, dtMin, world) {
   // Mouvement + inertie (sur le temps restant du pas : la position des
   // sous-pas de giration a déjà été intégrée physiquement ci-dessus ; ce
   // bloc gère l'inertie de vitesse, l'estime et l'échouement au cap final)
-  const target = speedKn(st, w);
-  const accel = surface ? 6.0 : 2.0;
-  const decel = surface ? 3.0 : 1.6;
-  if (st.vkn < target) st.vkn = Math.min(target, st.vkn + accel * dtMin);
-  else st.vkn = Math.max(target, st.vkn - decel * dtMin);
+  const target = speedKmh(st, w);
+  const accel = surface ? 11.112 : 3.704;
+  const decel = surface ? 5.556 : 2.9632;
+  if (st.vkmh < target) st.vkmh = Math.min(target, st.vkmh + accel * dtMin);
+  else st.vkmh = Math.max(target, st.vkmh - decel * dtMin);
   const rad = (st.heading * Math.PI) / 180;
   const radT = ((st.heading + st.compDev) * Math.PI) / 180;
   const cdr = (w.curDir * Math.PI) / 180;
-  const through = (st.vkn / 3600) * dtMin;
+  const through = (st.vkmh / 60 / DEG_KM) * dtMin;
   const throughT = through * (1 + st.logErr / 100);
-  const drift = (w.curSpd / 3600) * dtMin;
+  const drift = (w.curSpd / 60 / DEG_KM) * dtMin;
   const moored = surface &&
-    (distNm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_NM ||
-     world.OUTPOSTS.some((o) => distNm(st.x, st.y, o.x, o.y) < DELIVERY_R_NM));
+    (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
+     world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM));
   const driftEff = moored ? 0 : drift;
   const nx = st.x + Math.sin(radT) * throughT + Math.sin(cdr) * driftEff;
   const ny = st.y + Math.cos(radT) * throughT + Math.cos(cdr) * driftEff;
-  st.travelledNm += st.vkn * (dtMin / 60);
+  st.travelledKm += st.vkmh * (dtMin / 60);
   const day = Math.floor(st.t / 1440);
-  if (day !== st.dayIdx) { st.dayIdx = day; st.dailyNm = 0; }
-  st.dailyNm += st.vkn * (dtMin / 60);
+  if (day !== st.dayIdx) { st.dayIdx = day; st.dailyKm = 0; }
+  st.dailyKm += st.vkmh * (dtMin / 60);
   if (nx < 0.2 || nx > MAP - 0.2 || ny < 0.2 || ny > MAP - 0.2) {
     if (!st.grounded) {
       notify(st, "Limite de la zone de course — cap bloqué.", "warn", "alertes");
@@ -698,7 +721,7 @@ export function tick(st, dtMin, world) {
       }
     }
     st.grounded = true;
-    st.vkn = 0;
+    st.vkmh = 0;
   } else if (world.isLand(nx, ny)) {
     if (!st.grounded) {
       ev(st, "land", "⚠️ Terre détectée — navigation stoppée (risque d'échouement). Changez de cap.", "alertes");
@@ -710,12 +733,12 @@ export function tick(st, dtMin, world) {
       }
     }
     st.grounded = true;
-    st.vkn = 0;
+    st.vkmh = 0;
   } else {
     st.x = nx; st.y = ny; st.grounded = false;
     st.estX += Math.sin(rad) * through;
     st.estY += Math.cos(rad) * through;
-    st.unc += 0.025 * (st.vkn * KM_PER_NM * dtMin / 60) + 0.278 * (dtMin / 60) + drift * KM_PER_DEG;
+    st.unc += 0.025 * (st.vkmh * dtMin / 60) + 0.278 * (dtMin / 60) + drift * DEG_KM;
   }
 
   // Validation des points de passage (pilote auto) : au plus court sur la
@@ -723,7 +746,7 @@ export function tick(st, dtMin, world) {
   // Dépassement possible (validation au passage), enchaînement immédiat.
   while (st.autopilot && st.wpIdx < st.waypoints.length) {
     const wp = st.waypoints[st.wpIdx];
-    if (segDistNm(wp.x, wp.y, prevEstX, prevEstY, st.estX, st.estY) >= WP_R_NM) break;
+    if (segDistKm(wp.x, wp.y, prevEstX, prevEstY, st.estX, st.estY) >= WP_R_KM) break;
     st.wpIdx++;
     notify(st, `📍 Point ${st.wpIdx}/${st.waypoints.length} atteint (à l'estime).`, "info", "navire");
     if (st.wpIdx < st.waypoints.length) {
@@ -759,10 +782,10 @@ export function tick(st, dtMin, world) {
   if (st.navFix.active) {
     if (st.t - st.navFix.startT >= 120) {
       if (navOk) {
-        const newUnc = Math.max(1.5, 1.5 + 0.2 * w.clouds + 1.5 * w.hs + 0.4 * Math.max(0, 10 - w.visibility * KM_PER_NM));
+        const newUnc = Math.max(1.5, 1.5 + 0.2 * w.clouds + 1.5 * w.hs + 0.4 * Math.max(0, 10 - w.visibility));
         if (newUnc < st.unc) {
           const fa = Math.random() * Math.PI * 2;
-          const fr = Math.sqrt(Math.random()) * (newUnc / KM_PER_DEG);
+          const fr = Math.sqrt(Math.random()) * (newUnc / DEG_KM);
           st.estX = st.x + Math.cos(fa) * fr;
           st.estY = st.y + Math.sin(fa) * fr;
           st.unc = newUnc;
@@ -801,7 +824,7 @@ export function tick(st, dtMin, world) {
       if (got) {
         st.signals.unshift(got);
         if (st.signals.length > 30) st.signals.pop();
-        const dEst = Math.round(2000 * (1 - got.strength / 100));
+        const dEst = Math.round(RADIO_DECAY_KM * (1 - got.strength / 100));
         const txt = got.source === "omni"
           ? `📡 Ping ${b.code} — signal ${got.strength}% (distance estimée : ${dEst} ± ${Math.round(dEst * 0.2)} km, omnidirectionnelle, azimut inconnu)`
           : `📡 Ping ${b.code} — azimut ${got.bearing}°, signal ${got.strength}% (distance estimée : ${dEst} ± ${Math.round(dEst * 0.2)} km), partie ${got.side} du cône (ouverture ${got.beam}°)`;
@@ -813,12 +836,12 @@ export function tick(st, dtMin, world) {
   // Observations visuelles + points visuels
   const night2 = !daylight;
   const canSee = st.location === "surface" || st.periscope;
-  const visKm = w.visibility * KM_PER_NM;
+  const visKm = w.visibility;
   const azTo = (x, y) => Math.round((Math.atan2(x - st.x, y - st.y) * 180) / Math.PI + 360) % 360;
-  const kmOf = (x, y) => (distNm(st.x, st.y, x, y) / DEG_NM) * KM_PER_DEG;
+  const kmOf = (x, y) => distKm(st.x, st.y, x, y);
   const nearIsl = world.ISLANDS.reduce(
     (best, i) => {
-      const c = kmOf(i.x, i.y) - isleRadAt(i, Math.atan2(st.x - i.x, st.y - i.y)) * KM_PER_DEG;
+      const c = kmOf(i.x, i.y) - isleRadAt(i, Math.atan2(st.x - i.x, st.y - i.y)) * DEG_KM;
       return c < best.c ? { i, c } : best;
     },
     { i: world.ISLANDS[0], c: 1e9 }
@@ -844,7 +867,7 @@ export function tick(st, dtMin, world) {
     if (st.unc > 0.9) { st.unc = 0.9; notify(st, "🔭 Point visuel sur le port : incertitude ± 0,9 km.", "good", "nav"); }
   }
   st.sawPort = portVis;
-  const contKm = distToLine(st.x, st.y, world.COAST) * KM_PER_DEG;
+  const contKm = distToLine(st.x, st.y, world.COAST) * DEG_KM;
   const contVis = canSee && contKm <= detectKm("continent", visKm, night2);
   if (contVis && !st.sawCont) {
     notify(st, `🏞️ Côte en vue : ~${Math.round(contKm)} km.`, "info", "vision");
@@ -865,7 +888,7 @@ export function tick(st, dtMin, world) {
   if (st.location === "surface" || (st.location === "underwater" && st.periscope)) {
     for (const b of world.BEACONS) {
       if (!b.active) continue;
-      if (segDistNm(b.x, b.y, prevX, prevY, st.x, st.y) < CAPTURE_R_NM) {
+      if (segDistKm(b.x, b.y, prevX, prevY, st.x, st.y) < CAPTURE_R_KM) {
         b.active = false;
         st.codes.push({ id: b.id, rarity: b.rarity, pts: b.pts });
         ev(st, "capture", `📦 Code de la balise ${b.id} (${RARITY_LABEL[b.rarity] || b.rarity}, ${b.pts} pts) enregistré. Balise désactivée.`, "balises");
@@ -874,7 +897,7 @@ export function tick(st, dtMin, world) {
   }
 
   // Livraison au port
-  if (segDistNm(world.PORT.x, world.PORT.y, prevX, prevY, st.x, st.y) < DELIVERY_R_NM && st.codes.length > 0) {
+  if (segDistKm(world.PORT.x, world.PORT.y, prevX, prevY, st.x, st.y) < DELIVERY_R_KM && st.codes.length > 0) {
     const pts = st.codes.reduce((a, c) => a + c.pts, 0);
     st.score += pts;
     const ids = st.codes.map((c) => c.id).join(", ");
@@ -899,15 +922,15 @@ export function computeView(st, world) {
   const hour = (st.t / 60) % 24;
   const night = hour < 6 || hour >= 20;
   const canSee = st.location === "surface" || st.periscope;
-  const visKm = w.visibility * KM_PER_NM;
+  const visKm = w.visibility;
   const HORIZON = 20; // km, horizon géographique depuis le pont
   const azTo = (x, y) => Math.round((Math.atan2(x - st.x, y - st.y) * 180) / Math.PI + 360) % 360;
-  const kmOf = (x, y) => (distNm(st.x, st.y, x, y) / DEG_NM) * KM_PER_DEG;
+  const kmOf = (x, y) => distKm(st.x, st.y, x, y);
   const det = (kind) => (canSee ? detectKm(kind, visKm, night) : -1);
 
   const islands = [];
   world.ISLANDS.forEach((i) => {
-    const c = kmOf(i.x, i.y) - isleRadAt(i, Math.atan2(st.x - i.x, st.y - i.y)) * KM_PER_DEG;
+    const c = kmOf(i.x, i.y) - isleRadAt(i, Math.atan2(st.x - i.x, st.y - i.y)) * DEG_KM;
     if (c <= det("ile")) islands.push({ verts: i.verts, km: c, az: azTo(i.x, i.y), beyond: c > HORIZON });
   });
   const outposts = [];
@@ -923,7 +946,7 @@ export function computeView(st, world) {
   });
   const portKm = kmOf(world.PORT.x, world.PORT.y);
   const port = portKm <= det("port") ? { km: portKm, az: azTo(world.PORT.x, world.PORT.y), beyond: portKm > HORIZON } : null;
-  const contKm = distToLine(st.x, st.y, world.COAST) * KM_PER_DEG;
+  const contKm = distToLine(st.x, st.y, world.COAST) * DEG_KM;
   const coast = contKm <= det("continent");
 
   const antHeading = (st.heading + st.antOrient + 720) % 360;
