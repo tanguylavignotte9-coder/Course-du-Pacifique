@@ -519,7 +519,7 @@ export function newPlayerState(world, opts = {}) {
   const sx = sp.x;
   const eastCoast = world.CONTINENT.x1 <= MAP / 2;
   return {
-    t: 0, x: sp.x, y: sp.y, heading: eastCoast ? 90 : 270,
+    t: 0, x: sp.x, y: sp.y, heading: eastCoast ? 90 : 270, headingOrder: eastCoast ? 90 : 270,
     sail: 0.8, engine: 0.8,
     estX: sp.x, estY: sp.y, unc: 0,
     navFix: { active: false, startT: 0, doneNight: null, lastTryT: null },
@@ -586,10 +586,63 @@ export function tick(st, dtMin, world) {
     st.battery = Math.min(100, st.battery + 5 * (1 - w.clouds / 130) * (dtMin / 60));
   st.food = Math.max(0, st.food - 0.22 * (dtMin / 60));
 
-  // Mouvement + inertie
+  // Giration : le navire converge de son cap réel (heading) vers la
+  // CONSIGNE (headingOrder) à un taux borné. À pleine vitesse en surface,
+  // 270 °/min : un virage de 90° prend ~20 s de jeu. À l'arrêt, une part de
+  // la giration reste disponible (barre/hélice) — un navire échoué ou en
+  // collision (vkn = 0) peut toujours virer pour se dégager.
+  const surface = st.location === "surface";
+  {
+    const order = st.headingOrder ?? st.heading; // migration des états anciens
+    const TURN_MAX = surface ? 270 : 90;              // °/min
+    const STEER_AT_REST = surface ? 0.25 : 0.15;
+    const vRef = surface ? 20 : 6;
+    const rate = TURN_MAX * (STEER_AT_REST + (1 - STEER_AT_REST) * clamp(st.vkn / vRef, 0, 1));
+    // SOUS-DÉCOUPAGE : à haut taux, un grand pas de rattrapage ne doit pas
+    // intégrer 1350° d'un coup. Tant que la rotation restante du pas dépasse
+    // 45°, on avance par sous-pas (~10 s de jeu), en intégrant la POSITION
+    // physique (cap + courant) à chaque sous-pas — trajectoire d'arc fidèle,
+    // collisions OBB fondées sur le cap réel en giration. En temps réel
+    // (tick 1 s → 4,5°), ce mécanisme reste inactif.
+    const integratePos = (minutes) => {
+      const rT = ((st.heading + st.compDev) * Math.PI) / 180;
+      const cdr = (w.curDir * Math.PI) / 180;
+      const moored = surface &&
+        (distNm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_NM ||
+         world.OUTPOSTS.some((o) => distNm(st.x, st.y, o.x, o.y) < DELIVERY_R_NM));
+      st.x += Math.sin(rT) * (st.vkn / 3600) * minutes * (1 + st.logErr / 100)
+            + (moored ? 0 : Math.sin(cdr) * (w.curSpd / 3600) * minutes);
+      st.y += Math.cos(rT) * (st.vkn / 3600) * minutes * (1 + st.logErr / 100)
+            + (moored ? 0 : Math.cos(cdr) * (w.curSpd / 3600) * minutes);
+    };
+    let remaining = dtMin;
+    let integrated = 0; // temps de position déjà intégré (sous-pas)
+    while (remaining > 1e-9) {
+      const diff = angDiff(order, st.heading);
+      const rateDeg = rate * remaining;
+      if (Math.abs(diff) <= rateDeg) {
+        // le pas suffit à finir la giration : rotation résiduelle exacte
+        st.heading = ((st.heading + diff) % 360 + 360) % 360;
+        remaining = 0;
+      } else {
+        // rotation bornée au taux, puis intégration de position du sous-pas
+        const subMin = Math.min(remaining, Math.max(45 / rate, remaining / 4));
+        const step = Math.sign(diff) * rate * subMin;
+        st.heading = ((st.heading + step) % 360 + 360) % 360;
+        integratePos(subMin);
+        integrated += subMin;
+        remaining -= subMin;
+      }
+    }
+    st.headingOrder = ((order % 360) + 360) % 360;
+    dtMin -= integrated; // le bloc mouvement ci-dessous couvre le reste
+  }
+  // Mouvement + inertie (sur le temps restant du pas : la position des
+  // sous-pas de giration a déjà été intégrée physiquement ci-dessus ; ce
+  // bloc gère l'inertie de vitesse, l'estime et l'échouement au cap final)
   const target = speedKn(st, w);
-  const accel = st.location === "surface" ? 6.0 : 2.0;
-  const decel = st.location === "surface" ? 3.0 : 1.6;
+  const accel = surface ? 6.0 : 2.0;
+  const decel = surface ? 3.0 : 1.6;
   if (st.vkn < target) st.vkn = Math.min(target, st.vkn + accel * dtMin);
   else st.vkn = Math.max(target, st.vkn - decel * dtMin);
   const rad = (st.heading * Math.PI) / 180;
@@ -598,7 +651,7 @@ export function tick(st, dtMin, world) {
   const through = (st.vkn / 3600) * dtMin;
   const throughT = through * (1 + st.logErr / 100);
   const drift = (w.curSpd / 3600) * dtMin;
-  const moored = st.location === "surface" &&
+  const moored = surface &&
     (distNm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_NM ||
      world.OUTPOSTS.some((o) => distNm(st.x, st.y, o.x, o.y) < DELIVERY_R_NM));
   const driftEff = moored ? 0 : drift;

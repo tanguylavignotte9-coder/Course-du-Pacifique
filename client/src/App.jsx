@@ -290,6 +290,12 @@ function TopView({ snap }) {
           fill="rgba(192,132,252,0.16)" stroke="rgba(192,132,252,0.45)" strokeWidth={lw(0.7)}
         />
         <line transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${antHeading})`} x1="0" y1="0" x2="0" y2="-94" stroke="#c084fc" strokeDasharray="4 3" strokeWidth={lw(0.7)} />
+        {/* Consigne de cap : marqueur pointillé vers l'avant */}
+        <line
+          transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${player.headingOrder})`}
+          x1="0" y1="0" x2="0" y2={-70 / Math.max(zoom, 1.4)}
+          stroke="#fbbf24" strokeWidth={lw(1)} strokeDasharray="3 4" opacity="0.8"
+        />
         {/* Navire au centre, orienté au cap */}
         <g transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${heading})`}>
           <path d={`M 0 ${-12 / Math.max(zoom, 1.2)} L ${8 / Math.max(zoom, 1.2)} ${10 / Math.max(zoom, 1.2)} L 0 ${5 / Math.max(zoom, 1.2)} L ${-8 / Math.max(zoom, 1.2)} ${10 / Math.max(zoom, 1.2)} Z`} fill={player.grounded ? "#f87171" : "#38bdf8"} stroke="#e0f2fe" strokeWidth={lw(0.8)} />
@@ -700,15 +706,22 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-slate-400">Cap</span>
-            <Btn onClick={() => cmd({ heading: player.heading - 10 })}>◀</Btn>
+            <Btn onClick={() => cmd({ headingOrder: player.headingOrder - 10 })}>◀</Btn>
             <input
-              type="range" min={0} max={359} value={Math.round(player.heading)}
-              onChange={(e) => cmd({ heading: +e.target.value })}
+              type="range" min={0} max={359} value={Math.round(player.headingOrder)}
+              onChange={(e) => cmd({ headingOrder: +e.target.value })}
               className="w-full accent-sky-400"
             />
-            <Btn onClick={() => cmd({ heading: player.heading + 10 })}>▶</Btn>
-            <span className="w-12 text-right text-xs tabular-nums text-sky-300">{Math.round(player.heading)}°</span>
+            <Btn onClick={() => cmd({ headingOrder: player.headingOrder + 10 })}>▶</Btn>
+            <span className="w-14 text-right text-xs tabular-nums text-sky-300">{Math.round(player.heading)}°</span>
           </div>
+          {Math.abs(((player.headingOrder - player.heading + 540) % 360) - 180) > 2 && (
+            <p className="text-[11px] text-amber-300">
+              🧭 en virage — consigne {Math.round(player.headingOrder)}° (écart {Math.round(((player.headingOrder - player.heading + 540) % 360) - 180)}°)
+            </p>
+          ) || (
+            <p className="text-[11px] text-slate-500">Cap stable — consigne {Math.round(player.headingOrder)}°</p>
+          )}
           <div className="flex items-center gap-2">
             <span className="w-20 text-xs text-slate-400">Voiles</span>
             <input

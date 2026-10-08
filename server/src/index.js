@@ -76,6 +76,8 @@ for (const [id, saved] of Object.entries(race.players || {})) {
   if (saved) {
     states.set(id, saved);
     states.get(id).t = gameMinutesNow();
+    // migration : un état ancien sans consigne prend son cap actuel
+    if (states.get(id).headingOrder == null) states.get(id).headingOrder = states.get(id).heading;
   }
 }
 // Migration unique des sauvegardes anciennes : deux navires superposés
@@ -266,7 +268,7 @@ function publicSnapshot(id) {
     epoch: race.displayEpoch ?? race.epoch ?? new Date(race.startedAt).getTime(),
     isSuper: isSuper(id),
     player: {
-      heading: st.heading, sail: st.sail, engine: st.engine,
+      heading: st.heading, headingOrder: st.headingOrder ?? st.heading, sail: st.sail, engine: st.engine,
       location: st.location, mast: st.mast, engineOn: st.engineOn,
       electricOn: st.electricOn, periscope: st.periscope, vkn: st.vkn,
       fuel: st.fuel, battery: st.battery, food: st.food,
@@ -465,7 +467,11 @@ wss.on("connection", (ws, req) => {
     const st = ensureState(id);
     if (msg.type === "command") {
       const c = msg.data || {};
-      if (typeof c.heading === "number") st.heading = ((Math.round(c.heading) % 360) + 360) % 360;
+      // Pilotage par CONSIGNE : le curseur fixe headingOrder, le moteur
+      // fait converger le cap réel (giration bornée). L'ancien champ
+      // « heading » reste accepté pendant la transition.
+      if (typeof c.headingOrder === "number") st.headingOrder = ((Math.round(c.headingOrder) % 360) + 360) % 360;
+      if (typeof c.heading === "number") st.headingOrder = ((Math.round(c.heading) % 360) + 360) % 360;
       if (typeof c.sail === "number") st.sail = clamp01(c.sail);
       if (typeof c.engine === "number") st.engine = clamp01(c.engine);
       if (typeof c.antBeam === "number") st.antBeam = Math.round(clamp(c.antBeam, 1, 180));
