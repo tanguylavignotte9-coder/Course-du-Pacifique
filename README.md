@@ -72,7 +72,28 @@ Notes :
 
 ## Notes de conception
 
+- Échelle fictive : **1° = 50 km** (sur Terre, 1° ≈ 111 km) — carte de 3000 × 3000 km. Toutes les unités du jeu sont en **km et km/h**.
 - Capture et livraison : **500 m** (zone d'accostage et d'amarrage, point de départ inclus).
-- 21 balises (10 communes, 6 rares, 4 légendaires, 1 inconnue), pulsations radio toutes les 30 min de jeu, phase aléatoire par balise.
+- **40 balises** (20 communes, 10 rares, 5 légendaires, 5 inconnues), pulsation radio **horaire**, phase aléatoire par balise ; décroissance du signal : 100 % à la balise, 0 % à **1000 km**.
+- **10 îles**, **5 avant-postes** sur 5 îles distinctes (placement le plus écarté possible).
+- Contraintes de placement par rareté (km) : distances minimales au port, aux avant-postes et entre balises (règle du seuil le plus strict).
 - Navigation à l'estime : le client ne voit jamais la position vraie ; le serveur ne renvoie que les objets détectés (azimut/distance) et l'estimé avec son incertitude.
 - Défauts d'instruments fixes par navire (déviation compas, erreur de loch) — propres à chaque joueur.
+
+## Règles de codage
+
+> Toute valeur de réglage du jeu (distances, vitesses, durées, seuils, pourcentages, coûts) est définie comme une constante nommée et exportée, en UN SEUL point du code (`shared/engine.js` pour le moteur, `index.js` pour le serveur quand la valeur est purement serveur). Interdiction d'écrire un littéral de réglage ailleurs que dans sa définition. Les tests importent les constantes au lieu de les copier en dur. Un changement de réglage = un changement de ligne.
+
+Exemple — modifier la vitesse maximale de coque :
+
+```js
+// Avant : littéral dispersé dans speedKmh()
+v = Math.min(v, 37.04);
+
+// Après : une seule définition dans shared/engine.js, utilisée partout
+export const VMAX_KMH = 45;   // vitesse max de coque (km/h)
+// ... dans speedKmh() :
+v = Math.min(v, VMAX_KMH);
+```
+
+Changer `VMAX_KMH` change le jeu entier — un réglage, une ligne.

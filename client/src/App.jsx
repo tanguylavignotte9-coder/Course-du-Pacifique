@@ -2,8 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { login, GameSocket } from "./net.js";
 import Scene from "./Scene.jsx";
 import {
-  MAP, KM_PER_DEG, KM_PER_NM, DEG_NM, RARITY_STYLE,
-  distNm, dirSensitivity, DOUGLAS_LABEL,
+  MAP, DEG_KM, RARITY_STYLE,
+  distKm, dirSensitivity, DOUGLAS_LABEL, RADIO_DECAY_KM, dirRangeKm,
+  DELIVERY_R_KM, OMNI_DETECT_PCT, OMNI_CALL_RANGE_KM, MS_PER_MIN,
 } from "../../shared/engine.js";
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -14,7 +15,7 @@ const mixHex = (a, b, t) => {
 };
 const fmtT = (t, epoch) => {
   // Heure de jeu affichée = vraie heure de Paris (epoch + minutes de jeu).
-  const d = new Date((epoch || 0) + t * 60000);
+  const d = new Date((epoch || 0) + t * MS_PER_MIN);
   const date = d.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" });
   const time = d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
   return `${date} ${time}`;
@@ -43,7 +44,7 @@ function Login({ onLogin }) {
     <div className="flex min-h-screen items-center justify-center p-4">
       <form onSubmit={submit} className="w-full max-w-xs space-y-4 rounded-xl border border-slate-700 bg-slate-800/80 p-6">
         <h1 className="text-lg font-bold text-sky-300">⚓ Pacific Chase</h1>
-        <p className="text-xs text-slate-400">Course nautique temps réel — connectez-vous pour reprendre la mer.</p>
+        <p className="text-xs text-slate-400">Course en temps réel sur l'océan — connectez-vous pour reprendre la mer.</p>
         <input
           autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Nom du marin"
           className="w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100"
@@ -190,8 +191,8 @@ function TopView({ snap }) {
       <g clipPath="url(#localClip)">
         {/* Côte du continent — échelle exacte, suivie par le zoom */}
         {view.coast && view.continentVerts && (() => {
-          const kx = (x) => 100 + (x - snap.player.estX) * KM_PER_DEG * P;
-          const ky = (y) => 100 - (y - snap.player.estY) * KM_PER_DEG * P;
+          const kx = (x) => 100 + (x - snap.player.estX) * DEG_KM * P;
+          const ky = (y) => 100 - (y - snap.player.estY) * DEG_KM * P;
           return (
             <polygon
               points={view.continentVerts.map(([vx, vy]) => `${kx(vx).toFixed(1)},${ky(vy).toFixed(1)}`).join(" ")}
@@ -404,7 +405,7 @@ function NavMap({ snap, sock }) {
 
   const world = snap.world;
   const player = snap.player;
-  const kmOf = (a, b) => distNm(a[0], a[1], b[0], b[1]) * KM_PER_NM;
+  const kmOf = (a, b) => distKm(a[0], a[1], b[0], b[1]);
 
   return (
     <div className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
@@ -569,7 +570,7 @@ function NavMap({ snap, sock }) {
             <g>
               {segs.map((s, i) => {
                 const [x1, y1, x2, y2] = s;
-                const km = Math.round(distNm(s[4], s[5], s[6], s[7]) * 1.852);
+                const km = Math.round(distKm(s[4], s[5], s[6], s[7]));
                 return (
                   <g key={"s" + i}>
                     <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#0ea5e9" strokeWidth="1.4" strokeDasharray="6 4" opacity="0.85" />
@@ -606,7 +607,7 @@ function NavMap({ snap, sock }) {
           </g>
         ))}
         {/* Position estimée + incertitude + cap */}
-        <circle cx={px(player.estX)} cy={py(player.estY)} r={Math.max(1.2, (player.unc / KM_PER_DEG) * S)} fill="rgba(220,38,38,0.18)" stroke="#dc2626" strokeWidth="0.8" />
+        <circle cx={px(player.estX)} cy={py(player.estY)} r={Math.max(1.2, (player.unc / DEG_KM) * S)} fill="rgba(220,38,38,0.18)" stroke="#dc2626" strokeWidth="0.8" />
         <circle cx={px(player.estX)} cy={py(player.estY)} r={2} fill="#dc2626" />
         <line x1={px(player.estX)} y1={py(player.estY)} x2={px(player.estX) + Math.sin((player.heading * Math.PI) / 180) * 16} y2={py(player.estY) - Math.cos((player.heading * Math.PI) / 180) * 16} stroke="#dc2626" strokeWidth="1.2" />
       </svg>
@@ -664,7 +665,7 @@ export default function App() {
   const player = snap?.player;
   const weather = snap?.weather;
   // Heure de jeu : la vraie heure de Paris dérivée de l'epoch + minutes de jeu
-  const hour = snap ? ((new Date(snap.epoch + snap.t * 60000).getHours() + new Date(snap.epoch + snap.t * 60000).getMinutes() / 60)) : 12;
+  const hour = snap ? ((new Date(snap.epoch + snap.t * MS_PER_MIN).getHours() + new Date(snap.epoch + snap.t * MS_PER_MIN).getMinutes() / 60)) : 12;
   const daylight = hour >= 6 && hour < 20;
   const cmd = (data) => sock && sock.command(data);
 
@@ -680,8 +681,8 @@ export default function App() {
   const logNotifs = (player.notifications || []).filter((n) => logFilter === "tout" || n.cat === logFilter);
   const uw = player.location === "underwater";
   const atDock = player.location === "surface" &&
-    (distNm(player.estX, player.estY, snap.world.port.x, snap.world.port.y) < 0.5 ||
-    snap.world.outposts.some((o) => distNm(player.estX, player.estY, o.x, o.y) < 0.5));
+    (distKm(player.estX, player.estY, snap.world.port.x, snap.world.port.y) < DELIVERY_R_KM ||
+    snap.world.outposts.some((o) => distKm(player.estX, player.estY, o.x, o.y) < DELIVERY_R_KM));
   const radioOk = (player.location === "surface" || (player.location === "underwater" && player.periscope)) && player.battery > 0;
   const antSens = Math.round(dirSensitivity(player.antBeam));
   const antHeading = (player.heading + player.antOrient + 720) % 360;
@@ -795,7 +796,7 @@ export default function App() {
             <span className="w-12 text-right text-xs tabular-nums text-sky-300">{Math.round(player.engine * 100)}%</span>
           </div>
           <p className="text-xs text-slate-400">
-            Vitesse (eau) : <b className="text-sky-300">{(player.vkn * KM_PER_NM).toFixed(1)} km/h</b>
+            Vitesse (eau) : <b className="text-sky-300">{player.vkmh.toFixed(1)} km/h</b>
             {player.grounded && <span className="ml-2 text-rose-300">⚠️ échouement — changez de cap</span>}
             {player.collided && <span className="ml-2 text-rose-300">💥 collision — écartez-vous</span>}
           </p>
@@ -816,8 +817,8 @@ export default function App() {
             </div>
             <div>
               <p className="text-[10px] uppercase tracking-wider text-slate-400">Distance</p>
-              <p className="text-sm font-bold tabular-nums">{Math.round(player.travelledNm * KM_PER_NM)} km</p>
-              <p className="text-[10px] text-slate-500">aujourd'hui : {Math.round(player.dailyNm * KM_PER_NM)} km</p>
+              <p className="text-sm font-bold tabular-nums">{Math.round(player.travelledKm)} km</p>
+              <p className="text-[10px] text-slate-500">aujourd'hui : {Math.round(player.dailyKm)} km</p>
             </div>
           </div>
         </div>
@@ -833,11 +834,11 @@ export default function App() {
             <h2 className="text-sm font-semibold text-sky-300">Météo</h2>
             <p className="text-xs text-slate-300">Situation : <b className="text-sky-200">{weather.name}</b></p>
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-              <span>💨 Vent : <b>{(weather.windSpd * KM_PER_NM).toFixed(1)} km/h</b> <DirArrow deg={(weather.windDir + 180) % 360} color="#93c5fd" /> <b>{weather.windDir}°</b></span>
-              <span>🌊 Courant : <b>{(weather.curSpd * KM_PER_NM).toFixed(1)} km/h</b> <DirArrow deg={weather.curDir} color="#5eead4" /> <b>{weather.curDir}°</b></span>
+              <span>💨 Vent : <b>{weather.windSpd.toFixed(1)} km/h</b> <DirArrow deg={(weather.windDir + 180) % 360} color="#93c5fd" /> <b>{weather.windDir}°</b></span>
+              <span>🌊 Courant : <b>{weather.curSpd.toFixed(1)} km/h</b> <DirArrow deg={weather.curDir} color="#5eead4" /> <b>{weather.curDir}°</b></span>
               <span>☁️ Nuages : <b>{weather.clouds}%</b></span>
               <span>🌡️ Temp. : <b>{weather.temp}°C</b></span>
-              <span>👁️ Visibilité : <b>{(weather.visibility * KM_PER_NM).toFixed(1)} km</b></span>
+              <span>👁️ Visibilité : <b>{weather.visibility.toFixed(1)} km</b></span>
               <span>🌊 Houle : <b>{weather.hs} m</b> · {DOUGLAS_LABEL[weather.douglas]} (Douglas {weather.douglas})</span>
             </div>
             {weather.storm && <p className="rounded bg-rose-900/50 px-2 py-1 text-xs text-rose-200">⚡ TEMPÊTE</p>}
@@ -865,7 +866,7 @@ export default function App() {
               <span className="w-10 text-right text-xs tabular-nums text-purple-300">{player.antOrient}°</span>
             </div>
             <p className="text-[11px] text-slate-500">
-              Directionnelle : capte dès <b className="text-purple-300">{antSens}%</b> (≈ {Math.round(2000 * (1 - antSens / 100))} km) si la balise est centrée · omnidirectionnelle : dès 75 % (≈ 500 km), azimut inconnu.
+              Directionnelle : capte dès <b className="text-purple-300">{antSens}%</b> (≈ {Math.round(RADIO_DECAY_KM * (1 - antSens / 100))} km) si la balise est centrée · omnidirectionnelle : dès {OMNI_DETECT_PCT} % (≈ {Math.round(RADIO_DECAY_KM * (1 - OMNI_DETECT_PCT / 100))} km), azimut inconnu.
             </p>
             <p className="text-[11px] text-slate-400">
               Code du navire : <b className="font-mono text-sm text-sky-300">{player.code}</b> — c'est votre numéro radio (donnez-le aux autres navires pour qu'ils vous appellent).
@@ -881,7 +882,7 @@ export default function App() {
                 onDial={setDial}
                 onAction={(kind, code) => cmd({ shipMsg: { kind, to: code } })}
                 radioOk={radioOk}
-                portee={Math.round(1000 + 4000 * (180 - player.antBeam) / 179)}
+                portee={Math.round(dirRangeKm(player.antBeam))}
               />
             ) : (
               <div className="space-y-2">
@@ -966,7 +967,7 @@ export default function App() {
             </div>
             {wxData?.here && (
               <p className="rounded-lg bg-slate-800/70 p-2.5 text-center text-xs text-slate-300">
-                À votre position à cet instant : vent <b className="text-sky-300">{wxData.here.windSpd.toFixed(0)} kn</b> · nuages <b className="text-sky-300">{wxData.here.clouds.toFixed(0)} %</b> · pluie <b className="text-sky-300">{wxData.here.rain.toFixed(0)} %</b> · visibilité <b className="text-sky-300">{(wxData.here.visibility * KM_PER_NM).toFixed(1)} km</b> · houle <b className="text-sky-300">{wxData.here.hs.toFixed(1)} m</b>
+                À votre position à cet instant : vent <b className="text-sky-300">{wxData.here.windSpd.toFixed(0)} km/h</b> · nuages <b className="text-sky-300">{wxData.here.clouds.toFixed(0)} %</b> · pluie <b className="text-sky-300">{wxData.here.rain.toFixed(0)} %</b> · visibilité <b className="text-sky-300">{wxData.here.visibility.toFixed(1)} km</b> · houle <b className="text-sky-300">{wxData.here.hs.toFixed(1)} m</b>
                 {wxData.here.storm ? " · ⛈️ TEMPÊTE" : wxData.here.fog ? " · 🌫️ BROUILLARD" : ""}
               </p>
             )}
