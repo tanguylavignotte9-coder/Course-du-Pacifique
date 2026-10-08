@@ -302,7 +302,7 @@ export const VIS_NUIT = { ile: 3, continent: 3, port: 15, poste: 10, balise: 11 
 export const detectKm = (kind, visKm, night) => Math.min(visKm, night ? VIS_NUIT[kind] : VIS_BASE[kind]);
 
 // ---------- Voile ----------
-export const SAIL_POLAR = [[0, 0.8], [45, 0.75], [90, 1.0], [135, 0.9], [160, 0.3], [180, 0]];
+export const SAIL_POLAR = [[0, 0.8], [45, 0.75], [90, 1.0], [135, 0.9], [160, 0.6], [180, 0.5]];
 export function sailPolarFactor(angle) {
   for (let i = 0; i < SAIL_POLAR.length - 1; i++) {
     const [a0, f0] = SAIL_POLAR[i];
@@ -568,8 +568,8 @@ export function tick(st, dtMin, world) {
 
   // Mouvement + inertie
   const target = speedKn(st, w);
-  const accel = st.location === "surface" ? 3.0 : 1.0;
-  const decel = st.location === "surface" ? 1.5 : 0.8;
+  const accel = st.location === "surface" ? 6.0 : 2.0;
+  const decel = st.location === "surface" ? 3.0 : 1.6;
   if (st.vkn < target) st.vkn = Math.min(target, st.vkn + accel * dtMin);
   else st.vkn = Math.max(target, st.vkn - decel * dtMin);
   const rad = (st.heading * Math.PI) / 180;

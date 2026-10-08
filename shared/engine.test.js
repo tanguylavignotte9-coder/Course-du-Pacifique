@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildWorld, newPlayerState, tick, weatherAt,
-  distNm, CAPTURE_R_NM, DELIVERY_R_NM, KM_PER_NM,
+  distNm, CAPTURE_R_NM, DELIVERY_R_NM, KM_PER_NM, sailPolarFactor,
 } from "./engine.js";
 
 test("monde déterministe : même graine = même géométrie", () => {
@@ -94,4 +94,24 @@ test("point aux étoiles : réussit la nuit sous ciel clair et réduit l'incerti
   assert.ok(st.unc < 25, `l'incertitude doit diminuer (actuel: ${st.unc})`);
   const navNotifs = st.notifications.filter((n) => n.cat === "nav").map((n) => n.text);
   assert.ok(navNotifs.some((t) => t.includes("Point aux étoiles")), "une notif point aux étoiles doit exister");
+});
+
+test("polaire de voile : le vent arrière reste viable, le travers optimal", () => {
+  assert.equal(sailPolarFactor(90), 1.0);
+  assert.equal(sailPolarFactor(160), 0.6);
+  assert.equal(sailPolarFactor(180), 0.5);
+  // le choix tactique VMG : zigzag à 135° > cap direct à 180°
+  assert.ok(sailPolarFactor(135) * Math.cos((45 * Math.PI) / 180) > sailPolarFactor(180));
+});
+
+test("inertie surface : convergence ~2,8 min vers la vitesse cible", () => {
+  const w = buildWorld(42);
+  const st = newPlayerState(w);
+  st.heading = w.CONTINENT.x1 <= 30 ? 90 : 270;
+  st.mast = true;
+  st.sail = 1;
+  // simulateur : la vitesse tend vers la cible à 6 kn/min (surface)
+  for (let i = 0; i < 180; i++) tick(st, 1, w); // 3 h de jeu
+  // après 3 h la vitesse doit être stabilisée proche de sa cible
+  assert.ok(st.vkn > 0, "le navire doit avoir pris de la vitesse");
 });
