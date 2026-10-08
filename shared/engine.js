@@ -47,6 +47,12 @@ export const RES_WARN_PCT = 15;           // seuil alerte ressources
 export const RES_WARN_RESET_PCT = 30;     // seuil réarmement alertes
 export const CODE_POOL = 10000;           // pool codes radio (0000-9999)
 export const MS_PER_MIN = 60000;          // millisecondes réelles par minute de jeu
+export const WX_HORIZON_H = 48;           // horizon des prévisions météo (h) — port, avant-postes et NETWORK
+
+// Autoguidage balise-vigie : quelles balises peuvent ENGAGER le verrou du
+// pilote. Filtre à l'engagement uniquement — un verrou déjà engagé tient.
+export const AUTOGUIDE_MODES = ["disabled", "active", "all"];
+export const AUTOGUIDE_DEFAULT = "active"; // défaut : seules les balises non capturées verrouillent
 
 // Navigation à l'estime — défauts d'instruments et courant (équilibrage validé)
 export const COMP_DEV_MIN_DEG = 0.15;  // déviation de compas min (°)
@@ -593,14 +599,15 @@ export const CALL_BATTERY_COST = 0.5;
 // numéro, hors faisceau, hors de portée, réponse inaudible) EST
 // l'information : aucune notification d'échec. Coût : 0,5 % de batteries.
 // Traite un appel « Position ? » vers le code composé. Retourne la balise
-// répondue ({ x, y } de la balise) pour que l'appelant du moteur puisse
-// ÉMETTRE la réponse sur les ondes (tiers brouillés) — ou null (silence,
-// mauvais numéro, hors de portée). Le contenu privé reste inchangé.
+// répondue ({ x, y } de la balise — capturée ou non, la station répond
+// toujours) pour que l'appelant du moteur puisse ÉMETTRE la réponse sur les
+// ondes (tiers brouillés) — ou null (silence, mauvais numéro, hors de
+// portée). Le contenu privé reste inchangé.
 export function callPosition(st, code, world, noCost = false) {
   const radioOk = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
   if (!radioOk) return null;
   if (!noCost) st.battery = Math.max(0, st.battery - CALL_BATTERY_COST);
-  const target = world.BEACONS.find((b) => b.code === code && b.active);
+  const target = world.BEACONS.find((b) => b.code === code); // capturée ou non : la station répond toujours
   if (!target) return null;
   const dKm = distKm(st.x, st.y, target.x, target.y);
   const brg = bearingTo(st.x, st.y, target.x, target.y);
@@ -663,9 +670,16 @@ export function pushBeaconSignal(st, sig) {
 //   capture directionnelle faible (balise armée par un concurrent, au loin
 //   dans le faisceau) = journal seul — le pilote n'est jamais happé.
 export function onProximityPing(st, b, cap) {
-  pushBeaconSignal(st, { t: st.t, beaconId: b.code, kind: "prox", ...cap });
+  pushBeaconSignal(st, { t: st.t, beaconId: b.code, kind: "prox", off: !b.active, ...cap });
   if (st.beaconLock && st.beaconLock !== b.code) return; // anti-bascule
-  if (!st.beaconLock && cap.strength < OMNI_DETECT_PCT) return; // signal faible : journal seul
+  if (!st.beaconLock) {
+    if (cap.strength < OMNI_DETECT_PCT) return; // signal faible : journal seul
+    // AUTOGUIDAGE (3 positions) : filtre AU MOMENT DE L'ENGAGEMENT
+    // uniquement — un verrou déjà engagé tient jusqu'au bout, même si
+    // l'interrupteur change ou si la balise est capturée en cours de poursuite.
+    const mode = st.autoguide || AUTOGUIDE_DEFAULT;
+    if (mode !== "all" && (mode === "active") !== b.active) return; // hors mode : journal seul
+  }
   const brg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
   const engaged = !st.beaconLock;
   st.beaconLock = b.code;
@@ -686,7 +700,7 @@ export function onProximityPing(st, b, cap) {
 // elle tient aussi pendant les sauts de temps (pings au rythme temps réel).
 export function beaconLockSteer(st, world) {
   if (!st.beaconLock) return;
-  const b = world.BEACONS.find((x) => x.code === st.beaconLock && x.active);
+  const b = world.BEACONS.find((x) => x.code === st.beaconLock); // capturée ou non : le verrou tient
   if (!b) { st.beaconLock = null; st.lockBrg = null; return; }
   st.lockBrg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
   st.antOrient = Math.round(((st.lockBrg - st.heading + 540) % 360) - 180); // antenne sur la source
@@ -701,7 +715,7 @@ export function beaconLockSteer(st, world) {
 // filer 3 km plus loin.
 export function beaconLockTick(st, world, prevX = st.x, prevY = st.y) {
   if (!st.beaconLock) return;
-  const b = world.BEACONS.find((x) => x.code === st.beaconLock && x.active);
+  const b = world.BEACONS.find((x) => x.code === st.beaconLock); // capturée ou non : le verrou tient
   if (!b) { st.beaconLock = null; st.lockBrg = null; return; }
   let dKm = distKm(st.x, st.y, b.x, b.y);
   if (dKm > ANCHOR_DROP_KM && segDistKm(b.x, b.y, prevX, prevY, st.x, st.y) <= ANCHOR_DROP_KM) {
@@ -754,6 +768,7 @@ export function newPlayerState(world, opts = {}) {
     location: "surface", mast: false, engineOn: false, electricOn: false, periscope: false, vkmh: 0, light: false,
     boom: 0, awSpd: 0, awRel: 0,
     beaconLock: null, lockBrg: null, anchored: false,
+    autoguide: AUTOGUIDE_DEFAULT, networked: false,
     fuel: 100, battery: 100, food: 100, score: 0, codes: [],
     waypoints: [], wpIdx: 0, autopilot: false,
     antBeam: 45, antOrient: 0, signals: [], notifications: [], notifSeq: 0,
@@ -795,8 +810,9 @@ function speedKmh(st, w) {
   return v;
 }
 
-// Un tick = dtMin minutes de jeu. Le monde (balises actives) est partagé
-// entre joueurs : toute capture par un joueur désactive la balise pour tous.
+// Un tick = dtMin minutes de jeu. Le monde (balises) est partagé entre
+// joueurs : toute capture par un joueur désactive la balise pour tous —
+// désactivée, elle continue d'exister et d'émettre (« ping désactivé »).
 export function tick(st, dtMin, world) {
   // Positions AVANT tout mouvement (giration sous-pas incluse) : la
   // validation des points et la capture des balises font leur détection
@@ -1024,15 +1040,17 @@ export function tick(st, dtMin, world) {
   const radioOk = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
   if (radioOk) {
     for (const b of world.BEACONS) {
-      if (!b.active) continue;
+      // Une balise CAPTURÉE (désactivée) continue d'exister et d'émettre :
+      // son ping est identique, seule la mention « désactivé » est ajoutée.
       const pulsed = Math.floor((st.t + b.phase) / PULSE_MIN) !== Math.floor((prevT + b.phase) / PULSE_MIN);
       if (!pulsed) continue;
       const got = detectBeacon(st, b);
       if (got) {
-        pushBeaconSignal(st, got);
+        pushBeaconSignal(st, { ...got, off: !b.active });
+        const word = b.active ? "Ping" : "Ping désactivé";
         const txt = got.source === "omni"
-          ? `📡 Ping ${b.code} — signal ${got.strength}% (omnidirectionnelle)`
-          : `📡 Ping ${b.code} — signal ${got.strength}%, zone ${got.side} du cône`;
+          ? `📡 ${word} ${b.code} — signal ${got.strength}% (omnidirectionnelle)`
+          : `📡 ${word} ${b.code} — signal ${got.strength}%, zone ${got.side} du cône`;
         notify(st, txt, "info", "radio");
       }
     }
@@ -1057,7 +1075,7 @@ export function tick(st, dtMin, world) {
     if (st.unc > 8) { st.unc = 8; notify(st, "🔭 Point visuel sur l'île : incertitude ± 8 km.", "good", "nav"); }
   }
   st.sawIsland = islandVis;
-  const bVis = canSee ? world.BEACONS.map((b) => ({ b, km: kmOf(b.x, b.y) })).find((e) => e.b.active && e.km <= detectKm("balise", visKm, night2)) : null;
+  const bVis = canSee ? world.BEACONS.map((b) => ({ b, km: kmOf(b.x, b.y) })).find((e) => e.km <= detectKm("balise", visKm, night2)) : null; // capturée ou non : l'objet physique existe
   if (bVis && st.sawBeaconId !== bVis.b.id) {
     notify(st, night2
       ? `🔦 Feu de balise en vue (${bVis.b.id}) : ${Math.round(bVis.km)} km, azimut ${azTo(bVis.b.x, bVis.b.y)}°.`
@@ -1139,9 +1157,8 @@ export function computeView(st, world) {
   });
   const beacons = [];
   world.BEACONS.forEach((b) => {
-    if (!b.active) return;
     const km = kmOf(b.x, b.y);
-    if (km <= det("balise")) beacons.push({ id: b.id, rarity: b.rarity, x: b.x, y: b.y, km, az: azTo(b.x, b.y), beyond: km > HORIZON });
+    if (km <= det("balise")) beacons.push({ id: b.id, rarity: b.rarity, off: !b.active, x: b.x, y: b.y, km, az: azTo(b.x, b.y), beyond: km > HORIZON });
   });
   const portKm = kmOf(world.PORT.x, world.PORT.y);
   const port = portKm <= det("port") ? { km: portKm, az: azTo(world.PORT.x, world.PORT.y), beyond: portKm > HORIZON } : null;
