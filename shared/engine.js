@@ -374,21 +374,41 @@ export function shipsCollide(ax, ay, aHead, bx, by, bHead) {
   }
   return true;
 }
-// Position de spawn d'un navire au port : quai décalé le long de la côte
-// pour que les navires ne se chevauchent pas (espacement 300 m). idx =
-// rangée d'amarrage du joueur. Les slots au-delà de la zone d'accostage
-// de 500 m (|slot| >= 2) démarrent au large du quai : ils navigueront
-// 100 m pour accoster.
-export function spawnPosition(world, idx) {
-  const eastCoast = world.CONTINENT.x1 <= MAP / 2;
-  const sx = eastCoast ? world.PORT.x + 0.0027 : world.PORT.x - 0.0027;
-  const sy = world.PORT.y;
-  if (!idx) return { x: sx, y: sy };
-  // décalage perpendiculaire au cap de sortie (le long de la côte)
-  const dir = eastCoast ? 1 : -1; // vers le large selon le coin
-  const slot = Math.ceil(idx / 2) * (idx % 2 === 0 ? 1 : -1); // +1, -1, +2, -2...
-  const off = (slot * 300) / M_PER_DEG; // 300 m par slot d'amarrage
-  return { x: sx, y: sy + off * dir * (eastCoast ? 1 : 1) };
+// Position de spawn d'un navire au port — ROBUSTE : la côte étant ondulée
+// (caps, baies), aucun offset fixe n'est fiable. On scanne une spirale
+// autour du port par distance croissante et on retient le PREMIER candidat
+// valide : en pleine eau (pas terre, pas île), à >= 50 m de la côte, à
+// >= 300 m de tout navire déjà placé (taken), de préférence dans la zone
+// d'accostage de 500 m. `taken` accumule les positions posées — l'appelant
+// fournit la liste (elle est modifiée en place).
+export function spawnPosition(world, taken = []) {
+  const PORT = world.PORT;
+  const okSpot = (x, y) =>
+    !world.isLand(x, y) &&
+    distToLine(x, y, world.COAST) * M_PER_DEG >= 50 &&
+    taken.every((t) => Math.hypot(t.x - x, t.y - y) * M_PER_DEG >= 300);
+  const candidate = (x, y) => {
+    if (!okSpot(x, y)) return null;
+    const pos = { x, y };
+    taken.push(pos);
+    return pos;
+  };
+  // spirale : rayon croissant, tous les 10° — ordre = proximité au port,
+  // donc les navires se placent naturellement au plus près du quai.
+  for (let r = 60; r <= 5000; r += 40) {
+    const rd = r / M_PER_DEG;
+    for (let a = 0; a < 360; a += 10) {
+      const rad = (a * Math.PI) / 180;
+      const x = PORT.x + Math.sin(rad) * rd;
+      const y = PORT.y + Math.cos(rad) * rd;
+      const pos = candidate(x, y);
+      if (pos) return pos;
+    }
+  }
+  // ne devrait jamais arriver (océan 60x60°) : dernier recours au large
+  const fallback = { x: PORT.x, y: PORT.y + 2 };
+  taken.push(fallback);
+  return fallback;
 }
 
 // ---------- Radio ----------
@@ -495,7 +515,7 @@ export function scrambledIntercept(strength, source, antBeam, antOrient, heading
 // tMin : minutes de jeu écoulées depuis le départ de la course (référence
 // partagée par tous les joueurs — même horloge de course).
 export function newPlayerState(world, opts = {}) {
-  const sp = spawnPosition(world, opts.spawnIdx || 0);
+  const sp = spawnPosition(world, opts.takenSpawns || []);
   const sx = sp.x;
   const eastCoast = world.CONTINENT.x1 <= MAP / 2;
   return {

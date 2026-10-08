@@ -70,6 +70,8 @@ function gameMinutesNow() {
 }
 
 const states = new Map(); // accountId -> player state (engine)
+// Positions de spawn déjà posées au port (anti-chevauchement, ordre d'arrivée)
+let takenSpawns = [];
 for (const [id, saved] of Object.entries(race.players || {})) {
   if (saved) {
     states.set(id, saved);
@@ -93,8 +95,11 @@ if (!race.migrated) {
         distNm(b.x, b.y, world.PORT.x, world.PORT.y) * 1852 < 500;
       const dm = distNm(a.x, a.y, b.x, b.y) * 1852;
       if (dm < 300 && bothAtPort) {
-        const sa = spawnPosition(world, race.spawnOrder?.[ids[i]] ?? i);
-        const sb = spawnPosition(world, race.spawnOrder?.[ids[j]] ?? j);
+        // re-loger via la spirale : le premier garde sa place (ou en trouve
+        // une nouvelle), le second est repoussé au prochain point valide.
+        const fresh = [];
+        const sa = spawnPosition(world, fresh);
+        const sb = spawnPosition(world, fresh);
         a.x = sa.x; a.y = sa.y; a.estX = sa.x; a.estY = sa.y;
         b.x = sb.x; b.y = sb.y; b.estX = sb.x; b.estY = sb.y;
         a.collided = false; b.collided = false;
@@ -126,7 +131,7 @@ function ensureState(id) {
       shipCode = String(Math.floor(Math.random() * 10000)).padStart(4, "0");
     } while (world.BEACONS.some((b) => b.code === shipCode)
       || [...states.values()].some((s) => s.code === shipCode));
-    const st = newPlayerState(world, { weatherSeed: race.seed % 1000, spawnIdx, shipCode });
+    const st = newPlayerState(world, { weatherSeed: race.seed % 1000, shipCode, takenSpawns });
     st.t = gameMinutesNow();
     states.set(id, st);
     persistPlayer(id);
@@ -583,6 +588,7 @@ wss.on("connection", (ws, req) => {
         race.startedAt = new Date().toISOString();
         race.beacons = undefined;
         race.spawnOrder = {};   // réattribué ci-dessous, dans l'ordre actuel
+        takenSpawns = [];       // nouvelle course : quai vidé
         race.migrated = false;  // la migration pourra rejouer si besoin
         const fresh = buildWorld(race.seed);
         world.PORT = fresh.PORT; world.CONTINENT = fresh.CONTINENT;
@@ -603,8 +609,8 @@ wss.on("connection", (ws, req) => {
           usedCodes.add(shipCode);
           const nst = newPlayerState(world, {
             weatherSeed: race.seed % 1000,
-            spawnIdx: slotIdx,
             shipCode,
+            takenSpawns,
           });
           nst.t = gameMinutesNow();
           states.set(pid, nst);
