@@ -4,7 +4,7 @@ import Scene from "./Scene.jsx";
 import {
   MAP, DEG_KM, RARITY_STYLE,
   distKm, dirSensitivity, DOUGLAS_LABEL, RADIO_DECAY_KM, dirRangeKm,
-  DELIVERY_R_KM, OMNI_DETECT_PCT, OMNI_CALL_RANGE_KM, MS_PER_MIN,
+  DELIVERY_R_KM, OMNI_DETECT_PCT, MS_PER_MIN,
 } from "../../shared/engine.js";
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));

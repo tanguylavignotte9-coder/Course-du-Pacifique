@@ -110,7 +110,7 @@ export function assignCodes(beacons, rng) {
   const used = new Set();
   const pick = () => {
     let c;
-    do { c = String(Math.floor(rng() * 10000)).padStart(4, "0"); }
+    do { c = String(Math.floor(rng() * CODE_POOL)).padStart(4, "0"); }
     while (used.has(c));
     used.add(c);
     return c;
