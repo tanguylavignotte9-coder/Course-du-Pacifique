@@ -546,6 +546,7 @@ export default function App() {
   const atDock = player.location === "surface" &&
     (distNm(player.estX, player.estY, snap.world.port.x, snap.world.port.y) < 0.5 ||
     snap.world.outposts.some((o) => distNm(player.estX, player.estY, o.x, o.y) < 0.5));
+  const radioOk = (player.location === "surface" || (player.location === "underwater" && player.periscope)) && player.battery > 0;
   const antSens = Math.round(dirSensitivity(player.antBeam));
   const antHeading = (player.heading + player.antOrient + 720) % 360;
 
