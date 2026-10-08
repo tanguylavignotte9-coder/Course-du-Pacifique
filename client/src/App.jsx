@@ -379,6 +379,7 @@ function NavMap({ snap, sock }) {
   const pinch = useRef(null);
   const [tool, setTool] = useState(null);
   const [measurePend, setMeasurePend] = useState(null);
+  const [planMode, setPlanMode] = useState(false);
   const [hoverPt, setHoverPt] = useState(null); // position curseur (degres) pour la previsualisation
 
   const clampVB = (v) => ({ ...v, x: clamp(v.x, 0, MAP_PX - v.w), y: clamp(v.y, 0, MAP_PX - v.w) });
@@ -422,7 +423,19 @@ function NavMap({ snap, sock }) {
       <div className="grid grid-cols-2 gap-2">
         <Btn active={tool === "pin"} onClick={() => { setTool(tool === "pin" ? null : "pin"); setMeasurePend(null); }}>📌 Punaise{tool === "pin" ? " — cliquer la carte" : ""}</Btn>
         <Btn active={tool === "measure"} onClick={() => { setTool(tool === "measure" ? null : "measure"); setMeasurePend(null); }}>📏 Mesure{tool === "measure" ? (measurePend ? " — 2ᵉ point" : " — 1ᵉʳ point") : ""}</Btn>
+        <Btn active={planMode} onClick={() => setPlanMode(!planMode)}>🧭 Planificateur{planMode ? " — cliquer la carte" : ""}</Btn>
+        <Btn
+          active={player.autopilot}
+          disabled={player.wpIdx >= (player.waypoints || []).length && !player.autopilot}
+          onClick={() => sock.command({ autopilot: !player.autopilot })}
+        >🤖 Pilote auto{player.autopilot ? " — ACTIF" : ""}</Btn>
       </div>
+      {planMode && (
+        <div className="grid grid-cols-2 gap-2">
+          <Btn onClick={() => sock.command({ waypoints: player.waypoints.slice(0, -1) })}>🗑 Dernier point</Btn>
+          <Btn onClick={() => sock.command({ waypoints: [] })}>🗑 Route entière</Btn>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-2">
         <Btn onClick={() => sock.command({ pins: player.pins.slice(0, -1) })}>🗑 Dernière punaise</Btn>
         <Btn onClick={() => sock.command({ measures: [] })}>🗑 Mesures</Btn>
@@ -438,7 +451,7 @@ function NavMap({ snap, sock }) {
       <svg
         ref={svgRef}
         viewBox={`${vb.x.toFixed(2)} ${vb.y.toFixed(2)} ${vb.w.toFixed(2)} ${vb.w.toFixed(2)}`}
-        className={`w-full rounded-lg ${tool ? "cursor-crosshair" : "cursor-grab"}`}
+        className={`w-full rounded-lg ${tool || planMode ? "cursor-crosshair" : "cursor-grab"}`}
         style={{ background: "#8fb4d4", touchAction: "none" }}
         onPointerDown={(e) => {
           e.currentTarget.setPointerCapture(e.pointerId);
@@ -457,10 +470,12 @@ function NavMap({ snap, sock }) {
           if (pt) { pt.x = e.clientX; pt.y = e.clientY; }
           const rect = e.currentTarget.getBoundingClientRect();
           const ids = Object.keys(ptrs.current);
-          // Prévisualisation de mesure : suit le curseur dès le 1er point posé
-          if (tool === "measure" && measurePend && !drag.current) {
-            const hp = vbPoint(vb, rect, e.clientX, e.clientY);
-            setHoverPt([hp.x / S, MAP - hp.y / S]);
+          // Prévisualisation mesure/plan : suit le curseur
+          if ((tool === "measure" && measurePend) || planMode) {
+            if (!drag.current || drag.current.moved < 5) {
+              const hp = vbPoint(vb, rect, e.clientX, e.clientY);
+              setHoverPt([hp.x / S, MAP - hp.y / S]);
+            }
           }
           if (ids.length >= 2 && pinch.current) {
             // Pincement tactile : zoom centré entre les doigts
@@ -480,12 +495,14 @@ function NavMap({ snap, sock }) {
           const d = drag.current;
           drag.current = null;
           // Clic franc (pas un glissement) : outils punaise / mesure
-          if (Object.keys(ptrs.current).length > 0 || !d || d.moved > 5 || !tool) return;
+          if (Object.keys(ptrs.current).length > 0 || !d || d.moved > 5 || (!tool && !planMode)) return;
           const rect = e.currentTarget.getBoundingClientRect();
           const p = vbPoint(d.vb, rect, e.clientX, e.clientY);
           const xDeg = p.x / S;
           const yDeg = MAP - p.y / S;
-          if (tool === "pin") {
+          if (planMode) {
+            sock.command({ waypoints: [...(player.waypoints || []), { x: xDeg, y: yDeg }] });
+          } else if (tool === "pin") {
             if (player.pins.length < 26) {
               sock.command({ pins: [...player.pins, { label: String.fromCharCode(65 + player.pins.length), x: xDeg, y: yDeg }] });
             }
@@ -546,6 +563,42 @@ function NavMap({ snap, sock }) {
             )}
           </g>
         )}
+        {/* Route du planificateur : segments pointillés + pastilles numérotées */}
+        {(player.waypoints || []).length > 0 && (() => {
+          const wps = player.waypoints;
+          const segs = [];
+          // segment navire → 1er point non atteint, puis entre points
+          const cur = player.wpIdx;
+          if (cur < wps.length) {
+            segs.push([px(player.estX), py(player.estY), px(wps[cur].x), py(wps[cur].y)]);
+          }
+          for (let i = cur; i < wps.length - 1; i++) {
+            segs.push([px(wps[i].x), py(wps[i].y), px(wps[i + 1].x), py(wps[i + 1].y)]);
+          }
+          return (
+            <g>
+              {segs.map(([x1, y1, x2, y2], i) => (
+                <line key={"s" + i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#0ea5e9" strokeWidth="1.4" strokeDasharray="6 4" opacity="0.85" />
+              ))}
+              {wps.map((wp, i) => (
+                <g key={i}>
+                  <circle cx={px(wp.x)} cy={py(wp.y)} r="5.5"
+                    fill={i < player.wpIdx ? "#94a3b8" : i === player.wpIdx ? "#0ea5e9" : "#7dd3fc"}
+                    stroke="#0c4a6e" strokeWidth="1" />
+                  <text x={px(wp.x)} y={py(wp.y) - 7} fontSize="10" fill="#0c4a6e" fontWeight="bold" textAnchor="middle">{i + 1}</text>
+                </g>
+              ))}
+            </g>
+          );
+        })()}
+        {/* Prévisualisation plan : dernier point (ou navire) → curseur */}
+        {planMode && hoverPt && (() => {
+          const wps = player.waypoints || [];
+          const from = wps.length > 0 ? wps[wps.length - 1] : { x: player.estX, y: player.estY };
+          return (
+            <line x1={px(from.x)} y1={py(from.y)} x2={px(hoverPt[0])} y2={py(hoverPt[1])} stroke="#0ea5e9" strokeWidth="1.2" strokeDasharray="4 4" opacity="0.6" />
+          );
+        })()}
         {/* Punaises A, B, C... */}
         {player.pins.map((p, idx) => (
           <g key={idx}>
@@ -706,13 +759,15 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-slate-400">Cap</span>
-            <Btn onClick={() => cmd({ headingOrder: player.headingOrder - 10 })}>◀</Btn>
+            {player.autopilot && <span className="rounded bg-sky-900/70 px-1.5 py-0.5 text-[10px] font-semibold text-sky-200">🤖 pilotage automatique</span>}
+            <Btn disabled={player.autopilot} onClick={() => cmd({ headingOrder: player.headingOrder - 10 })}>◀</Btn>
             <input
               type="range" min={0} max={359} value={Math.round(player.headingOrder)}
+              disabled={player.autopilot}
               onChange={(e) => cmd({ headingOrder: +e.target.value })}
               className="w-full accent-sky-400"
             />
-            <Btn onClick={() => cmd({ headingOrder: player.headingOrder + 10 })}>▶</Btn>
+            <Btn disabled={player.autopilot} onClick={() => cmd({ headingOrder: player.headingOrder + 10 })}>▶</Btn>
             <span className="w-14 text-right text-xs tabular-nums text-sky-300">{Math.round(player.heading)}°</span>
           </div>
           {Math.abs(((player.headingOrder - player.heading + 540) % 360) - 180) > 2 && (

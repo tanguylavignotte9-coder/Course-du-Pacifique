@@ -12,6 +12,7 @@ export const KM_PER_DEG = DEG_NM * KM_PER_NM;
 export const PULSE_MIN = 30; // pulsation radio toutes les 30 min de jeu
 export const CAPTURE_R_NM = 500 / 1000 / KM_PER_NM; // capture à 500 m
 export const DELIVERY_R_NM = 500 / 1000 / KM_PER_NM; // livraison à 500 m
+export const WP_R_NM = 100 / 1000 / KM_PER_NM; // validation des points de passage : 100 m
 
 // ---------- Utilitaires ----------
 export function mulberry32(a) {
@@ -525,6 +526,7 @@ export function newPlayerState(world, opts = {}) {
     navFix: { active: false, startT: 0, doneNight: null, lastTryT: null },
     location: "surface", mast: false, engineOn: false, electricOn: false, periscope: false, vkn: 0, light: false,
     fuel: 100, battery: 100, food: 100, score: 0, codes: [],
+    waypoints: [], wpIdx: 0, autopilot: false,
     antBeam: 45, antOrient: 0, signals: [], notifications: [], notifSeq: 0,
     grounded: false, wasStorm: false, warnedFood: false, warnedFuel: false, warnedBatt: false,
     ffEvents: [], travelledNm: 0, dailyNm: 0, dayIdx: 0,
@@ -568,6 +570,10 @@ function speedKn(st, w) {
 // Un tick = dtMin minutes de jeu. Le monde (balises actives) est partagé
 // entre joueurs : toute capture par un joueur désactive la balise pour tous.
 export function tick(st, dtMin, world) {
+  // Positions AVANT tout mouvement (giration sous-pas incluse) : la
+  // validation des points et la capture des balises font leur détection
+  // point-segment sur ces traces complètes.
+  const prevX = st.x, prevY = st.y, prevEstX = st.estX, prevEstY = st.estY;
   const prevT = st.t;
   st.t += dtMin;
   const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
@@ -586,6 +592,14 @@ export function tick(st, dtMin, world) {
     st.battery = Math.min(100, st.battery + 5 * (1 - w.clouds / 130) * (dtMin / 60));
   st.food = Math.max(0, st.food - 0.22 * (dtMin / 60));
 
+  // Pilote automatique : la consigne est RECALCULÉE à chaque tick depuis
+  // la position ESTIMÉE (même repère que la validation) — l'auto-correction
+  // est gratuite : tout recentrage de l'estime (point aux étoiles) est pris
+  // en compte au tick suivant. Le pilote n'est qu'un écrivain de consigne.
+  if (st.autopilot && st.wpIdx < st.waypoints.length) {
+    const wp = st.waypoints[st.wpIdx];
+    st.headingOrder = bearingTo(st.estX, st.estY, wp.x, wp.y);
+  }
   // Giration : le navire converge de son cap réel (heading) vers la
   // CONSIGNE (headingOrder) à un taux borné. À pleine vitesse en surface,
   // 270 °/min : un virage de 90° prend ~20 s de jeu. À l'arrêt, une part de
@@ -607,6 +621,7 @@ export function tick(st, dtMin, world) {
     const integratePos = (minutes) => {
       const rT = ((st.heading + st.compDev) * Math.PI) / 180;
       const cdr = (w.curDir * Math.PI) / 180;
+      const rad = (st.heading * Math.PI) / 180; // cap affiché (estime)
       const moored = surface &&
         (distNm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_NM ||
          world.OUTPOSTS.some((o) => distNm(st.x, st.y, o.x, o.y) < DELIVERY_R_NM));
@@ -614,6 +629,10 @@ export function tick(st, dtMin, world) {
             + (moored ? 0 : Math.sin(cdr) * (w.curSpd / 3600) * minutes);
       st.y += Math.cos(rT) * (st.vkn / 3600) * minutes * (1 + st.logErr / 100)
             + (moored ? 0 : Math.cos(cdr) * (w.curSpd / 3600) * minutes);
+      // estime : même convention que le bloc mouvement (cap affiché, sans
+      // logErr, sans courant) — l'estime doit couvrir les sous-pas aussi
+      st.estX += Math.sin(rad) * (st.vkn / 3600) * minutes;
+      st.estY += Math.cos(rad) * (st.vkn / 3600) * minutes;
     };
     let remaining = dtMin;
     let integrated = 0; // temps de position déjà intégré (sous-pas)
@@ -655,7 +674,6 @@ export function tick(st, dtMin, world) {
     (distNm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_NM ||
      world.OUTPOSTS.some((o) => distNm(st.x, st.y, o.x, o.y) < DELIVERY_R_NM));
   const driftEff = moored ? 0 : drift;
-  const prevX = st.x, prevY = st.y;
   const nx = st.x + Math.sin(radT) * throughT + Math.sin(cdr) * driftEff;
   const ny = st.y + Math.cos(radT) * throughT + Math.cos(cdr) * driftEff;
   st.travelledNm += st.vkn * (dtMin / 60);
@@ -663,11 +681,25 @@ export function tick(st, dtMin, world) {
   if (day !== st.dayIdx) { st.dayIdx = day; st.dailyNm = 0; }
   st.dailyNm += st.vkn * (dtMin / 60);
   if (nx < 0.2 || nx > MAP - 0.2 || ny < 0.2 || ny > MAP - 0.2) {
-    if (!st.grounded) notify(st, "Limite de la zone de course — cap bloqué.", "warn", "alertes");
+    if (!st.grounded) {
+      notify(st, "Limite de la zone de course — cap bloqué.", "warn", "alertes");
+      if (st.autopilot) {
+        st.autopilot = false;
+        notify(st, "⚠️ Limite de zone — pilote automatique coupé, intervention requise.", "warn", "alertes");
+      }
+    }
     st.grounded = true;
     st.vkn = 0;
   } else if (world.isLand(nx, ny)) {
-    if (!st.grounded) ev(st, "land", "⚠️ Terre détectée — navigation stoppée (risque d'échouement). Changez de cap.", "alertes");
+    if (!st.grounded) {
+      ev(st, "land", "⚠️ Terre détectée — navigation stoppée (risque d'échouement). Changez de cap.", "alertes");
+      // le monde réel contredit la croyance : couper le pilote, un joueur
+      // absent ne doit pas rester bloqué sans le savoir
+      if (st.autopilot) {
+        st.autopilot = false;
+        notify(st, "⚠️ Échouement — pilote automatique coupé, intervention requise.", "warn", "alertes");
+      }
+    }
     st.grounded = true;
     st.vkn = 0;
   } else {
@@ -675,6 +707,23 @@ export function tick(st, dtMin, world) {
     st.estX += Math.sin(rad) * through;
     st.estY += Math.cos(rad) * through;
     st.unc += 0.025 * (st.vkn * KM_PER_NM * dtMin / 60) + 0.278 * (dtMin / 60) + drift * KM_PER_DEG;
+  }
+
+  // Validation des points de passage (pilote auto) : au plus court sur la
+  // trace ESTIMÉE du pas — visée et validation dans le même repère (l'estime).
+  // Dépassement possible (validation au passage), enchaînement immédiat.
+  while (st.autopilot && st.wpIdx < st.waypoints.length) {
+    const wp = st.waypoints[st.wpIdx];
+    if (segDistNm(wp.x, wp.y, prevEstX, prevEstY, st.estX, st.estY) >= WP_R_NM) break;
+    st.wpIdx++;
+    notify(st, `📍 Point ${st.wpIdx}/${st.waypoints.length} atteint (à l'estime).`, "info", "navire");
+    if (st.wpIdx < st.waypoints.length) {
+      st.headingOrder = bearingTo(st.estX, st.estY, st.waypoints[st.wpIdx].x, st.waypoints[st.wpIdx].y);
+    } else {
+      // dernier point : ARRÊT DU NAVIRE
+      st.autopilot = false; st.engineOn = false; st.sail = 0; st.electricOn = false;
+      notify(st, "🏁 Itinéraire terminé — navire à l'arrêt (moteur coupé, voilure bordée).", "good", "navire");
+    }
   }
 
   // Orages

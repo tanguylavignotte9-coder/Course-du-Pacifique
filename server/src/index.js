@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distNm, DELIVERY_R_NM, shipVisibleKm, shipsCollide, KM_PER_NM, callPosition, callStrengthAtKm, scrambledIntercept, bearingTo, angDiff, spawnPosition } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distNm, DELIVERY_R_NM, shipVisibleKm, shipsCollide, KM_PER_NM, callPosition, callStrengthAtKm, scrambledIntercept, bearingTo, angDiff, spawnPosition, MAP } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -78,6 +78,11 @@ for (const [id, saved] of Object.entries(race.players || {})) {
     states.get(id).t = gameMinutesNow();
     // migration : un état ancien sans consigne prend son cap actuel
     if (states.get(id).headingOrder == null) states.get(id).headingOrder = states.get(id).heading;
+    if (!Array.isArray(states.get(id).waypoints)) {
+      states.get(id).waypoints = [];
+      states.get(id).wpIdx = 0;
+      states.get(id).autopilot = false;
+    }
   }
 }
 // Migration unique des sauvegardes anciennes : deux navires superposés
@@ -275,6 +280,7 @@ function publicSnapshot(id) {
       score: st.score, codes: st.codes, unc: st.unc,
       estX: st.estX, estY: st.estY,
       travelledNm: st.travelledNm, dailyNm: st.dailyNm,
+      waypoints: st.waypoints || [], wpIdx: st.wpIdx || 0, autopilot: !!st.autopilot,
       navFixActive: st.navFix.active,
       grounded: st.grounded,
       collided: !!st.collided,
@@ -565,6 +571,13 @@ wss.on("connection", (ws, req) => {
         st.notifSeq = (st.notifSeq || 0) + 1;
         st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🛒 Avitaillement complet : carburant et vivres à 100 %.", kind: "good", cat: "navire" });
       }
+      // Planificateur : points de passage (max 30, coordonnées bornées à la
+      // carte). Toute modification de route relance la visée au 1er point.
+      if (Array.isArray(c.waypoints)) {
+        st.waypoints = c.waypoints.slice(0, 30).map((p) => ({ x: clamp(+p.x || 0, 0, MAP), y: clamp(+p.y || 0, 0, MAP) }));
+        st.wpIdx = 0;
+      }
+      if (typeof c.autopilot === "boolean") st.autopilot = c.autopilot;
       if (Array.isArray(c.pins)) st.pins = c.pins.slice(0, 26);
       if (Array.isArray(c.measures)) st.measures = c.measures.slice(0, 40);
       // Saut de temps : super utilisateur uniquement. L'horloge de course est
