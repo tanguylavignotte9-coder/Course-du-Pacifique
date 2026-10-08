@@ -15,7 +15,7 @@ export const WP_R_KM = 0.1;       // validation des points de passage : 100 m
 
 // Vitesses et propulsion (équilibrage validé)
 export const VMAX_KMH = 45;          // vitesse max de coque (km/h)
-export const SAIL_SPD_KMH = 35;       // voile pleine à vent de référence
+export const SAIL_SPD_KMH = 67;       // voile pleine à vent de référence (~40 km/h au largue par vent fort)
 export const DIESEL_SPD_KMH = 30;     // moteur thermique
 export const SCOPE_SPD_KMH = 15;      // électrique en périscope
 export const SUB_SPD_KMH = 20;        // électrique en plongée (> périscope : voulu)
@@ -363,15 +363,63 @@ export const VIS_BASE = { ile: 40, continent: 30, port: 20, poste: 15, balise: 9
 export const VIS_NUIT = { ile: 3, continent: 3, port: 15, poste: 10, balise: 11 };
 export const detectKm = (kind, visKm, night) => Math.min(visKm, night ? VIS_NUIT[kind] : VIS_BASE[kind]);
 
-// ---------- Voile ----------
-export const SAIL_POLAR = [[0, 0.8], [45, 0.75], [90, 1.0], [135, 0.9], [160, 0.6], [180, 0.5]];
-export function sailPolarFactor(angle) {
-  for (let i = 0; i < SAIL_POLAR.length - 1; i++) {
-    const [a0, f0] = SAIL_POLAR[i];
-    const [a1, f1] = SAIL_POLAR[i + 1];
-    if (angle >= a0 && angle <= a1) return f0 + ((angle - a0) / (a1 - a0)) * (f1 - f0);
+// ---------- Voile (écoute automatique) ----------
+// Modèle « vent apparent + incidence » : l'équipage règle l'écoute en continu
+// (aucune commande joueur — la stratégie se joue au placement, cap vs vent).
+// Zéro notion de force : de la géométrie + une courbe de rendement.
+// Courbe de rendement de la toile selon l'incidence (angle entre le vent
+// apparent et la toile) : fasée sous 5°, bosse max vers 30°, puis
+// décrochage progressif (la toile travaille « en sac ») jusqu'à 90°.
+export const SAIL_EFF_CURVE = [[5, 0], [15, 0.6], [30, 1], [50, 0.9], [70, 1.0], [90, 1.05]];
+export const SAIL_FURL_DEG = 5;        // incidence minimale : voile fasée en dessous
+export const STORM_SAIL_MAX = 0.3;     // rendement de voile en tempête (voilure réduite)
+export const WIND_FACTOR_CAP = 1.1;    // cap du facteur de vent apparent (survent)
+
+export function sailEff(a) {
+  const C = SAIL_EFF_CURVE;
+  if (a < C[0][0]) return 0;
+  for (let i = 0; i < C.length - 1; i++) {
+    const [a0, f0] = C[i];
+    const [a1, f1] = C[i + 1];
+    if (a >= a0 && a <= a1) return f0 + ((a - a0) / (a1 - a0)) * (f1 - f0);
   }
-  return 0;
+  return C[C.length - 1][1];
+}
+
+// Vent apparent au navire : géométrie pure (vent vrai − vitesse du navire).
+// Retourne { aw, g, side } : vitesse apparente (km/h), écart à la proue
+// g ∈ [0,180] (0 = vent debout, 180 = vent arrière), côté ("B"|"T").
+export function apparentWind(st, w) {
+  const capT = ((st.heading + (st.compDev || 0)) * Math.PI) / 180;
+  const toRad = ((w.windDir + 180) * Math.PI) / 180; // direction VERS laquelle souffle le vent
+  // flux du vent dans le repère du navire (x = proue, y = tribord)
+  const fx = w.windSpd * Math.cos(toRad - capT) - st.vkmh;
+  const fy = w.windSpd * Math.sin(toRad - capT);
+  const aw = Math.hypot(fx, fy);
+  const g = (Math.acos(clamp(-fx / (aw || 1), -1, 1)) * 180) / Math.PI;
+  const side = fy > 0 ? "B" : "T"; // flux vers tribord = vent venant de bâbord
+  return { aw, g, side };
+}
+
+// Poussée de voile (rendement 0..~1.1) à l'écoute AUTOMATIQUE optimale.
+// Met à jour st.boom (angle d'écoute signé, + = choqué à tribord),
+// st.awSpd et st.awRel (vent apparent pour l'UI). Retourne { drive, aw }.
+export function sailAutoDrive(st, w) {
+  const { aw, g, side } = apparentWind(st, w);
+  const dev = Math.min(g, 180 - g); // écart de la ligne de vent à l'axe du navire
+  let best = 0, boom = 0;
+  for (let beta = 0; beta <= 90; beta += 0.5) {
+    const a = Math.abs(dev - beta);
+    if (a < SAIL_FURL_DEG) continue; // voile fasée
+    const sign = g >= beta ? 1 : -1; // vent devant la toile : poussée à contrevent
+    const d = sign * sailEff(a) * Math.sin((beta * Math.PI) / 180);
+    if (d > best) { best = d; boom = beta; }
+  }
+  if (w.storm) best *= STORM_SAIL_MAX; // voilure réduite en tempête
+  st.boom = (side === "B" ? 1 : -1) * boom; // écoute choquée sous le vent
+  st.awSpd = Math.round(aw * 10) / 10;
+  st.awRel = side === "T" ? Math.round(g) : -Math.round(g);
+  return { drive: best, aw };
 }
 
 // ---------- Détection entre navires (multijoueur) ----------
@@ -589,10 +637,11 @@ export function newPlayerState(world, opts = {}) {
   const eastCoast = world.CONTINENT.x1 <= MAP / 2;
   return {
     t: 0, x: sp.x, y: sp.y, heading: eastCoast ? 90 : 270, headingOrder: eastCoast ? 90 : 270,
-    sail: 0.8, engine: 0.8,
+    engine: 0.8,
     estX: sp.x, estY: sp.y, unc: 0,
     navFix: { active: false, startT: 0, doneNight: null, lastTryT: null },
     location: "surface", mast: false, engineOn: false, electricOn: false, periscope: false, vkmh: 0, light: false,
+    boom: 0, awSpd: 0, awRel: 0,
     fuel: 100, battery: 100, food: 100, score: 0, codes: [],
     waypoints: [], wpIdx: 0, autopilot: false,
     antBeam: 45, antOrient: 0, signals: [], notifications: [], notifSeq: 0,
@@ -622,10 +671,9 @@ function speedKmh(st, w) {
   let v = 0;
   if (st.location === "surface") {
     if (st.mast) {
-      const windTo = (w.windDir + 180) % 360;
-      const angle = Math.abs(angDiff(st.heading + (st.compDev || 0), windTo));
-      const wf = clamp(w.windSpd / WIND_REF_KMH, 0, 1.1); // pleine puissance de voile à 50 km/h de vent
-      v += SAIL_SPD_KMH * wf * st.sail * sailPolarFactor(angle);
+      const { drive, aw } = sailAutoDrive(st, w);
+      const wf = clamp(aw / WIND_REF_KMH, 0, WIND_FACTOR_CAP); // facteur de VENT APPARENT
+      v += SAIL_SPD_KMH * wf * drive;
     }
     if (st.engineOn && st.fuel > 0) v += DIESEL_SPD_KMH * st.engine;
     v = Math.min(v, VMAX_KMH);
@@ -788,17 +836,16 @@ export function tick(st, dtMin, world) {
     if (st.wpIdx < st.waypoints.length) {
       st.headingOrder = bearingTo(st.estX, st.estY, st.waypoints[st.wpIdx].x, st.waypoints[st.wpIdx].y);
     } else {
-      // dernier point : ARRÊT DU NAVIRE
-      st.autopilot = false; st.engineOn = false; st.sail = 0; st.electricOn = false;
-      notify(st, "🏁 Itinéraire terminé — navire à l'arrêt (moteur coupé, voilure bordée).", "good", "navire");
+      // dernier point : ARRÊT DU NAVIRE (mât rentré : plus de voile)
+      st.autopilot = false; st.engineOn = false; st.mast = false; st.electricOn = false;
+      notify(st, "🏁 Itinéraire terminé — navire à l'arrêt (moteur coupé, mât rentré).", "good", "navire");
     }
   }
 
   // Orages
   if (w.storm && !st.wasStorm) {
     ev(st, "storm", "⚡ Tempête signalée sur votre zone", "meteo");
-    st.sail = Math.min(st.sail, 0.3);
-    notify(st, "⚡ Tempête : voilure automatiquement réduite à 30 % par l'équipage.", "warn", "meteo");
+    notify(st, "⚡ Tempête : rendement de la voile réduit à 30 % par l'équipage.", "warn", "meteo");
   }
   if (!w.storm && st.wasStorm) notify(st, "La tempête s'éloigne. Conditions améliorées.", "good", "meteo");
   st.wasStorm = w.storm;

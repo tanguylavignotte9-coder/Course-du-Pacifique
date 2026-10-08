@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildWorld, newPlayerState, tick, weatherAt,
   distKm, CAPTURE_R_KM, DELIVERY_R_KM, WP_R_KM, DEG_KM, RADIO_DECAY_KM, VMAX_KMH, DIESEL_SPD_KMH,
-  sailPolarFactor, callPosition, RARITY_MIN, bearingTo, segDistKm,
+  sailAutoDrive, apparentWind, SAIL_SPD_KMH, clamp, callPosition, RARITY_MIN, bearingTo, segDistKm,
 } from "./engine.js";
 
 // Navire de test en pleine eau (loin du port et des terres), pleine vitesse.
@@ -118,11 +118,44 @@ test("livraison au port marque les points", () => {
   assert.equal(st.codes.length, 0);
 });
 
-test("polaire de voile : vent arrière viable, travers optimal", () => {
-  assert.equal(sailPolarFactor(90), 1.0);
-  assert.equal(sailPolarFactor(160), 0.6);
-  assert.equal(sailPolarFactor(180), 0.5);
-  assert.ok(sailPolarFactor(135) * Math.cos((45 * Math.PI) / 180) > sailPolarFactor(180));
+test("voile auto : no-go vent debout, largue optimal, fuite plus lente", () => {
+  const W = { windDir: 0, windSpd: 50, storm: false };
+  const speed = (h, v) => {
+    const { drive, aw } = sailAutoDrive({ heading: h, vkmh: v, compDev: 0 }, W);
+    return Math.min(VMAX_KMH, SAIL_SPD_KMH * clamp(aw / 50, 0, 1.1) * drive);
+  };
+  assert.equal(speed(0, 0), 0, "vent debout : zone no-go, aucun réglage ne pousse");
+  assert.ok(speed(20, 0) < 8, "à 20° du vent : poussée résiduelle minuscule");
+  assert.ok(speed(45, 10) > 3, "près serré : le navire avance");
+  const travers = speed(90, 25), largue = speed(120, 30), fuite = speed(180, 25);
+  assert.ok(largue > travers && largue > fuite, "le largue serré est l'allure reine");
+  assert.ok(travers > fuite, "le travers dépasse la fuite (le vent apparent s'effondre)");
+});
+
+test("voile auto : ~40 km/h au largue par vent fort (point fixe)", () => {
+  const W = { windDir: 0, windSpd: 50, storm: false };
+  const st = { heading: 120, vkmh: 0, compDev: 0 };
+  for (let i = 0; i < 200; i++) {
+    const { drive, aw } = sailAutoDrive(st, W);
+    const target = Math.min(VMAX_KMH, SAIL_SPD_KMH * clamp(aw / 50, 0, 1.1) * drive);
+    st.vkmh = st.vkmh + 0.2 * (target - st.vkmh);
+  }
+  assert.ok(st.vkmh > 36 && st.vkmh < 44, `largue par vent 50 : ~40 km/h (obtenu ${st.vkmh.toFixed(1)})`);
+});
+
+test("voile auto : tempête = rendement réduit à 30 %", () => {
+  const st = () => ({ heading: 120, vkmh: 25, compDev: 0 });
+  const calme = sailAutoDrive(st(), { windDir: 0, windSpd: 50, storm: false }).drive;
+  const tempete = sailAutoDrive(st(), { windDir: 0, windSpd: 50, storm: true }).drive;
+  assert.ok(Math.abs(tempete - 0.3 * calme) < 1e-9, `tempête : ${tempete} vs ${0.3 * calme}`);
+});
+
+test("vent apparent : monte au près, s'effondre en fuite", () => {
+  const W = { windDir: 0, windSpd: 50, storm: false };
+  const pres = apparentWind({ heading: 45, vkmh: 20, compDev: 0 }, W);
+  const fuite = apparentWind({ heading: 180, vkmh: 20, compDev: 0 }, W);
+  assert.ok(pres.aw > 50 && pres.g < 45, "au près le vent apparent monte et vient de l'avant");
+  assert.ok(fuite.aw < 50 && fuite.g > 160, "en fuite le vent apparent s'effondre");
 });
 
 test("inertie surface : convergence vers la vitesse cible", () => {
@@ -249,14 +282,14 @@ test("fin d'itinéraire : arrêt du navire", () => {
   const w = buildWorld(42);
   const st = shipAtSea(w, { heading: 90, order: 90 });
   st.engineOn = true;
-  st.sail = 0.8;
+  st.mast = true;
   st.waypoints = [{ x: 30.01, y: 30 }];
   st.wpIdx = 0;
   st.autopilot = true;
   tick(st, 5, w);
   assert.equal(st.autopilot, false);
   assert.equal(st.engineOn, false);
-  assert.equal(st.sail, 0);
+  assert.equal(st.mast, false, "fin d'itinéraire : mât rentré, plus de voile");
   assert.ok(st.notifications.some((n) => n.text.includes("Itinéraire terminé")));
 });
 

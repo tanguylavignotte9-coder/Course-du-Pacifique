@@ -778,13 +778,10 @@ export default function App() {
             <p className="text-[11px] text-slate-500">Cap stable — consigne {Math.round(player.headingOrder)}°</p>
           )}
           <div className="flex items-center gap-2">
-            <span className="w-20 text-xs text-slate-400">Voiles</span>
-            <input
-              type="range" min={0} max={100} value={Math.round(player.sail * 100)}
-              onChange={(e) => cmd({ sail: +e.target.value / 100 })}
-              className="w-full accent-sky-400"
-            />
-            <span className="w-12 text-right text-xs tabular-nums text-sky-300">{Math.round(player.sail * 100)}%</span>
+            <span className="w-20 text-xs text-slate-400">Voile</span>
+            <span className="text-xs tabular-nums text-sky-300">
+              écoute auto — boom {Math.round(player.boom)}° · vent apparent {Math.round(player.awSpd)} km/h {player.awRel >= 0 ? "T" : "B"}
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <span className="w-20 text-xs text-slate-400">Moteur</span>

@@ -296,7 +296,7 @@ function publicSnapshot(id) {
     epoch: race.displayEpoch ?? race.epoch ?? new Date(race.startedAt).getTime(),
     isSuper: isSuper(id),
     player: {
-      heading: st.heading, headingOrder: st.headingOrder ?? st.heading, sail: st.sail, engine: st.engine,
+      heading: st.heading, headingOrder: st.headingOrder ?? st.heading, engine: st.engine,
       location: st.location, mast: st.mast, engineOn: st.engineOn,
       electricOn: st.electricOn, periscope: st.periscope, vkmh: st.vkmh,
       fuel: st.fuel, battery: st.battery, food: st.food,
@@ -308,6 +308,7 @@ function publicSnapshot(id) {
       grounded: st.grounded,
       collided: !!st.collided,
       light: !!st.light,
+      boom: st.boom ?? 0, awSpd: st.awSpd ?? 0, awRel: st.awRel ?? 0,
       antBeam: st.antBeam, antOrient: st.antOrient,
       code: st.code,
       notifications: st.notifications.slice(0, 60),
@@ -501,7 +502,6 @@ wss.on("connection", (ws, req) => {
       // « heading » reste accepté pendant la transition.
       if (typeof c.headingOrder === "number") st.headingOrder = ((Math.round(c.headingOrder) % 360) + 360) % 360;
       if (typeof c.heading === "number") st.headingOrder = ((Math.round(c.heading) % 360) + 360) % 360;
-      if (typeof c.sail === "number") st.sail = clamp01(c.sail);
       if (typeof c.engine === "number") st.engine = clamp01(c.engine);
       if (typeof c.antBeam === "number") st.antBeam = Math.round(clamp(c.antBeam, 1, 180));
       if (typeof c.antOrient === "number") st.antOrient = Math.round(clamp(c.antOrient, -180, 180));
