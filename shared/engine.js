@@ -27,7 +27,6 @@ export const DECEL_SUB = 2.9632;      // idem en plongée
 
 // Radio
 export const RADIO_EDGE_MALUS = 0.2;    // malus de bord faisceau (émission = réception)
-export const RADIO_EST_ERR = 0.2;       // erreur distance estimée : ±20 %
 export const RADIO_MIN_STRENGTH = 1;    // sous 1 % : silence radio total
 export const OMNI_CALL_RANGE_KM = 250;  // portée appel omnidirectionnel
 export const OMNI_DETECT_PCT = 75;      // seuil détection omni d'un ping
@@ -546,12 +545,12 @@ export function callPosition(st, code, world, noCost = false) {
   const respStrength = signalStrengthKm(dKm);
   // réponse audible par l'appelant : contenu privé complet (inchangé)
   if (respStrength > 0) {
-    const dEst = Math.round(RADIO_DECAY_KM * (1 - respStrength / 100));
-    const dErr = Math.round(dEst * RADIO_EST_ERR);
     st.notifSeq = (st.notifSeq || 0) + 1;
+    if (st.pins.length < 26)
+      st.pins.push({ label: code, x: target.x, y: target.y });
     st.notifications.unshift({
       id: st.notifSeq, t: st.t,
-      text: `📡 Position de ${code} : ${target.y.toFixed(2)}°N ${target.x.toFixed(2)}°E (signal ${respStrength}%, distance estimée ${dEst} ± ${dErr} km, azimut ${Math.round(brg)}°).`,
+      text: `📡 Position de ${code} : ${target.y.toFixed(2)}°N ${target.x.toFixed(2)}°E (signal ${respStrength}%, azimut ${Math.round(brg)}°).`,
       kind: "good", cat: "radio",
     });
   }
@@ -563,13 +562,12 @@ export function callPosition(st, code, world, noCost = false) {
 // destinataire détecte une TRANSMISSION BROUILLÉE — niveau de signal (et
 // azimut en directionnel), mais AUCUN contenu.
 export function scrambledIntercept(strength, source, antBeam, antOrient, heading, brg) {
-  const dEst = Math.round(RADIO_DECAY_KM * (1 - strength / 100));
   const antHeading = (heading + antOrient + 720) % 360;
   if (source === "dir") {
     const signedDiff = angDiff(brg, antHeading);
     const diff = Math.abs(signedDiff);
     const side = diff < 1 ? "centre" : signedDiff > 0 ? (diff < antBeam / 4 ? "D1" : "D2") : (diff < antBeam / 4 ? "G1" : "G2");
-    return { text: `📡 Transmission brouillée captée (directionnelle) — signal ${strength}%, azimut ${Math.round(antHeading)}°, zone ${side}, distance estimée ${dEst} ± ${Math.round(dEst * RADIO_EST_ERR)} km. Contenu : illisible.`, cat: "radio" };
+    return { text: `📡 Transmission brouillée captée (directionnelle) — signal ${strength}%, azimut ${Math.round(antHeading)}°, zone ${side}. Contenu : illisible.`, cat: "radio" };
   }
   return { text: `📡 Transmission brouillée captée (omnidirectionnelle) — signal ${strength}%. Contenu : illisible, origine inconnue.`, cat: "radio" };
 }
@@ -854,10 +852,9 @@ export function tick(st, dtMin, world) {
       if (got) {
         st.signals.unshift(got);
         if (st.signals.length > 30) st.signals.pop();
-        const dEst = Math.round(RADIO_DECAY_KM * (1 - got.strength / 100));
         const txt = got.source === "omni"
-          ? `📡 Ping ${b.code} — signal ${got.strength}% (distance estimée : ${dEst} ± ${Math.round(dEst * RADIO_EST_ERR)} km, omnidirectionnelle, azimut inconnu)`
-          : `📡 Ping ${b.code} — azimut ${got.bearing}°, signal ${got.strength}% (distance estimée : ${dEst} ± ${Math.round(dEst * RADIO_EST_ERR)} km), partie ${got.side} du cône (ouverture ${got.beam}°)`;
+          ? `📡 Ping ${b.code} — signal ${got.strength}% (omnidirectionnelle, azimut inconnu)`
+          : `📡 Ping ${b.code} — azimut ${got.bearing}°, signal ${got.strength}%, partie ${got.side} du cône (ouverture ${got.beam}°)`;
         notify(st, txt, "info", "radio");
       }
     }
