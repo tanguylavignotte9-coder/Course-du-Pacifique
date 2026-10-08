@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -62,6 +62,21 @@ function loadOrCreateRace() {
   return { race: r, world };
 }
 const { race, world } = loadOrCreateRace();
+// Journal global du NETWORK (append-only, persisté dans la course) : une
+// entrée par connexion ({ t, who, code, place }) — base de la future
+// newsletter quotidienne.
+if (!Array.isArray(race.network)) race.network = [];
+
+// Zone NETWORK (calculée serveur, jamais déductible côté client : le client
+// ne connaît ni sa position vraie ni celle des balises) : port, avant-poste
+// ou balise à portée de capture (500 m — capturée ou non). Sert à la
+// visibilité du bouton, à la connexion et de garde à chaque requête.
+function netZone(st) {
+  return st.location === "surface" &&
+    (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
+     world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM) ||
+     world.BEACONS.some((b) => distKm(st.x, st.y, b.x, b.y) <= CAPTURE_R_KM));
+}
 
 // Minutes de jeu écoulées depuis le départ (temps réel × TIME_MULT)
 function gameMinutesNow() {
@@ -161,11 +176,15 @@ setInterval(() => {
     }
   }
   multiplayerPass(now);
+    // NETWORK : coupure automatique dès que le navire quitte la zone —
+    // revenir = se RECONNECTER = nouvelle entrée dans le journal global.
+    for (const [, st] of states) if (st.networked && !netZone(st)) st.networked = false;
     // — Balise-vigie : signal de proximité (famille courte), accéléré —
     // l'intervalle se règle sur le navire le plus proche de la balise.
+    // Une balise CAPTURÉE (désactivée) émet aussi : l'autoguidage du joueur
+    // (3 positions) décide seul si elle peut verrouiller son pilote.
     const nowMs = Date.now();
     for (const b of world.BEACONS) {
-      if (!b.active) continue;
       let dMin = Infinity;
       for (const st of states.values()) dMin = Math.min(dMin, distKm(st.x, st.y, b.x, b.y));
       if (!isFinite(dMin)) continue; // personne sur l'eau
@@ -335,6 +354,8 @@ function publicSnapshot(id) {
       light: !!st.light,
       boom: st.boom ?? 0, awSpd: st.awSpd ?? 0, awRel: st.awRel ?? 0,
       beaconLock: st.beaconLock ?? null, anchored: !!st.anchored,
+      autoguide: st.autoguide || AUTOGUIDE_DEFAULT,
+      networked: !!st.networked,
       signals: (st.signals || []).slice(-10),
       antBeam: st.antBeam, antOrient: st.antOrient,
       code: st.code,
@@ -352,6 +373,10 @@ function publicSnapshot(id) {
     },
     weather: w,
     view: computeView(st, world),
+    // NETWORK : zone serveur (bouton + connexion) et journal global, exposé
+    // UNIQUEMENT aux joueurs connectés ET encore en zone.
+    networkZone: netZone(st),
+    networkLog: st.networked && netZone(st) ? race.network : null,
     // Navires détectés : azimut et distance uniquement (jamais la position
     // absolue — le client dessine depuis son estimé, comme pour les îles).
     ships: (st.sawShips || []).map((tid) => {
@@ -384,20 +409,19 @@ app.post("/api/account", (req, res) => {
   }
 });
 
-// Service météo de quai (prévision parfaite J+15, design). Réservé aux
-// joueurs amarrés : port principal ou avant-poste, en surface. La grille 2°
-// est calculée à l'instant demandé (t + h heures).
+// Service météo du NETWORK (prévision parfaite sur WX_HORIZON_H = 48 h).
+// Réservé aux joueurs CONNECTÉS au NETWORK et ENCORE EN ZONE (port,
+// avant-poste ou balise — capturée ou non). La grille 2° est calculée à
+// l'instant demandé (t + h heures).
 app.get("/api/wx", (req, res) => {
   const token = req.headers.authorization?.replace(/^Bearer /, "")
     || (req.headers.cookie || "").match(/pc_token=([^;]+)/)?.[1];
   const account = token && auth.accountOf(token);
   if (!account) return res.status(401).json({ error: "auth requise" });
   const st = ensureState(account);
-  const atDock = st.location === "surface" &&
-    (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
-     world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM));
-  if (!atDock) return res.status(403).json({ error: "service disponible à quai uniquement" });
-  const h = clamp(Number(req.query.h) || 0, 0, 15 * 24);
+  if (!st.networked || !netZone(st))
+    return res.status(403).json({ error: "service réservé aux abonnés du NETWORK connectés en zone" });
+  const h = clamp(Number(req.query.h) || 0, 0, WX_HORIZON_H);
   const cells = [];
   for (let gx = 0; gx < 30; gx++)
     for (let gy = 0; gy < 30; gy++) {
@@ -553,6 +577,44 @@ wss.on("connection", (ws, req) => {
       }
       if (c.dive === true) { st.location = "underwater"; st.mast = false; st.engineOn = false; }
       if (c.surface === true) st.location = "surface";
+      // Autoguidage balise-vigie (3 positions) : quelles balises peuvent
+      // engager le verrou du pilote. Filtre à l'engagement uniquement —
+      // un verrou en cours tient, même si l'interrupteur change.
+      if (typeof c.autoguide === "string" && AUTOGUIDE_MODES.includes(c.autoguide)) {
+        st.autoguide = c.autoguide;
+      }
+      // NETWORK : connexion depuis la zone d'un port / avant-poste / balise
+      // (capturée ou non). Le coût : l'identité et le code du joueur sont
+      // révélés et enregistrés dans le journal global, consulté par tous les
+      // abonnés (« qui est allé où, quand ») — base de la future newsletter
+      // quotidienne. Chaque REconnexion écrit une nouvelle entrée.
+      if (c.network === true) {
+        if (!netZone(st)) {
+          st.notifSeq = (st.notifSeq || 0) + 1;
+          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "⚠️ NETWORK : aucune station à portée (port, avant-poste ou balise à ≤ 500 m).", kind: "warn", cat: "radio" });
+        } else if (st.networked) {
+          st.notifSeq = (st.notifSeq || 0) + 1;
+          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🌐 NETWORK : déjà connecté.", kind: "info", cat: "radio" });
+        } else {
+          st.networked = true;
+          let place;
+          if (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM) {
+            place = { kind: "port", id: "port" };
+          } else {
+            const oi = world.OUTPOSTS.findIndex((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM);
+            if (oi >= 0) place = { kind: "avant-poste", id: oi };
+            else {
+              const b = world.BEACONS.find((x) => distKm(st.x, st.y, x.x, x.y) <= CAPTURE_R_KM);
+              place = { kind: "balise", id: b.id, code: b.code };
+            }
+          }
+          race.network.push({ t: st.t, who: id, code: st.code, place });
+          store.save();
+          st.notifSeq = (st.notifSeq || 0) + 1;
+          st.notifications.unshift({ id: st.notifSeq, t: st.t, kind: "good", cat: "radio",
+            text: "🌐 Connecté au NETWORK — identité et code enregistrés dans le journal global. Météo 48 h disponible." });
+        }
+      }
       // Appel « Position ? » : coût batteries, réponse privée de la balise,
       // et TRANSMISSION BROUILLÉE pour tout autre navire qui capte l'émission
       // sans en être destinataire (« émettre, c'exister »).
@@ -679,6 +741,7 @@ wss.on("connection", (ws, req) => {
         race.displayEpoch = epoch.getTime();
         race.startedAt = new Date().toISOString();
         race.beacons = undefined;
+        race.network = [];      // nouvelle course : journal global réinitialisé
         race.spawnOrder = {};   // réattribué ci-dessous, dans l'ordre actuel
         takenSpawns = [];       // nouvelle course : quai vidé
         race.migrated = false;  // la migration pourra rejouer si besoin

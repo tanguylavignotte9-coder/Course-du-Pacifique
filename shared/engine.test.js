@@ -1,18 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildWorld, newPlayerState, tick, weatherAt,
+  buildWorld, newPlayerState, tick, weatherAt, computeView,
   distKm, CAPTURE_R_KM, DELIVERY_R_KM, WP_R_KM, DEG_KM, LONG_DECAY_KM, VMAX_KMH, DIESEL_SPD_KMH,
   sailAutoDrive, apparentWind, SAIL_SPD_KMH, clamp, callPosition, RARITY_MIN, bearingTo, segDistKm,
   longStrengthKm, strengthKm, SHORT_DECAY_KM, recvCapture, detectBeacon, onProximityPing,
   proxPingIntervalS, captureBeacon, beaconLockTick, beaconLockSteer, pushBeaconSignal, SIGNAL_LOG_MAX, PROX_ARM_KM, ANCHOR_DROP_KM,
-  scrambledIntercept,
+  scrambledIntercept, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT,
 } from "./engine.js";
 
 // Navire de test en pleine eau (loin du port et des terres), pleine vitesse.
 function shipAtSea(w, { heading = 90, order = 90 } = {}) {
   const st = newPlayerState(w);
   st.x = 30; st.y = 30; st.estX = 30; st.estY = 30; // milieu de l'océan
+  st.anchored = false; // un navire en mer a levé l'ancre
   st.engineOn = true; st.engine = 1; // moteur : vitesse cible DIESEL_SPD_KMH
   st.vkmh = DIESEL_SPD_KMH;
   st.heading = heading;
@@ -75,6 +76,7 @@ test("météo déterministe, en km/h et km", () => {
 test("tick : navire au moteur avance et consomme", () => {
   const w = buildWorld(42);
   const st = newPlayerState(w);
+  st.anchored = false; // lève l'ancre pour naviguer
   st.heading = w.CONTINENT.x1 <= 30 ? 90 : 270; // vers le large
   st.engineOn = true;
   st.engine = 1;
@@ -88,6 +90,7 @@ test("tick : navire au moteur avance et consomme", () => {
 test("tick : estime diverge de la position vraie (dérive du courant)", () => {
   const w = buildWorld(42);
   const st = newPlayerState(w);
+  st.anchored = false; // lève l'ancre pour naviguer
   st.heading = w.CONTINENT.x1 <= 30 ? 90 : 270;
   st.engineOn = true;
   st.engine = 1;
@@ -496,6 +499,7 @@ test("verrou balise-vigie : engagement, poursuite d'azimut, antenne sur la sourc
   const st = newPlayerState(w, { weatherSeed: 1 });
   st.x = b.x; st.y = b.y - 40 / DEG_KM; // 40 km au sud, balise au nord
   st.heading = 90;
+  st.anchored = false; // en navigation : le verrou peut s'engager
   onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
   assert.equal(st.beaconLock, b.code, "verrou engagé");
   const brg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
@@ -526,6 +530,7 @@ test("verrou : l'engagement coupe le pilote de route (un seul pilote à la fois)
   st.x = b.x; st.y = b.y - 40 / DEG_KM;
   st.waypoints = [{ x: 30.5, y: 30.5 }]; st.wpIdx = 0;
   st.autopilot = true;
+  st.anchored = false; // en navigation : le verrou peut s'engager
   onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
   assert.equal(st.beaconLock, b.code, "verrou engagé");
   assert.equal(st.autopilot, false, "le verrou coupe le pilote de route");
@@ -538,6 +543,7 @@ test("verrou : anti-bascule — le premier verrou tient, l'autre balise est jour
   const b2 = w.BEACONS.find((x) => x.active && x.code !== b1.code);
   const st = newPlayerState(w, { weatherSeed: 1 });
   st.x = b1.x; st.y = b1.y - 40 / DEG_KM;
+  st.anchored = false; // en navigation : le verrou peut s'engager
   onProximityPing(st, b1, { strength: 92, source: "omni", bearing: null });
   const order = st.headingOrder;
   onProximityPing(st, b2, { strength: 95, source: "omni", bearing: null });
@@ -595,6 +601,137 @@ test("verrou : arrivée par segment (saut de temps) — ancre au point de franch
   assert.ok(distKm(st.x, st.y, b.x, b.y) <= ANCHOR_DROP_KM,
     `arrêt ≤ 50 m de la balise (obtenu ${Math.round(distKm(st.x, st.y, b.x, b.y) * 1000)} m)`);
   assert.equal(st.beaconLock, null, "verrou libéré");
+});
+
+// ---------- Balises désactivées persistantes + autoguidage + NETWORK ----------
+test("verrou : ancre déployée — le guidage automatique ne s'engage pas", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 40 / DEG_KM;
+  st.heading = 90; st.headingOrder = 90;
+  st.anchored = true; // ancre déployée : signal fort, mode par défaut — aucun verrou
+  onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
+  assert.equal(st.beaconLock, null, "ancre déployée : pas d'engagement du verrou");
+  assert.equal(st.headingOrder, 90, "consigne de cap intacte");
+  assert.equal(st.signals[st.signals.length - 1].kind, "prox", "le ping reste journalisé");
+  // lever l'ancre : le ping suivant peut engager le verrou
+  st.anchored = false;
+  onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
+  assert.equal(st.beaconLock, b.code, "ancre levée : le verrou s'engage au ping suivant");
+});
+
+test("WX_HORIZON_H : horizon des prévisions = 48 h (constante importée, pas figée)", () => {
+  assert.equal(WX_HORIZON_H, 48);
+});
+
+test("autoguidage : 3 positions, défaut = actives seules", () => {
+  assert.deepEqual(AUTOGUIDE_MODES, ["disabled", "active", "all"]);
+  assert.equal(AUTOGUIDE_DEFAULT, "active");
+});
+
+test("balise capturée : elle continue d'émettre « ping désactivé » (pulsation horaire)", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.location = "surface"; st.battery = 100;
+  st.x = b.x; st.y = b.y - 10 / DEG_KM; st.estX = st.x; st.estY = st.y;
+  st.heading = 0; st.headingOrder = 0;
+  st.anchored = true; // figé à 10 km : la balise est capturée par un TIER
+  b.active = false;
+  for (let i = 0; i < 60; i++) tick(st, 1, w); // 60 min : au moins une pulsation de b
+  const n = st.notifications.find((x) => x.text.includes(`Ping désactivé ${b.code}`));
+  assert.ok(n, `le ping de la balise capturée arrive, mention « désactivé »`);
+  assert.ok(!st.notifications.some((x) => x.text.includes(`Ping ${b.code} — signal`) && !x.text.includes("désactivé")),
+    "jamais de ping « actif » pour une balise capturée");
+  assert.ok(st.signals.some((s) => s.beaconId === b.code && s.off), "journal : flag off sur le ping de la balise capturée");
+});
+
+test("balise capturée : pas de re-capture, mais callPosition répond toujours", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.location = "surface"; st.battery = 100;
+  st.x = b.x; st.y = b.y;
+  assert.ok(captureBeacon(st, w).ok, "capture manuelle");
+  assert.equal(captureBeacon(st, w).ok, false, "déjà capturée : pas de re-capture");
+  // la station capturée répond toujours à « Position ? »
+  st.antBeam = 180; st.heading = 0; st.antOrient = 0; st.headingOrder = 0;
+  const answered = callPosition(st, b.code, w);
+  assert.ok(answered, "la balise capturée répond sur les ondes");
+  assert.ok(st.notifications.some((x) => x.text.includes(`Position de ${b.code}`)), "réponse lisible à portée");
+  assert.ok(st.pins.some((p) => p.label === b.code), "punaise automatique posée");
+});
+
+test("verrou : une balise capturée reste pilotable — le verrou survit à la capture par un tiers", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 40 / DEG_KM;
+  st.autoguide = "all";
+  st.anchored = false; // en navigation : le verrou peut s'engager
+  onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
+  assert.equal(st.beaconLock, b.code, "verrou engagé sur balise active (mode toutes)");
+  // un TIER capture la balise pendant la poursuite : le verrou tient
+  b.active = false;
+  beaconLockSteer(st, w);
+  assert.equal(st.beaconLock, b.code, "le verrou survit à la capture de sa cible");
+  const brg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
+  assert.equal(st.headingOrder, brg, "la poursuite continue vers la balise capturée");
+});
+
+test("autoguidage (3 positions) : filtre à l'engagement uniquement", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const cap = { strength: 92, source: "dir", bearing: 0, side: "centre" };
+  const mk = (mode) => {
+    const st = newPlayerState(w, { weatherSeed: 1 });
+    st.x = b.x; st.y = b.y - 40 / DEG_KM;
+    st.heading = 90; st.headingOrder = 90;
+    st.anchored = false; // en navigation : le verrou peut s'engager
+    if (mode) st.autoguide = mode;
+    return st;
+  };
+  // défaut (actives) : verrou sur une balise active
+  const stDef = mk(null);
+  onProximityPing(stDef, b, cap);
+  assert.equal(stDef.beaconLock, b.code, "défaut (actives seules) : verrou sur balise active");
+  assert.equal(stDef.signals[stDef.signals.length - 1].off, false, "flag off absent");
+  // mode désactivées : une balise ACTIVE ne verrouille plus (journal seul)
+  const stOff = mk("disabled");
+  onProximityPing(stOff, b, cap);
+  assert.equal(stOff.beaconLock, null, "mode désactivées : pas de verrou sur une active");
+  assert.equal(stOff.headingOrder, 90, "consigne de cap intacte");
+  assert.equal(stOff.signals[stOff.signals.length - 1].kind, "prox", "le ping reste journalisé");
+  // mode désactivées : une balise CAPTURÉE verrouille
+  b.active = false;
+  const stDis = mk("disabled");
+  onProximityPing(stDis, b, cap);
+  assert.equal(stDis.beaconLock, b.code, "mode désactivées : verrou sur balise capturée");
+  assert.equal(stDis.signals[stDis.signals.length - 1].off, true, "flag off dans le journal");
+  // mode actives : une balise CAPTURÉE ne verrouille plus
+  const stAct = mk("active");
+  onProximityPing(stAct, b, cap);
+  assert.equal(stAct.beaconLock, null, "mode actives : pas de verrou sur une capturée");
+  assert.equal(stAct.signals[stAct.signals.length - 1].off, true, "le ping de la capturée reste journalisé");
+  // un verrou déjà engagé survit au changement d'interrupteur
+  onProximityPing(stDis, b, cap);
+  stDis.autoguide = "active";
+  onProximityPing(stDis, b, cap);
+  assert.equal(stDis.beaconLock, b.code, "verrou engagé : insensible au changement de mode");
+});
+
+test("computeView : une balise capturée reste visible (flag off)", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.location = "surface";
+  st.x = b.x; st.y = b.y; // sur la balise : visible quel que soit le temps
+  const v1 = computeView(st, w);
+  assert.ok(v1.beacons.some((e) => e.id === b.id && !e.off), "active : visible sans flag");
+  b.active = false;
+  const v2 = computeView(st, w);
+  assert.ok(v2.beacons.some((e) => e.id === b.id && e.off), "capturée : toujours visible, flag off");
 });
 
 test("segDistKm : distance point-segment", () => {

@@ -4,8 +4,10 @@ import Scene from "./Scene.jsx";
 import {
   MAP, DEG_KM, RARITY_STYLE,
   distKm, dirSensitivity, DOUGLAS_LABEL, LONG_DECAY_KM,
-  DELIVERY_R_KM, OMNI_DETECT_PCT, MS_PER_MIN,
+  DELIVERY_R_KM, OMNI_DETECT_PCT, MS_PER_MIN, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT,
 } from "../../shared/engine.js";
+
+const AUTOGUIDE_LABEL = { disabled: "Désactivées", active: "Actives", all: "Toutes" };
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const mixHex = (a, b, t) => {
@@ -231,7 +233,7 @@ function TopView({ snap }) {
           const p = proj(e.az, e.km);
           return night
             ? <circle key={e.id} cx={p[0]} cy={p[1]} r={marker(2.5)} fill="#f8fafc" />
-            : <circle key={e.id} cx={p[0]} cy={p[1]} r={marker(4)} fill={RARITY_STYLE[e.rarity].color} />;
+            : <circle key={e.id} cx={p[0]} cy={p[1]} r={marker(4)} fill={e.off ? "#64748b" : RARITY_STYLE[e.rarity].color} />;
         })}
         {/* Navires détectés : marqueur + nom + distance, feu si phare la nuit */}
         {(snap.ships || []).filter((s) => s.km <= visRangeKm + 30).map((s) => {
@@ -637,6 +639,7 @@ export default function App() {
   const sockRef = useRef(null);
   const [shopOpen, setShopOpen] = useState(false);
   const [wxOpen, setWxOpen] = useState(false);
+  const [netOpen, setNetOpen] = useState(false);
   const [dial, setDial] = useState("");
   const [radioMode, setRadioMode] = useState("prive"); // prive | diffusion
   const [wxH, setWxH] = useState(0);
@@ -726,10 +729,10 @@ export default function App() {
         {/* Navire + vue de dessus */}
         <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
           <h2 className="text-sm font-semibold text-sky-300">Navire <span className="font-mono text-sky-200">{player.code}</span></h2>
-          {atDock && (
+          {(atDock || snap.networkZone) && (
             <div className="grid grid-cols-2 gap-2">
-              <Btn active onClick={() => setShopOpen(true)}>🛒 Avitaillement</Btn>
-              <Btn active onClick={() => { setWxOpen(true); setWxH(0); }}>🌤️ Prévisions J+15</Btn>
+              {atDock && <Btn active onClick={() => setShopOpen(true)}>🛒 Avitaillement</Btn>}
+              {snap.networkZone && <Btn active onClick={() => setNetOpen(true)}>🌐 NETWORK</Btn>}
             </div>
           )}
           <p className="text-[11px] uppercase tracking-wider text-slate-400">Vue de dessus — horizon 20 km</p>
@@ -879,13 +882,25 @@ export default function App() {
             <p className="text-[11px] text-slate-400">
               Code du navire : <b className="font-mono text-sm text-sky-300">{player.code}</b> — c'est votre numéro radio (donnez-le aux autres navires pour qu'ils vous appellent).
             </p>
+            {/* Autoguidage balise-vigie : 3 positions, filtre à l'engagement */}
+            <div className="space-y-1">
+              <p className="text-[10px] uppercase tracking-wider text-slate-500">Autoguidage balise-vigie — verrouillage sur</p>
+              <div className="flex gap-1.5">
+                {AUTOGUIDE_MODES.map((m) => (
+                  <Btn key={m} active={(player.autoguide || AUTOGUIDE_DEFAULT) === m} onClick={() => cmd({ autoguide: m })}>{AUTOGUIDE_LABEL[m]}</Btn>
+                ))}
+              </div>
+              <p className="text-[11px] leading-snug text-slate-500">
+                Le verrou automatique s'engage uniquement sur les balises choisies — <b>Actives</b> (non capturées), <b>Désactivées</b> (déjà capturées) ou <b>Toutes</b>. Le journal des signaux reste complet ; une consigne de cap coupe toujours le verrou.
+              </p>
+            </div>
             {(player.signals || []).length > 0 && (
               <div className="rounded-lg border border-slate-700/60 bg-slate-900/60 p-2">
                 <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">Journal des signaux (10 derniers)</p>
                 <div className="space-y-0.5">
                   {[...player.signals].reverse().map((sg, i) => (
                     <p key={i} className={`text-[10px] leading-snug tabular-nums ${sg.kind === "prox" ? "text-purple-300" : "text-slate-400"}`}>
-                      {sg.kind === "prox" ? "⚡" : "📡"} {sg.beaconId} — signal {sg.strength}%{sg.side ? `, zone ${sg.side}` : ""}
+                      {sg.kind === "prox" ? "⚡" : "📡"} {sg.beaconId}{sg.off ? " (balise désactivée)" : ""} — signal {sg.strength}%{sg.side ? `, zone ${sg.side}` : ""}
                     </p>
                   ))}
                 </div>
@@ -957,12 +972,48 @@ export default function App() {
         </div>
       </div>
 
-      {/* Prévisions météo (à quai) */}
+      {/* NETWORK (port / avant-poste / balise) : connexion, météo 48 h, journal global */}
+      {netOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setNetOpen(false)}>
+          <div className="max-h-[92vh] w-full max-w-lg space-y-3 overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 p-5" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-base font-bold text-sky-300">🌐 NETWORK — réseau de la course</h2>
+            <p className="text-xs text-slate-400">Journal global de la course : chaque connexion y est inscrite. Météo 48 h et journal accessibles tant que vous restez dans la zone (port, avant-poste ou balise).</p>
+            {!player.networked ? (
+              <div className="space-y-2 rounded-lg border border-amber-800/60 bg-amber-950/30 p-3">
+                <p className="text-[11px] leading-snug text-amber-200/80">
+                  Se connecter révèle votre identité et votre code : ils seront enregistrés dans le journal global, consulté par tous les abonnés (qui est allé où, quand).
+                </p>
+                <Btn active onClick={() => cmd({ network: true })}>Se connecter au NETWORK</Btn>
+              </div>
+            ) : (
+              <div className="space-y-2 rounded-lg border border-emerald-800/60 bg-emerald-950/30 p-3">
+                <p className="text-xs text-emerald-300">● Connecté — accès au réseau météo et au journal global.</p>
+                <Btn active onClick={() => { setWxOpen(true); setWxH(0); }}>🌤️ Afficher la météo (48 h)</Btn>
+              </div>
+            )}
+            {(snap.networkLog || []).length > 0 && (
+              <div className="rounded-lg border border-slate-700/60 bg-slate-900/60 p-2">
+                <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">Journal global — connexions ({snap.networkLog.length})</p>
+                <div className="max-h-56 space-y-0.5 overflow-y-auto">
+                  {[...snap.networkLog].reverse().map((e, i) => (
+                    <p key={i} className="text-[10px] leading-snug tabular-nums text-slate-400">
+                      {fmtT(e.t, snap.epoch)} · {e.who} (navire {e.code}) — {e.place.kind === "port" ? "au port" : e.place.kind === "avant-poste" ? `à l'avant-poste ${e.place.id + 1}` : `à la balise ${e.place.id} (code ${e.place.code})`}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            )}
+            <Btn onClick={() => setNetOpen(false)}>Reprendre la navigation</Btn>
+          </div>
+        </div>
+      )}
+
+      {/* Prévisions météo (via NETWORK) */}
       {wxOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setWxOpen(false)}>
           <div className="max-h-[92vh] w-full max-w-2xl space-y-3 overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 p-5" onClick={(e) => e.stopPropagation()}>
-            <h2 className="text-base font-bold text-sky-300">🌤️ Prévisions météo — service côtier</h2>
-            <p className="text-xs text-slate-400">Bulletin du monde extérieur, reçu à quai. Prévision parfaite jusqu'à J+15 · Instant : <b className="tabular-nums text-sky-300">+{wxH} h (J+{Math.floor(wxH / 24)})</b></p>
+            <h2 className="text-base font-bold text-sky-300">🌤️ Prévisions météo — NETWORK</h2>
+            <p className="text-xs text-slate-400">Bulletin du NETWORK, reçu en zone (port, avant-poste ou balise). Prévision parfaite sur 48 h · Instant : <b className="tabular-nums text-sky-300">+{wxH} h</b></p>
             <svg viewBox={`0 0 600 600`} className="mx-auto w-full max-w-[440px] rounded-lg bg-slate-950">
               {(wxData?.cells || []).map((c) => {
                 const S = 10;
@@ -981,8 +1032,8 @@ export default function App() {
             </svg>
             <div className="flex items-center gap-3">
               <span className="text-xs text-slate-400">Maintenant</span>
-              <input type="range" min={0} max={360} step={6} value={wxH} onChange={(e) => setWxH(+e.target.value)} className="w-full accent-sky-400" />
-              <span className="text-xs text-slate-400">J+15</span>
+              <input type="range" min={0} max={WX_HORIZON_H} step={2} value={Math.min(wxH, WX_HORIZON_H)} onChange={(e) => setWxH(+e.target.value)} className="w-full accent-sky-400" />
+              <span className="text-xs text-slate-400">48 h</span>
             </div>
             {wxData?.here && (
               <p className="rounded-lg bg-slate-800/70 p-2.5 text-center text-xs text-slate-300">
