@@ -97,27 +97,97 @@ function Btn({ active, onClick, children, className = "" }) {
 // détections du serveur sont rapportées en azimut/distance depuis l'estimé.
 function TopView({ snap }) {
   const { player, view, weather } = snap;
-  const R = 20; // horizon km
-  const P = 100 / R; // px par km
+  const svgRef = useRef(null);
+  const [zoom, setZoom] = useState(1);          // ×1 – ×16
+  const [pan, setPan] = useState({ x: 0, y: 0 }); // décalage px (200-viewBox)
+  const ptrs = useRef({});
+  const drag = useRef(null);
+  const pinch = useRef(null);
+
+  const R = 20;                    // horizon km (le disque entier)
+  const HALF = 100;                // demi-taille du viewBox (200x200)
+  // échelle courante : px par km — à ×1, l'horizon remplit le disque (100 px)
+  const P = (HALF / R) * zoom;
   const night = view.night;
   const heading = player.heading;
-  // Position des objets relatifs à l'estimé : le serveur donne az/km depuis
-  // la vraie position ; on les projette depuis le centre (l'erreur de
-  // projection est incluse dans l'incertitude de l'estime).
+  // rayon visible du monde en km selon le zoom (au-delà : clampé au bord)
+  const visRangeKm = R / zoom;
+
+  // Projection azimut/distance (depuis la position VRAIE côté serveur, mais
+  // dessinés autour de l'estimé : l'écart est couvert par l'incertitude).
   const proj = (az, km) => {
-    const r = Math.min(km, 96) * P / 1; // clamp au bord du cercle
     const a = (az * Math.PI) / 180;
-    return [100 + Math.sin(a) * Math.min(km, R + 30) * P / 1, 100 - Math.cos(a) * Math.min(km, R + 30) * P / 1];
+    const x = 100 + pan.x + Math.sin(a) * km * P;
+    const y = 100 + pan.y - Math.cos(a) * km * P;
+    return [x, y];
   };
-  const visF = clamp(view.visKm / R, 0, 1);
+  const inDisk = ([x, y]) => Math.hypot(x - (100 + pan.x), y - (100 + pan.y)) < 96;
+
+  // tailles adaptatives : les éléments restent lisibles à tout zoom
+  const font = (px) => Math.max(px / Math.sqrt(zoom), 4.5);      // labels
+  const marker = (px) => Math.max(px / zoom, 1.6);               // rayons marqueurs
+  const lw = (px) => Math.max(px / zoom, 0.4);                   // épaisseurs traits
+
+  const visF = clamp(view.visKm / visRangeKm, 0, 1);
   const hr = (player.antBeam / 2) * Math.PI / 180;
   const antHeading = view.antHeading;
+
+  // interactions : molette zoom, pincement tactile, glisser = pan
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const onW = (e) => {
+      e.preventDefault();
+      setZoom((z) => clamp(z * Math.exp(-e.deltaY * 0.0012), 1, 16));
+    };
+    el.addEventListener("wheel", onW, { passive: false });
+    return () => el.removeEventListener("wheel", onW);
+  }, []);
+
   const wrad = (view.windDir * Math.PI) / 180;
-  const wax = 100 + Math.sin(wrad) * 91, way = 100 - Math.cos(wrad) * 91;
-  const wbx = 100 + Math.sin(wrad) * 67, wby = 100 - Math.cos(wrad) * 67;
+  const wax = 100 + pan.x + Math.sin(wrad) * 91, way = 100 + pan.y - Math.cos(wrad) * 91;
+  const wbx = 100 + pan.x + Math.sin(wrad) * 67, wby = 100 + pan.y - Math.cos(wrad) * 67;
   const wux = (wbx - wax) / 24, wuy = (wby - way) / 24;
+
   return (
-    <svg viewBox="0 0 200 200" className="mx-auto w-full max-w-[240px]">
+    <svg
+      ref={svgRef}
+      viewBox="0 0 200 200"
+      className="mx-auto w-full max-w-[280px] touch-none select-none"
+      style={{ cursor: drag.current ? "grabbing" : "grab" }}
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        ptrs.current[e.pointerId] = { x: e.clientX, y: e.clientY };
+        const ids = Object.keys(ptrs.current);
+        if (ids.length === 1) {
+          drag.current = { id: e.pointerId, sx: e.clientX, sy: e.clientY, pan };
+        } else if (ids.length === 2) {
+          drag.current = null;
+          const [a, b] = Object.values(ptrs.current);
+          pinch.current = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, zoom };
+        }
+      }}
+      onPointerMove={(e) => {
+        const pt = ptrs.current[e.pointerId];
+        if (pt) { pt.x = e.clientX; pt.y = e.clientY; }
+        const ids = Object.keys(ptrs.current);
+        if (ids.length >= 2 && pinch.current) {
+          const [a, b] = Object.values(ptrs.current);
+          const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+          setZoom(clamp(pinch.current.zoom * d / pinch.current.d0, 1, 16));
+        } else if (drag.current && e.pointerId === drag.current.id && zoom === 1) {
+          // pan seulement à zoom 1+ (translation px réels)
+          const rect = e.currentTarget.getBoundingClientRect();
+          const scale = rect.width / 200;
+          setPan({
+            x: clamp(drag.current.pan.x + (e.clientX - drag.current.sx) / scale, -60, 60),
+            y: clamp(drag.current.pan.y - (e.clientY - drag.current.sy) / scale, -60, 60),
+          });
+        }
+      }}
+      onPointerUp={(e) => { delete ptrs.current[e.pointerId]; drag.current = null; pinch.current = null; }}
+      onPointerLeave={(e) => { delete ptrs.current[e.pointerId]; drag.current = null; pinch.current = null; }}
+    >
       <defs>
         <clipPath id="localClip"><circle cx="100" cy="100" r="98" /></clipPath>
         <radialGradient id="visGrad2" cx="50%" cy="50%" r="50%">
@@ -129,82 +199,167 @@ function TopView({ snap }) {
       </defs>
       <circle cx="100" cy="100" r="98" fill={!view.canSee ? "#010a14" : night ? "#03121f" : "#0b2a4a"} stroke="#38bdf8" strokeWidth="1.5" />
       <g clipPath="url(#localClip)">
-        {/* Côte du continent (dessinée à l'échelle autour de l'estimé) */}
+        {/* Côte du continent — échelle exacte, suivie par le zoom */}
         {view.coast && view.continentVerts && (() => {
-          const kx = (x) => 100 + (x - snap.player.estX) * KM_PER_DEG * (100 / R);
-          const ky = (y) => 100 - (y - snap.player.estY) * KM_PER_DEG * (100 / R);
+          const kx = (x) => 100 + pan.x + (x - snap.player.estX) * KM_PER_DEG * P;
+          const ky = (y) => 100 + pan.y - (y - snap.player.estY) * KM_PER_DEG * P;
           return (
             <polygon
               points={view.continentVerts.map(([vx, vy]) => `${kx(vx).toFixed(1)},${ky(vy).toFixed(1)}`).join(" ")}
               fill={night ? "#0a1f16" : "#1c3a2a"} stroke={night ? "#1f4d38" : "#2f5c43"}
+              strokeWidth={lw(1)}
             />
           );
         })()}
-        {/* Objets détectés : dans l'horizon = forme, au-delà = indicateur bord */}
-        {view.islands.map((e, idx) => e.beyond ? null : (
-          <circle key={idx} cx={proj(e.az, e.km)[0]} cy={proj(e.az, e.km)[1]} r="10"
-            fill={night ? "#0a1f16" : "#1c3a2a"} stroke={night ? "#1f4d38" : "#2f5c43"} />
-        ))}
-        {view.port && !view.port.beyond && (
-          <g>
-            <circle cx={proj(view.port.az, view.port.km)[0]} cy={proj(view.port.az, view.port.km)[1]} r={night ? 3 : 6} fill="#f8fafc" />
-            {!night && <text x={proj(view.port.az, view.port.km)[0]} y={proj(view.port.az, view.port.km)[1] - 9} fontSize="8" fill="#f8fafc" textAnchor="middle">Port</text>}
+        {/* Îles détectées (dans l'horizon agrandi) */}
+        {view.islands.map((e, idx) => {
+          const p = proj(e.az, e.km);
+          return e.beyond ? null : (
+            <circle key={idx} cx={p[0]} cy={p[1]} r={marker(10)}
+              fill={night ? "#0a1f16" : "#1c3a2a"} stroke={night ? "#1f4d38" : "#2f5c43"} strokeWidth={lw(0.8)} />
+          );
+        })}
+        {/* Port */}
+        {view.port && !view.port.beyond && (() => {
+          const p = proj(view.port.az, view.port.km);
+          return (
+            <g>
+              <circle cx={p[0]} cy={p[1]} r={marker(night ? 3 : 6)} fill="#f8fafc" />
+              {!night && <text x={p[0]} y={p[1] - marker(9)} fontSize={font(8)} fill="#f8fafc" textAnchor="middle">Port</text>}
+            </g>
+          );
+        })()}
+        {/* Avant-postes */}
+        {view.outposts.map((e) => {
+          if (e.beyond) return null;
+          const p = proj(e.az, e.km);
+          return <circle key={e.idx} cx={p[0]} cy={p[1]} r={marker(night ? 2.2 : 4)} fill="#e2e8f0" />;
+        })}
+        {/* Balises détectées : coque le jour, feu la nuit */}
+        {view.beacons.map((e) => {
+          if (e.beyond) return null;
+          const p = proj(e.az, e.km);
+          return night
+            ? <circle key={e.id} cx={p[0]} cy={p[1]} r={marker(2.5)} fill="#f8fafc" />
+            : <circle key={e.id} cx={p[0]} cy={p[1]} r={marker(4)} fill={RARITY_STYLE[e.rarity].color} />;
+        })}
+        {/* Navires détectés : marqueur + nom + distance, feu si phare la nuit */}
+        {(snap.ships || []).filter((s) => s.km <= visRangeKm + 30).map((s) => {
+          const p = proj(s.az, s.km);
+          if (!inDisk(p)) return null;
+          return (
+            <g key={s.id}>
+              <circle cx={p[0]} cy={p[1]} r={marker(night ? (s.light ? 3 : 2.2) : 3.5)}
+                fill={night ? (s.light ? "#fde68a" : "#94a3b8") : "#f1f5f9"}
+                stroke="#475569" strokeWidth={lw(0.6)} />
+              <text x={p[0]} y={p[1] - marker(6)} fontSize={font(6)} fill="#cbd5e1" textAnchor="middle">{s.id.slice(0, 4)} · {Math.round(s.km)} km</text>
+            </g>
+          );
+        })}
+        {/* Navires au-delà de la portée visible : indicateur au bord */}
+        {(snap.ships || []).filter((s) => s.km > visRangeKm + 30).map((s) => (
+          <g key={"b" + s.id}>
+            <text x={100 + pan.x + Math.sin((s.az * Math.PI) / 180) * 78} y={100 + pan.y - Math.cos((s.az * Math.PI) / 180) * 78} fontSize={font(9)} textAnchor="middle">⛵</text>
+            <text x={100 + pan.x + Math.sin((s.az * Math.PI) / 180) * 78} y={100 + pan.y - Math.cos((s.az * Math.PI) / 180) * 78 + font(8)} fontSize={font(6)} fill="#cbd5e1" textAnchor="middle">{Math.round(s.km)} km</text>
           </g>
-        )}
-        {view.outposts.map((e) => e.beyond ? null : (
-          <g key={e.idx}>
-            <circle cx={proj(e.az, e.km)[0]} cy={proj(e.az, e.km)[1]} r={night ? 2.2 : 4} fill="#e2e8f0" />
-          </g>
         ))}
-        {view.beacons.map((e) => e.beyond ? null : (
-          <g key={e.id}>
-            {night
-              ? <circle cx={proj(e.az, e.km)[0]} cy={proj(e.az, e.km)[1]} r="2.5" fill="#f8fafc" />
-              : <circle cx={proj(e.az, e.km)[0]} cy={proj(e.az, e.km)[1]} r="4" fill={RARITY_STYLE[e.rarity].color} />}
-          </g>
-        ))}
-        {/* Brume : voile gris au-delà de la visibilité */}
-        {view.visKm < R - 0.3 && (
+        {/* Brume : voile gris au-delà de la visibilité météo */}
+        {view.visKm < visRangeKm - 0.3 && (
           <g>
             <rect x="0" y="0" width="200" height="200" fill="url(#visGrad2)" />
-            <circle cx="100" cy="100" r={Math.min(R, view.visKm) * P} fill="none" stroke="rgba(203,213,225,0.45)" strokeDasharray="2 3" />
+            <circle cx={100 + pan.x} cy={100 + pan.y} r={Math.min(visRangeKm, view.visKm) * P} fill="none" stroke="rgba(203,213,225,0.45)" strokeDasharray="2 3" />
           </g>
         )}
-        {/* Vent */}
+        {/* Vent : flèche au bord du disque */}
         <g>
-          <line x1={wax} y1={way} x2={wbx - wux * 5} y2={wby - wuy * 5} stroke="#06263f" strokeWidth="3.6" strokeLinecap="round" />
-          <line x1={wax} y1={way} x2={wbx - wux * 5} y2={wby - wuy * 5} stroke="#93c5fd" strokeWidth="1.7" />
-          <polygon points={`${wbx},${wby} ${wbx - wux * 9 + wuy * 5},${wby - wuy * 9 - wux * 5} ${wbx - wux * 9 - wuy * 5},${wby - wuy * 9 + wux * 5}`} fill="#93c5fd" stroke="#06263f" strokeWidth="1.2" />
+          <line x1={wax} y1={way} x2={wbx - wux * 5} y2={wby - wuy * 5} stroke="#06263f" strokeWidth={lw(3.6)} strokeLinecap="round" />
+          <line x1={wax} y1={way} x2={wbx - wux * 5} y2={wby - wuy * 5} stroke="#93c5fd" strokeWidth={lw(1.7)} />
+          <polygon points={`${wbx},${wby} ${wbx - wux * 9 + wuy * 5},${wby - wuy * 9 - wux * 5} ${wbx - wux * 9 - wuy * 5},${wby - wuy * 9 + wux * 5}`} fill="#93c5fd" stroke="#06263f" strokeWidth={lw(1.2)} />
         </g>
-        {/* Indicateurs de bord (au-delà de l'horizon) */}
-        {[
-          ...view.islands.filter((e) => e.beyond).slice(0, 2).map((e) => ({ icon: "⛰️", d: Math.round(e.km), az: e.az })),
-          ...(view.port && view.port.beyond ? [{ icon: "🏛️", d: Math.round(view.port.km), az: view.port.az }] : []),
-          ...view.outposts.filter((e) => e.beyond).map((e) => ({ icon: "🏕️", d: Math.round(e.km), az: e.az })),
-          ...view.beacons.filter((e) => e.beyond).map((e) => ({ icon: "🔦", d: Math.round(e.km), az: e.az })),
-        ].map((e, idx) => (
-          <g key={idx}>
-            <text x={100 + Math.sin((e.az * Math.PI) / 180) * 86} y={100 - Math.cos((e.az * Math.PI) / 180) * 86} fontSize="9" textAnchor="middle">{e.icon}</text>
-            <text x={100 + Math.sin((e.az * Math.PI) / 180) * 86} y={100 - Math.cos((e.az * Math.PI) / 180) * 86 + 8} fontSize="6" fill="#cbd5e1" textAnchor="middle">{e.d} km</text>
-          </g>
-        ))}
-        {/* Anneaux : capture 500 m (proche du centre) et 10 km */}
-        <circle cx="100" cy="100" r={(0.5 / R) * 100} fill="none" stroke="rgba(251,191,36,0.5)" strokeDasharray="1 2" />
-        <circle cx="100" cy="100" r="50" fill="none" stroke="rgba(56,189,248,0.25)" strokeDasharray="3 3" />
-        {/* Faisceau de l'antenne */}
+        {/* Anneaux de distance : 10 km et 3,7 km — échelle réelle au zoom */}
+        {10 * P < 96 && (
+          <circle cx={100 + pan.x} cy={100 + pan.y} r={10 * P} fill="none" stroke="rgba(56,189,248,0.25)" strokeDasharray="3 3" strokeWidth={lw(0.8)} />
+        )}
+        {0.5 * P > 0.8 && (
+          <circle cx={100 + pan.x} cy={100 + pan.y} r={0.5 * P} fill="none" stroke="rgba(251,191,36,0.5)" strokeDasharray="1 2" strokeWidth={lw(0.6)} />
+        )}
+        {/* Faisceau de l'antenne directionnelle */}
         <path
-          transform={`translate(100,100) rotate(${antHeading})`}
+          transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${antHeading})`}
           d={`M 0 0 L ${(-98 * Math.sin(hr)).toFixed(1)} ${(-98 * Math.cos(hr)).toFixed(1)} A 98 98 0 0 1 ${(98 * Math.sin(hr)).toFixed(1)} ${(-98 * Math.cos(hr)).toFixed(1)} Z`}
-          fill="rgba(192,132,252,0.16)" stroke="rgba(192,132,254,0.45)" strokeWidth="0.7"
+          fill="rgba(192,132,252,0.16)" stroke="rgba(192,132,252,0.45)" strokeWidth={lw(0.7)}
         />
-        <line transform={`translate(100,100) rotate(${antHeading})`} x1="0" y1="0" x2="0" y2="-94" stroke="#c084fc" strokeDasharray="4 3" strokeWidth="0.7" />
+        <line transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${antHeading})`} x1="0" y1="0" x2="0" y2="-94" stroke="#c084fc" strokeDasharray="4 3" strokeWidth={lw(0.7)} />
+        {/* Consigne de cap : marqueur pointillé vers l'avant */}
+        <line
+          transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${player.headingOrder})`}
+          x1="0" y1="0" x2="0" y2={-70 / Math.max(zoom, 1.4)}
+          stroke="#fbbf24" strokeWidth={lw(1)} strokeDasharray="3 4" opacity="0.8"
+        />
         {/* Navire au centre, orienté au cap */}
-        <g transform={`translate(100,100) rotate(${heading})`}>
-          <path d="M 0 -12 L 8 10 L 0 5 L -8 10 Z" fill={player.grounded ? "#f87171" : "#38bdf8"} stroke="#e0f2fe" strokeWidth="0.8" />
+        <g transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${heading})`}>
+          <path d={`M 0 ${-12 / Math.max(zoom, 1.2)} L ${8 / Math.max(zoom, 1.2)} ${10 / Math.max(zoom, 1.2)} L 0 ${5 / Math.max(zoom, 1.2)} L ${-8 / Math.max(zoom, 1.2)} ${10 / Math.max(zoom, 1.2)} Z`} fill={player.grounded ? "#f87171" : "#38bdf8"} stroke="#e0f2fe" strokeWidth={lw(0.8)} />
         </g>
+        {/* Indicateur de zoom */}
+        <text x="100" y="195" fontSize={font(8)} fill="#94a3b8" textAnchor="middle">
+          ×{zoom.toFixed(1)} · horizon {Math.round(visRangeKm)} km
+        </text>
       </g>
-      <text x="100" y="12" fontSize="9" fill="#94a3b8" textAnchor="middle">N</text>
+      <text x="100" y="12" fontSize={font(9)} fill="#94a3b8" textAnchor="middle">N</text>
     </svg>
+  );
+}
+
+// ---------- Clavier radio VHF (appel « Position ? ») ----------
+// Clavier cliquable immersif : touches 0-9, effacer (⌫), effacer tout (C).
+// Le bouton d'appel n'est actif qu'avec 4 chiffres composés. L'émission
+// utilise l'antenne TELLE QU'ELLE EST RÉGLÉE (viser avant d'appeler).
+function VhfKeypad({ dialed, onDial, onAction, radioOk, portee }) {
+  const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "C", "0", "⌫"];
+  const press = (k) => {
+    if (k === "C") return onDial("");
+    if (k === "⌫") return onDial(dialed.slice(0, -1));
+    if (dialed.length < 4) onDial(dialed + k);
+  };
+  return (
+    <div className="rounded-xl border border-slate-600 bg-slate-900/80 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[10px] uppercase tracking-wider text-slate-400">Appel « Position ? »</span>
+        <span className="text-[10px] text-slate-500">portée dir. : {portee} km</span>
+      </div>
+      {/* Afficheur du numéro composé */}
+      <div className="mb-2 flex items-center justify-center gap-1 rounded-lg border border-sky-900 bg-sky-950/70 px-3 py-2">
+        {[0, 1, 2, 3].map((i) => (
+          <span key={i} className={`w-7 rounded text-center font-mono text-lg font-bold ${i < dialed.length ? "text-sky-300" : "text-slate-700"}`}>
+            {dialed[i] || "–"}
+          </span>
+        ))}
+      </div>
+      <div className="grid grid-cols-3 gap-1.5">
+        {keys.map((k) => (
+          <button
+            key={k}
+            onClick={() => press(k)}
+            className={`rounded-lg py-2 font-mono text-sm font-bold transition-colors ${k === "C" || k === "⌫" ? "bg-rose-900/50 text-rose-200 hover:bg-rose-800/60" : "bg-slate-700/80 text-slate-100 hover:bg-slate-600"}`}
+          >{k}</button>
+        ))}
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
+        <button
+          disabled={dialed.length !== 4 || !radioOk}
+          onClick={() => { onAction("posq", dialed); onDial(""); }}
+          className={`rounded-lg py-2 text-xs font-bold transition-colors ${dialed.length === 4 && radioOk ? "bg-sky-500 text-slate-950 hover:bg-sky-400" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+        >❓ Position ?</button>
+        <button
+          disabled={dialed.length !== 4 || !radioOk}
+          onClick={() => { onAction("mypos", dialed); onDial(""); }}
+          className={`rounded-lg py-2 text-xs font-bold transition-colors ${dialed.length === 4 && radioOk ? "bg-emerald-500 text-slate-950 hover:bg-emerald-400" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+        >📍 Ma position</button>
+      </div>
+      <p className="mt-1.5 text-[10px] leading-snug text-slate-500">
+        « Position ? » est un message littéral : un <b>navire</b> le lit et décide seul de répondre ; une <b>balise</b> l'interprète et répond automatiquement (c'est sa fonction). « Ma position » communique volontairement votre position <b>estimée</b>. (0,5 % batteries par message)
+      </p>
+    </div>
   );
 }
 
@@ -224,6 +379,7 @@ function NavMap({ snap, sock }) {
   const pinch = useRef(null);
   const [tool, setTool] = useState(null);
   const [measurePend, setMeasurePend] = useState(null);
+  const [planMode, setPlanMode] = useState(false);
   const [hoverPt, setHoverPt] = useState(null); // position curseur (degres) pour la previsualisation
 
   const clampVB = (v) => ({ ...v, x: clamp(v.x, 0, MAP_PX - v.w), y: clamp(v.y, 0, MAP_PX - v.w) });
@@ -267,7 +423,19 @@ function NavMap({ snap, sock }) {
       <div className="grid grid-cols-2 gap-2">
         <Btn active={tool === "pin"} onClick={() => { setTool(tool === "pin" ? null : "pin"); setMeasurePend(null); }}>📌 Punaise{tool === "pin" ? " — cliquer la carte" : ""}</Btn>
         <Btn active={tool === "measure"} onClick={() => { setTool(tool === "measure" ? null : "measure"); setMeasurePend(null); }}>📏 Mesure{tool === "measure" ? (measurePend ? " — 2ᵉ point" : " — 1ᵉʳ point") : ""}</Btn>
+        <Btn active={planMode} onClick={() => setPlanMode(!planMode)}>🧭 Planificateur{planMode ? " — cliquer la carte" : ""}</Btn>
+        <Btn
+          active={player.autopilot}
+          disabled={player.wpIdx >= (player.waypoints || []).length && !player.autopilot}
+          onClick={() => sock.command({ autopilot: !player.autopilot })}
+        >🤖 Pilote auto{player.autopilot ? " — ACTIF" : ""}</Btn>
       </div>
+      {planMode && (
+        <div className="grid grid-cols-2 gap-2">
+          <Btn onClick={() => sock.command({ waypoints: player.waypoints.slice(0, -1) })}>🗑 Dernier point</Btn>
+          <Btn onClick={() => sock.command({ waypoints: [] })}>🗑 Route entière</Btn>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-2">
         <Btn onClick={() => sock.command({ pins: player.pins.slice(0, -1) })}>🗑 Dernière punaise</Btn>
         <Btn onClick={() => sock.command({ measures: [] })}>🗑 Mesures</Btn>
@@ -283,7 +451,7 @@ function NavMap({ snap, sock }) {
       <svg
         ref={svgRef}
         viewBox={`${vb.x.toFixed(2)} ${vb.y.toFixed(2)} ${vb.w.toFixed(2)} ${vb.w.toFixed(2)}`}
-        className={`w-full rounded-lg ${tool ? "cursor-crosshair" : "cursor-grab"}`}
+        className={`w-full rounded-lg ${tool || planMode ? "cursor-crosshair" : "cursor-grab"}`}
         style={{ background: "#8fb4d4", touchAction: "none" }}
         onPointerDown={(e) => {
           e.currentTarget.setPointerCapture(e.pointerId);
@@ -302,10 +470,12 @@ function NavMap({ snap, sock }) {
           if (pt) { pt.x = e.clientX; pt.y = e.clientY; }
           const rect = e.currentTarget.getBoundingClientRect();
           const ids = Object.keys(ptrs.current);
-          // Prévisualisation de mesure : suit le curseur dès le 1er point posé
-          if (tool === "measure" && measurePend && !drag.current) {
-            const hp = vbPoint(vb, rect, e.clientX, e.clientY);
-            setHoverPt([hp.x / S, MAP - hp.y / S]);
+          // Prévisualisation mesure/plan : suit le curseur
+          if ((tool === "measure" && measurePend) || planMode) {
+            if (!drag.current || drag.current.moved < 5) {
+              const hp = vbPoint(vb, rect, e.clientX, e.clientY);
+              setHoverPt([hp.x / S, MAP - hp.y / S]);
+            }
           }
           if (ids.length >= 2 && pinch.current) {
             // Pincement tactile : zoom centré entre les doigts
@@ -325,12 +495,14 @@ function NavMap({ snap, sock }) {
           const d = drag.current;
           drag.current = null;
           // Clic franc (pas un glissement) : outils punaise / mesure
-          if (Object.keys(ptrs.current).length > 0 || !d || d.moved > 5 || !tool) return;
+          if (Object.keys(ptrs.current).length > 0 || !d || d.moved > 5 || (!tool && !planMode)) return;
           const rect = e.currentTarget.getBoundingClientRect();
           const p = vbPoint(d.vb, rect, e.clientX, e.clientY);
           const xDeg = p.x / S;
           const yDeg = MAP - p.y / S;
-          if (tool === "pin") {
+          if (planMode) {
+            sock.command({ waypoints: [...(player.waypoints || []), { x: xDeg, y: yDeg }] });
+          } else if (tool === "pin") {
             if (player.pins.length < 26) {
               sock.command({ pins: [...player.pins, { label: String.fromCharCode(65 + player.pins.length), x: xDeg, y: yDeg }] });
             }
@@ -391,6 +563,52 @@ function NavMap({ snap, sock }) {
             )}
           </g>
         )}
+        {/* Route du planificateur : segments pointillés + pastilles numérotées */}
+        {(player.waypoints || []).length > 0 && (() => {
+          const wps = player.waypoints;
+          const segs = [];
+          // segment navire → 1er point non atteint, puis entre points
+          // (px/py pour le rendu, coordonnées degrés pour la distance km)
+          const cur = player.wpIdx;
+          if (cur < wps.length) {
+            segs.push([px(player.estX), py(player.estY), px(wps[cur].x), py(wps[cur].y), player.estX, player.estY, wps[cur].x, wps[cur].y]);
+          }
+          for (let i = cur; i < wps.length - 1; i++) {
+            segs.push([px(wps[i].x), py(wps[i].y), px(wps[i + 1].x), py(wps[i + 1].y), wps[i].x, wps[i].y, wps[i + 1].x, wps[i + 1].y]);
+          }
+          return (
+            <g>
+              {segs.map((s, i) => {
+                const [x1, y1, x2, y2] = s;
+                const km = Math.round(distNm(s[4], s[5], s[6], s[7]) * 1.852);
+                return (
+                  <g key={"s" + i}>
+                    <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#0ea5e9" strokeWidth="1.4" strokeDasharray="6 4" opacity="0.85" />
+                    {km > 0 && (
+                      <text x={(x1 + x2) / 2} y={(y1 + y2) / 2 - 4} fontSize="10" fill="#0369a1" fontWeight="bold" textAnchor="middle" stroke="#cfe0f0" strokeWidth="2.5" paintOrder="stroke">{km} km</text>
+                    )}
+                  </g>
+                );
+              })}
+              {wps.map((wp, i) => (
+                <g key={i}>
+                  <circle cx={px(wp.x)} cy={py(wp.y)} r="5.5"
+                    fill={i < player.wpIdx ? "#94a3b8" : i === player.wpIdx ? "#0ea5e9" : "#7dd3fc"}
+                    stroke="#0c4a6e" strokeWidth="1" />
+                  <text x={px(wp.x)} y={py(wp.y) - 7} fontSize="10" fill="#0c4a6e" fontWeight="bold" textAnchor="middle">{i + 1}</text>
+                </g>
+              ))}
+            </g>
+          );
+        })()}
+        {/* Prévisualisation plan : dernier point (ou navire) → curseur */}
+        {planMode && hoverPt && (() => {
+          const wps = player.waypoints || [];
+          const from = wps.length > 0 ? wps[wps.length - 1] : { x: player.estX, y: player.estY };
+          return (
+            <line x1={px(from.x)} y1={py(from.y)} x2={px(hoverPt[0])} y2={py(hoverPt[1])} stroke="#0ea5e9" strokeWidth="1.2" strokeDasharray="4 4" opacity="0.6" />
+          );
+        })()}
         {/* Punaises A, B, C... */}
         {player.pins.map((p, idx) => (
           <g key={idx}>
@@ -429,6 +647,8 @@ export default function App() {
   const sockRef = useRef(null);
   const [shopOpen, setShopOpen] = useState(false);
   const [wxOpen, setWxOpen] = useState(false);
+  const [dial, setDial] = useState("");
+  const [radioMode, setRadioMode] = useState("prive"); // prive | diffusion
   const [wxH, setWxH] = useState(0);
   const [wxData, setWxData] = useState(null);
 
@@ -473,6 +693,7 @@ export default function App() {
   const atDock = player.location === "surface" &&
     (distNm(player.estX, player.estY, snap.world.port.x, snap.world.port.y) < 0.5 ||
     snap.world.outposts.some((o) => distNm(player.estX, player.estY, o.x, o.y) < 0.5));
+  const radioOk = (player.location === "surface" || (player.location === "underwater" && player.periscope)) && player.battery > 0;
   const antSens = Math.round(dirSensitivity(player.antBeam));
   const antHeading = (player.heading + player.antOrient + 720) % 360;
 
@@ -514,7 +735,7 @@ export default function App() {
       <div className="grid gap-4 md:grid-cols-2">
         {/* Navire + vue de dessus */}
         <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
-          <h2 className="text-sm font-semibold text-sky-300">Navire — {session.account}</h2>
+          <h2 className="text-sm font-semibold text-sky-300">Navire <span className="font-mono text-sky-200">{player.code}</span></h2>
           {atDock && (
             <div className="grid grid-cols-2 gap-2">
               <Btn active onClick={() => setShopOpen(true)}>🛒 Avitaillement</Btn>
@@ -543,17 +764,29 @@ export default function App() {
               <Btn active={player.periscope} onClick={() => cmd({ periscope: !player.periscope })}>🔭 Périscope</Btn>
             </div>
           )}
+          <div className="grid grid-cols-2 gap-2">
+            <Btn active={player.light} onClick={() => cmd({ light: !player.light })}>💡 Phare{player.light ? " — visible la nuit à 10 km" : ""}</Btn>
+          </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-slate-400">Cap</span>
-            <Btn onClick={() => cmd({ heading: player.heading - 10 })}>◀</Btn>
+            {player.autopilot && <span className="rounded bg-sky-900/70 px-1.5 py-0.5 text-[10px] font-semibold text-sky-200">🤖 pilotage automatique</span>}
+            <Btn disabled={player.autopilot} onClick={() => cmd({ headingOrder: player.headingOrder - 10 })}>◀</Btn>
             <input
-              type="range" min={0} max={359} value={Math.round(player.heading)}
-              onChange={(e) => cmd({ heading: +e.target.value })}
+              type="range" min={0} max={359} value={Math.round(player.headingOrder)}
+              disabled={player.autopilot}
+              onChange={(e) => cmd({ headingOrder: +e.target.value })}
               className="w-full accent-sky-400"
             />
-            <Btn onClick={() => cmd({ heading: player.heading + 10 })}>▶</Btn>
-            <span className="w-12 text-right text-xs tabular-nums text-sky-300">{Math.round(player.heading)}°</span>
+            <Btn disabled={player.autopilot} onClick={() => cmd({ headingOrder: player.headingOrder + 10 })}>▶</Btn>
+            <span className="w-14 text-right text-xs tabular-nums text-sky-300">{Math.round(player.heading)}°</span>
           </div>
+          {Math.abs(((player.headingOrder - player.heading + 540) % 360) - 180) > 2 && (
+            <p className="text-[11px] text-amber-300">
+              🧭 en virage — consigne {Math.round(player.headingOrder)}° (écart {Math.round(((player.headingOrder - player.heading + 540) % 360) - 180)}°)
+            </p>
+          ) || (
+            <p className="text-[11px] text-slate-500">Cap stable — consigne {Math.round(player.headingOrder)}°</p>
+          )}
           <div className="flex items-center gap-2">
             <span className="w-20 text-xs text-slate-400">Voiles</span>
             <input
@@ -575,6 +808,7 @@ export default function App() {
           <p className="text-xs text-slate-400">
             Vitesse (eau) : <b className="text-sky-300">{(player.vkn * KM_PER_NM).toFixed(1)} km/h</b>
             {player.grounded && <span className="ml-2 text-rose-300">⚠️ échouement — changez de cap</span>}
+            {player.collided && <span className="ml-2 text-rose-300">💥 collision — écartez-vous</span>}
           </p>
           <div className="space-y-1.5">
             <Bar label="⛽ Carburant" value={player.fuel} color="#fb923c" />
@@ -644,6 +878,46 @@ export default function App() {
             <p className="text-[11px] text-slate-500">
               Directionnelle : capte dès <b className="text-purple-300">{antSens}%</b> (≈ {Math.round(2000 * (1 - antSens / 100))} km) si la balise est centrée · omnidirectionnelle : dès 75 % (≈ 500 km), azimut inconnu.
             </p>
+            <p className="text-[11px] text-slate-400">
+              Code du navire : <b className="font-mono text-sm text-sky-300">{player.code}</b> — c'est votre numéro radio (donnez-le aux autres navires pour qu'ils vous appellent).
+            </p>
+            {/* Mode radio : privé (appels) ou diffusion (SOS) */}
+            <div className="flex gap-1.5">
+              <Btn active={radioMode === "prive"} onClick={() => setRadioMode("prive")}>🔒 Privé — appels</Btn>
+              <Btn active={radioMode === "diffusion"} onClick={() => setRadioMode("diffusion")}>📢 Diffusion — SOS</Btn>
+            </div>
+            {radioMode === "prive" ? (
+              <VhfKeypad
+                dialed={dial}
+                onDial={setDial}
+                onAction={(kind, code) => cmd({ shipMsg: { kind, to: code } })}
+                radioOk={radioOk}
+                portee={Math.round(1000 + 4000 * (180 - player.antBeam) / 179)}
+              />
+            ) : (
+              <div className="space-y-2">
+                <div className="rounded-xl border border-emerald-800/60 bg-emerald-950/40 p-3">
+                  <p className="mb-2 text-[11px] leading-snug text-emerald-200/80">
+                    « Ma position » en <b>diffusion</b> : tous les navires à portée lisent votre position <b>estimée</b> et son incertitude.
+                  </p>
+                  <button
+                    disabled={!radioOk}
+                    onClick={() => cmd({ shipMsg: { kind: "mypos" } })}
+                    className={`w-full rounded-lg py-2 text-sm font-bold transition-colors ${radioOk ? "bg-emerald-600 text-white hover:bg-emerald-500" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+                  >📍 Diffuser ma position (0,5 %)</button>
+                </div>
+                <div className="rounded-xl border border-rose-800/60 bg-rose-950/40 p-3">
+                  <p className="mb-2 text-[11px] leading-snug text-rose-200/80">
+                    <b>SOS</b> en diffusion générale : tous les navires à portée le lisent, avec votre position <b>estimée</b>.
+                  </p>
+                  <button
+                    disabled={!radioOk}
+                    onClick={() => cmd({ sos: true })}
+                    className={`w-full rounded-lg py-2 text-sm font-bold transition-colors ${radioOk ? "bg-rose-600 text-white hover:bg-rose-500" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+                  >🆘 Émettre un SOS (0,5 %)</button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="space-y-2 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
