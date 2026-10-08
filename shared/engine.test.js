@@ -13,6 +13,7 @@ import {
 function shipAtSea(w, { heading = 90, order = 90 } = {}) {
   const st = newPlayerState(w);
   st.x = 30; st.y = 30; st.estX = 30; st.estY = 30; // milieu de l'océan
+  st.anchored = false; // un navire en mer a levé l'ancre
   st.engineOn = true; st.engine = 1; // moteur : vitesse cible DIESEL_SPD_KMH
   st.vkmh = DIESEL_SPD_KMH;
   st.heading = heading;
@@ -75,6 +76,7 @@ test("météo déterministe, en km/h et km", () => {
 test("tick : navire au moteur avance et consomme", () => {
   const w = buildWorld(42);
   const st = newPlayerState(w);
+  st.anchored = false; // lève l'ancre pour naviguer
   st.heading = w.CONTINENT.x1 <= 30 ? 90 : 270; // vers le large
   st.engineOn = true;
   st.engine = 1;
@@ -88,6 +90,7 @@ test("tick : navire au moteur avance et consomme", () => {
 test("tick : estime diverge de la position vraie (dérive du courant)", () => {
   const w = buildWorld(42);
   const st = newPlayerState(w);
+  st.anchored = false; // lève l'ancre pour naviguer
   st.heading = w.CONTINENT.x1 <= 30 ? 90 : 270;
   st.engineOn = true;
   st.engine = 1;
@@ -496,6 +499,7 @@ test("verrou balise-vigie : engagement, poursuite d'azimut, antenne sur la sourc
   const st = newPlayerState(w, { weatherSeed: 1 });
   st.x = b.x; st.y = b.y - 40 / DEG_KM; // 40 km au sud, balise au nord
   st.heading = 90;
+  st.anchored = false; // en navigation : le verrou peut s'engager
   onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
   assert.equal(st.beaconLock, b.code, "verrou engagé");
   const brg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
@@ -526,6 +530,7 @@ test("verrou : l'engagement coupe le pilote de route (un seul pilote à la fois)
   st.x = b.x; st.y = b.y - 40 / DEG_KM;
   st.waypoints = [{ x: 30.5, y: 30.5 }]; st.wpIdx = 0;
   st.autopilot = true;
+  st.anchored = false; // en navigation : le verrou peut s'engager
   onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
   assert.equal(st.beaconLock, b.code, "verrou engagé");
   assert.equal(st.autopilot, false, "le verrou coupe le pilote de route");
@@ -538,6 +543,7 @@ test("verrou : anti-bascule — le premier verrou tient, l'autre balise est jour
   const b2 = w.BEACONS.find((x) => x.active && x.code !== b1.code);
   const st = newPlayerState(w, { weatherSeed: 1 });
   st.x = b1.x; st.y = b1.y - 40 / DEG_KM;
+  st.anchored = false; // en navigation : le verrou peut s'engager
   onProximityPing(st, b1, { strength: 92, source: "omni", bearing: null });
   const order = st.headingOrder;
   onProximityPing(st, b2, { strength: 95, source: "omni", bearing: null });
@@ -598,6 +604,23 @@ test("verrou : arrivée par segment (saut de temps) — ancre au point de franch
 });
 
 // ---------- Balises désactivées persistantes + autoguidage + NETWORK ----------
+test("verrou : ancre déployée — le guidage automatique ne s'engage pas", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 40 / DEG_KM;
+  st.heading = 90; st.headingOrder = 90;
+  st.anchored = true; // ancre déployée : signal fort, mode par défaut — aucun verrou
+  onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
+  assert.equal(st.beaconLock, null, "ancre déployée : pas d'engagement du verrou");
+  assert.equal(st.headingOrder, 90, "consigne de cap intacte");
+  assert.equal(st.signals[st.signals.length - 1].kind, "prox", "le ping reste journalisé");
+  // lever l'ancre : le ping suivant peut engager le verrou
+  st.anchored = false;
+  onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
+  assert.equal(st.beaconLock, b.code, "ancre levée : le verrou s'engage au ping suivant");
+});
+
 test("WX_HORIZON_H : horizon des prévisions = 48 h (constante importée, pas figée)", () => {
   assert.equal(WX_HORIZON_H, 48);
 });
@@ -646,6 +669,7 @@ test("verrou : une balise capturée reste pilotable — le verrou survit à la c
   const st = newPlayerState(w, { weatherSeed: 1 });
   st.x = b.x; st.y = b.y - 40 / DEG_KM;
   st.autoguide = "all";
+  st.anchored = false; // en navigation : le verrou peut s'engager
   onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
   assert.equal(st.beaconLock, b.code, "verrou engagé sur balise active (mode toutes)");
   // un TIER capture la balise pendant la poursuite : le verrou tient
@@ -664,6 +688,7 @@ test("autoguidage (3 positions) : filtre à l'engagement uniquement", () => {
     const st = newPlayerState(w, { weatherSeed: 1 });
     st.x = b.x; st.y = b.y - 40 / DEG_KM;
     st.heading = 90; st.headingOrder = 90;
+    st.anchored = false; // en navigation : le verrou peut s'engager
     if (mode) st.autoguide = mode;
     return st;
   };

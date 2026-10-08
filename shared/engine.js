@@ -674,6 +674,7 @@ export function onProximityPing(st, b, cap) {
   if (st.beaconLock && st.beaconLock !== b.code) return; // anti-bascule
   if (!st.beaconLock) {
     if (cap.strength < OMNI_DETECT_PCT) return; // signal faible : journal seul
+    if (st.anchored) return; // ancre déployée : le guidage automatique ne s'engage pas (journal seul)
     // AUTOGUIDAGE (3 positions) : filtre AU MOMENT DE L'ENGAGEMENT
     // uniquement — un verrou déjà engagé tient jusqu'au bout, même si
     // l'interrupteur change ou si la balise est capturée en cours de poursuite.
@@ -767,7 +768,7 @@ export function newPlayerState(world, opts = {}) {
     navFix: { active: false, startT: 0, doneNight: null, lastTryT: null },
     location: "surface", mast: false, engineOn: false, electricOn: false, periscope: false, vkmh: 0, light: false,
     boom: 0, awSpd: 0, awRel: 0,
-    beaconLock: null, lockBrg: null, anchored: false,
+    beaconLock: null, lockBrg: null, anchored: true, // ancre jetée au départ (navire à quai)
     autoguide: AUTOGUIDE_DEFAULT, networked: false,
     fuel: 100, battery: 100, food: 100, score: 0, codes: [],
     waypoints: [], wpIdx: 0, autopilot: false,
