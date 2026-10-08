@@ -475,27 +475,36 @@ export function callStrengthAtKm(st, dKm, targetBrg) {
 // Traite un appel « Position ? » vers le code composé. Le silence (mauvais
 // numéro, hors faisceau, hors de portée, réponse inaudible) EST
 // l'information : aucune notification d'échec. Coût : 0,5 % de batteries.
+// Traite un appel « Position ? » vers le code composé. Retourne la balise
+// répondue ({ x, y } de la balise) pour que l'appelant du moteur puisse
+// ÉMETTRE la réponse sur les ondes (tiers brouillés) — ou null (silence,
+// mauvais numéro, hors de portée). Le contenu privé reste inchangé.
 export function callPosition(st, code, world, noCost = false) {
   const radioOk = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
-  if (!radioOk) return;
+  if (!radioOk) return null;
   if (!noCost) st.battery = Math.max(0, st.battery - CALL_BATTERY_COST);
   const target = world.BEACONS.find((b) => b.code === code && b.active);
-  if (!target) return;
+  if (!target) return null;
   const d = distNm(st.x, st.y, target.x, target.y);
   const dKm = d * KM_PER_NM;
   const brg = bearingTo(st.x, st.y, target.x, target.y);
   const { strength } = callStrengthAtKm(st, dKm, brg);
-  if (strength < 1) return;
+  if (strength < 1) return null;
   const respStrength = signalStrengthKm(dKm);
-  if (respStrength <= 0) return;
-  const dEst = Math.round(2000 * (1 - respStrength / 100));
-  const dErr = Math.round(dEst * 0.2);
-  st.notifSeq = (st.notifSeq || 0) + 1;
-  st.notifications.unshift({
-    id: st.notifSeq, t: st.t,
-    text: `📡 Position de ${code} : ${target.y.toFixed(2)}°N ${target.x.toFixed(2)}°E (signal ${respStrength}%, distance estimée ${dEst} ± ${dErr} km, azimut ${Math.round(brg)}°).`,
-    kind: "good", cat: "radio",
-  });
+  // réponse audible par l'appelant : contenu privé complet (inchangé)
+  if (respStrength > 0) {
+    const dEst = Math.round(2000 * (1 - respStrength / 100));
+    const dErr = Math.round(dEst * 0.2);
+    st.notifSeq = (st.notifSeq || 0) + 1;
+    st.notifications.unshift({
+      id: st.notifSeq, t: st.t,
+      text: `📡 Position de ${code} : ${target.y.toFixed(2)}°N ${target.x.toFixed(2)}°E (signal ${respStrength}%, distance estimée ${dEst} ± ${dErr} km, azimut ${Math.round(brg)}°).`,
+      kind: "good", cat: "radio",
+    });
+  }
+  // dans tous les cas où la balise a entendu l'appel (strength >= 1), elle
+  // répond SUR LES ONDES : retour pour émission vers les tiers
+  return { x: target.x, y: target.y };
 }
 // Brouillage : un tiers qui capte un message privé sans en être le
 // destinataire détecte une TRANSMISSION BROUILLÉE — niveau de signal (et
