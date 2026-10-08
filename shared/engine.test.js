@@ -290,6 +290,7 @@ test("fin d'itinéraire : arrêt du navire", () => {
   assert.equal(st.autopilot, false);
   assert.equal(st.engineOn, false);
   assert.equal(st.mast, false, "fin d'itinéraire : mât rentré, plus de voile");
+  assert.equal(st.sail, 0, "fin d'itinéraire : voile rentrée");
   assert.ok(st.notifications.some((n) => n.text.includes("Itinéraire terminé")));
 });
 

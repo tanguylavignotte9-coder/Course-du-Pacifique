@@ -779,10 +779,16 @@ export default function App() {
           )}
           <div className="flex items-center gap-2">
             <span className="w-20 text-xs text-slate-400">Voile</span>
-            <span className="text-xs tabular-nums text-sky-300">
-              écoute auto — boom {Math.round(player.boom)}° · vent apparent {Math.round(player.awSpd)} km/h {player.awRel >= 0 ? "T" : "B"}
-            </span>
+            <input
+              type="range" min={0} max={100} value={Math.round((player.sail ?? 0.8) * 100)}
+              onChange={(e) => cmd({ sail: +e.target.value / 100 })}
+              className="w-full accent-sky-400"
+            />
+            <span className="w-12 text-right text-xs tabular-nums text-sky-300">{Math.round((player.sail ?? 0.8) * 100)}%</span>
           </div>
+          <p className="text-[11px] text-slate-500">
+            Inclinaison auto — boom {Math.round(player.boom)}° · vent apparent {Math.round(player.awSpd)} km/h {player.awRel >= 0 ? "T" : "B"}
+          </p>
           <div className="flex items-center gap-2">
             <span className="w-20 text-xs text-slate-400">Moteur</span>
             <input

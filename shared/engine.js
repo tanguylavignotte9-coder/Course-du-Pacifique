@@ -363,9 +363,11 @@ export const VIS_BASE = { ile: 40, continent: 30, port: 20, poste: 15, balise: 9
 export const VIS_NUIT = { ile: 3, continent: 3, port: 15, poste: 10, balise: 11 };
 export const detectKm = (kind, visKm, night) => Math.min(visKm, night ? VIS_NUIT[kind] : VIS_BASE[kind]);
 
-// ---------- Voile (écoute automatique) ----------
-// Modèle « vent apparent + incidence » : l'équipage règle l'écoute en continu
-// (aucune commande joueur — la stratégie se joue au placement, cap vs vent).
+// ---------- Voile (inclinaison automatique) ----------
+// Déploiement (st.sail : fraction de voile dressée) : MANUEL, commande joueur.
+// Inclinaison (boom/écoute) : AUTOMATIQUE — modèle « vent apparent + incidence »,
+// l'équipage règle l'écoute en continu ; la stratégie se joue au placement
+// (cap vs vent) et au volume de toile.
 // Zéro notion de force : de la géométrie + une courbe de rendement.
 // Courbe de rendement de la toile selon l'incidence (angle entre le vent
 // apparent et la toile) : fasée sous 5°, bosse max vers 30°, puis
@@ -637,7 +639,7 @@ export function newPlayerState(world, opts = {}) {
   const eastCoast = world.CONTINENT.x1 <= MAP / 2;
   return {
     t: 0, x: sp.x, y: sp.y, heading: eastCoast ? 90 : 270, headingOrder: eastCoast ? 90 : 270,
-    engine: 0.8,
+    sail: 0.8, engine: 0.8,
     estX: sp.x, estY: sp.y, unc: 0,
     navFix: { active: false, startT: 0, doneNight: null, lastTryT: null },
     location: "surface", mast: false, engineOn: false, electricOn: false, periscope: false, vkmh: 0, light: false,
@@ -673,7 +675,7 @@ function speedKmh(st, w) {
     if (st.mast) {
       const { drive, aw } = sailAutoDrive(st, w);
       const wf = clamp(aw / WIND_REF_KMH, 0, WIND_FACTOR_CAP); // facteur de VENT APPARENT
-      v += SAIL_SPD_KMH * wf * drive;
+      v += SAIL_SPD_KMH * wf * drive * st.sail; // st.sail = fraction de voile déployée (commande joueur)
     }
     if (st.engineOn && st.fuel > 0) v += DIESEL_SPD_KMH * st.engine;
     v = Math.min(v, VMAX_KMH);
@@ -836,9 +838,9 @@ export function tick(st, dtMin, world) {
     if (st.wpIdx < st.waypoints.length) {
       st.headingOrder = bearingTo(st.estX, st.estY, st.waypoints[st.wpIdx].x, st.waypoints[st.wpIdx].y);
     } else {
-      // dernier point : ARRÊT DU NAVIRE (mât rentré : plus de voile)
-      st.autopilot = false; st.engineOn = false; st.mast = false; st.electricOn = false;
-      notify(st, "🏁 Itinéraire terminé — navire à l'arrêt (moteur coupé, mât rentré).", "good", "navire");
+      // dernier point : ARRÊT DU NAVIRE (mât rentré, voile rentrée)
+      st.autopilot = false; st.engineOn = false; st.mast = false; st.sail = 0; st.electricOn = false;
+      notify(st, "🏁 Itinéraire terminé — navire à l'arrêt (moteur coupé, mât et voile rentrés).", "good", "navire");
     }
   }
 
