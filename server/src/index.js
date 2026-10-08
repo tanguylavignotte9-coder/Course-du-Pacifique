@@ -582,17 +582,34 @@ wss.on("connection", (ws, req) => {
         race.displayEpoch = epoch.getTime();
         race.startedAt = new Date().toISOString();
         race.beacons = undefined;
-        race.spawnOrder = {};
+        race.spawnOrder = {};   // réattribué ci-dessous, dans l'ordre actuel
+        race.migrated = false;  // la migration pourra rejouer si besoin
         const fresh = buildWorld(race.seed);
         world.PORT = fresh.PORT; world.CONTINENT = fresh.CONTINENT;
         world.ISLANDS = fresh.ISLANDS; world.OUTPOSTS = fresh.OUTPOSTS;
         world.BEACONS = fresh.BEACONS; world.COAST = fresh.COAST;
         world.isLand = fresh.isLand;
+        // Réattribution des slots d'amarrage (espacement 300 m) et de codes
+        // radio NEUFS, garantis sans collision avec les balises de la NOUVELLE
+        // graine ni entre navires.
+        let slotIdx = 0;
+        const usedCodes = new Set(world.BEACONS.map((b) => b.code));
         for (const [pid] of states) {
-          const nst = newPlayerState(world, { weatherSeed: race.seed % 1000 });
+          race.spawnOrder[pid] = slotIdx;
+          let shipCode;
+          do {
+            shipCode = String(Math.floor(Math.random() * 10000)).padStart(4, "0");
+          } while (usedCodes.has(shipCode));
+          usedCodes.add(shipCode);
+          const nst = newPlayerState(world, {
+            weatherSeed: race.seed % 1000,
+            spawnIdx: slotIdx,
+            shipCode,
+          });
           nst.t = gameMinutesNow();
           states.set(pid, nst);
           race.players[pid] = nst;
+          slotIdx++;
         }
         store.save();
         st.notifSeq = (st.notifSeq || 0) + 1;
