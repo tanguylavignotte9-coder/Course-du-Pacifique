@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildWorld, newPlayerState, tick, weatherAt,
-  distKm, CAPTURE_R_KM, DELIVERY_R_KM, WP_R_KM, DEG_KM, RADIO_DECAY_KM,
+  distKm, CAPTURE_R_KM, DELIVERY_R_KM, WP_R_KM, DEG_KM, RADIO_DECAY_KM, VMAX_KMH, DIESEL_SPD_KMH,
   sailPolarFactor, callPosition, RARITY_MIN, bearingTo, segDistKm,
 } from "./engine.js";
 
@@ -10,8 +10,8 @@ import {
 function shipAtSea(w, { heading = 90, order = 90 } = {}) {
   const st = newPlayerState(w);
   st.x = 30; st.y = 30; st.estX = 30; st.estY = 30; // milieu de l'océan
-  st.engineOn = true; st.engine = 1; // moteur : vitesse cible 27,78 km/h
-  st.vkmh = 27.78;
+  st.engineOn = true; st.engine = 1; // moteur : vitesse cible DIESEL_SPD_KMH
+  st.vkmh = DIESEL_SPD_KMH;
   st.heading = heading;
   st.headingOrder = order;
   return st;
@@ -146,7 +146,7 @@ test("point aux étoiles : réussit la nuit sous ciel clair et réduit l'incerti
 test("giration : consigne +90° à pleine vitesse atteinte en ~20 s, sans dépassement", () => {
   const w = buildWorld(42);
   const st = shipAtSea(w, { heading: 0, order: 90 });
-  st.vkmh = 37.04; // pleine vitesse pour le taux plein
+  st.vkmh = VMAX_KMH; // pleine vitesse pour le taux plein
   let ticks = 0;
   let maxH = 0;
   while (st.heading !== 90 && ticks < 60) {
@@ -162,9 +162,9 @@ test("giration : consigne +90° à pleine vitesse atteinte en ~20 s, sans dépas
 test("giration : plus court chemin à travers le nord (10° → 350° = −20°)", () => {
   const w = buildWorld(42);
   const st = shipAtSea(w, { heading: 10, order: 350 });
-  st.vkmh = 37.04;
+  st.vkmh = VMAX_KMH;
   const st2 = shipAtSea(w, { heading: 10, order: 350 });
-  st2.vkmh = 37.04;
+  st2.vkmh = VMAX_KMH;
   tick(st2, 1 / 60, w);
   assert.ok(Math.abs(st2.heading - 5.5) < 0.01, "1 s à 4,5°/s : 10 → 5,5 (sens négatif)");
   tick(st, 1, w);
@@ -194,7 +194,7 @@ test("migration : état sans headingOrder → aucune giration intempestive", () 
 test("grands pas : rotation bornée par le taux, trajectoire cohérente", () => {
   const w = buildWorld(42);
   const st = shipAtSea(w, { heading: 0, order: 90 });
-  st.vkmh = 37.04;
+  st.vkmh = VMAX_KMH;
   const x0 = st.x, y0 = st.y;
   tick(st, 5, w);
   assert.equal(st.heading, 90, "consigne atteinte, pas de tours complets");
@@ -278,7 +278,7 @@ test("échouement : pilote coupé avec notification", () => {
 test("estime + sous-pas : grand virage — l'estime intègre les sous-pas", () => {
   const w = buildWorld(42);
   const st = shipAtSea(w, { heading: 0, order: 180 });
-  st.vkmh = 37.04;
+  st.vkmh = VMAX_KMH;
   tick(st, 5, w);
   const dy = 30 - st.estY;
   assert.ok(dy > 0.01, `l'estime a suivi la giration et la route sud (${(dy * DEG_KM).toFixed(2)} km)`);
@@ -309,7 +309,7 @@ test("déterminisme : même état + mêmes ticks = même trajectoire", () => {
   const w = buildWorld(42);
   const make = () => {
     const st = shipAtSea(w, { heading: 90, order: 90 });
-    st.vkmh = 37.04;
+    st.vkmh = VMAX_KMH;
     st.waypoints = [{ x: 30.5, y: 30.5 }, { x: 31, y: 31 }];
     st.wpIdx = 0;
     st.autopilot = true;

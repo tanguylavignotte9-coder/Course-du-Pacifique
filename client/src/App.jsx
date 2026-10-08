@@ -4,6 +4,7 @@ import Scene from "./Scene.jsx";
 import {
   MAP, DEG_KM, RARITY_STYLE,
   distKm, dirSensitivity, DOUGLAS_LABEL, RADIO_DECAY_KM, dirRangeKm,
+  DELIVERY_R_KM, OMNI_DETECT_PCT, OMNI_CALL_RANGE_KM, MS_PER_MIN,
 } from "../../shared/engine.js";
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -14,7 +15,7 @@ const mixHex = (a, b, t) => {
 };
 const fmtT = (t, epoch) => {
   // Heure de jeu affichée = vraie heure de Paris (epoch + minutes de jeu).
-  const d = new Date((epoch || 0) + t * 60000);
+  const d = new Date((epoch || 0) + t * MS_PER_MIN);
   const date = d.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" });
   const time = d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
   return `${date} ${time}`;
@@ -664,7 +665,7 @@ export default function App() {
   const player = snap?.player;
   const weather = snap?.weather;
   // Heure de jeu : la vraie heure de Paris dérivée de l'epoch + minutes de jeu
-  const hour = snap ? ((new Date(snap.epoch + snap.t * 60000).getHours() + new Date(snap.epoch + snap.t * 60000).getMinutes() / 60)) : 12;
+  const hour = snap ? ((new Date(snap.epoch + snap.t * MS_PER_MIN).getHours() + new Date(snap.epoch + snap.t * MS_PER_MIN).getMinutes() / 60)) : 12;
   const daylight = hour >= 6 && hour < 20;
   const cmd = (data) => sock && sock.command(data);
 
@@ -680,8 +681,8 @@ export default function App() {
   const logNotifs = (player.notifications || []).filter((n) => logFilter === "tout" || n.cat === logFilter);
   const uw = player.location === "underwater";
   const atDock = player.location === "surface" &&
-    (distKm(player.estX, player.estY, snap.world.port.x, snap.world.port.y) < 0.93 ||
-    snap.world.outposts.some((o) => distKm(player.estX, player.estY, o.x, o.y) < 0.93));
+    (distKm(player.estX, player.estY, snap.world.port.x, snap.world.port.y) < DELIVERY_R_KM ||
+    snap.world.outposts.some((o) => distKm(player.estX, player.estY, o.x, o.y) < DELIVERY_R_KM));
   const radioOk = (player.location === "surface" || (player.location === "underwater" && player.periscope)) && player.battery > 0;
   const antSens = Math.round(dirSensitivity(player.antBeam));
   const antHeading = (player.heading + player.antOrient + 720) % 360;
@@ -865,7 +866,7 @@ export default function App() {
               <span className="w-10 text-right text-xs tabular-nums text-purple-300">{player.antOrient}°</span>
             </div>
             <p className="text-[11px] text-slate-500">
-              Directionnelle : capte dès <b className="text-purple-300">{antSens}%</b> (≈ {Math.round(RADIO_DECAY_KM * (1 - antSens / 100))} km) si la balise est centrée · omnidirectionnelle : dès 75 % (≈ 250 km), azimut inconnu.
+              Directionnelle : capte dès <b className="text-purple-300">{antSens}%</b> (≈ {Math.round(RADIO_DECAY_KM * (1 - antSens / 100))} km) si la balise est centrée · omnidirectionnelle : dès {OMNI_DETECT_PCT} % (≈ {Math.round(RADIO_DECAY_KM * (1 - OMNI_DETECT_PCT / 100))} km), azimut inconnu.
             </p>
             <p className="text-[11px] text-slate-400">
               Code du navire : <b className="font-mono text-sm text-sky-300">{player.code}</b> — c'est votre numéro radio (donnez-le aux autres navires pour qu'ils vous appellent).

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, shipVisibleKm, shipsCollide, callPosition, callStrengthAtKm, scrambledIntercept, signalStrengthKm, bearingTo, angDiff, spawnPosition, MAP } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, shipVisibleKm, shipsCollide, callPosition, callStrengthAtKm, scrambledIntercept, signalStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, OMNI_DETECT_PCT, randomCode, MS_PER_MIN } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -15,6 +15,8 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
 const TIME_MULT = process.env.TIME_MULT ? Number(process.env.TIME_MULT) : 1;
 const TICK_MS = 1000; // tick serveur : 1 s réelle
 const MAX_STEP_MIN = 5; // pas de simulation max 5 min de jeu (design)
+const PERSIST_MS = 60000;
+const SPAWN_SEP_KM = 0.5; // anti-chevauchement des spawns au port
 const clamp01 = (v) => clamp(v, 0, 1);
 
 // ---------- Persistance & comptes ----------
@@ -66,7 +68,7 @@ function gameMinutesNow() {
   // Minutes de jeu = temps réel écoulé depuis minuit Paris du jour du
   // lancement (epoch). ×TIME_MULT pour le debug uniquement.
   const ms = Date.now() - (race.epoch || new Date(race.startedAt).getTime());
-  return Math.max(0, ms / 60000) * TIME_MULT;
+  return Math.max(0, ms / MS_PER_MIN) * TIME_MULT;
 }
 
 const states = new Map(); // accountId -> player state (engine)
@@ -98,8 +100,8 @@ if (!race.migrated) {
     for (let j = i + 1; j < ids.length; j++) {
       const a = states.get(ids[i]), b = states.get(ids[j]);
       const bothAtPort =
-        distKm(a.x, a.y, world.PORT.x, world.PORT.y) < 0.5 &&
-        distKm(b.x, b.y, world.PORT.x, world.PORT.y) < 0.5;
+        distKm(a.x, a.y, world.PORT.x, world.PORT.y) < SPAWN_SEP_KM &&
+        distKm(b.x, b.y, world.PORT.x, world.PORT.y) < SPAWN_SEP_KM;
       const dm = distKm(a.x, a.y, b.x, b.y);
       if (dm < 0.05 && bothAtPort) {
         // re-loger via la spirale : le premier garde sa place (ou en trouve
@@ -135,7 +137,7 @@ function ensureState(id) {
     // balises — un code désigne exactement un système du monde.
     let shipCode;
     do {
-      shipCode = String(Math.floor(Math.random() * 10000)).padStart(4, "0");
+      shipCode = randomCode();
     } while (world.BEACONS.some((b) => b.code === shipCode)
       || [...states.values()].some((s) => s.code === shipCode));
     const st = newPlayerState(world, { weatherSeed: race.seed % 1000, shipCode, takenSpawns });
@@ -158,7 +160,7 @@ setInterval(() => {
     }
   }
   multiplayerPass(now);
-  if (Date.now() - lastPersist > 60000) {
+  if (Date.now() - lastPersist > PERSIST_MS) {
     lastPersist = Date.now();
     for (const [id] of states) race.players[id] = states.get(id);
     race.beacons = Object.fromEntries(world.BEACONS.map((b) => [b.id, { active: b.active }]));
@@ -260,7 +262,7 @@ function multiplayerPass(now) {
 }
 
 // Émission OMNIDIRECTIONNELLE depuis un point (balise répondante) vers tous
-// les navires tiers à portée (décroissance 2000 km) : chacun capte une
+// les navires tiers à portée (décroissance RADIO_DECAY_KM, 1000 km) : chacun capte une
 // TRANSMISSION BROUILLÉE — signal, azimut, distance estimée — sans jamais
 // le contenu. « Émettre, c'exister » : la balise n'échappe pas à la règle.
 function broadcastScrambledFrom(fromX, fromY, exceptId) {
@@ -270,7 +272,7 @@ function broadcastScrambledFrom(fromX, fromY, exceptId) {
     if (!otherRadioOk) continue;
     const dKm = distKm(fromX, fromY, ost.x, ost.y);
     const strength = signalStrengthKm(dKm);
-    if (strength < 1) continue;
+    if (strength < RADIO_MIN_STRENGTH) continue;
     const brg = bearingTo(ost.x, ost.y, fromX, fromY);
     const antHeading = (ost.heading + ost.antOrient + 720) % 360;
     const caughtDir = Math.abs(angDiff(brg, antHeading)) <= ost.antBeam / 2;
@@ -519,7 +521,7 @@ wss.on("connection", (ws, req) => {
       if (c.sos === true) {
         const radioOkSos = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
         if (radioOkSos) {
-          st.battery = Math.max(0, st.battery - 0.5);
+          st.battery = Math.max(0, st.battery - CALL_BATTERY_COST);
           const sosText = `🆘 SOS du navire ${st.code} — position déclarée : ${st.estY.toFixed(2)}°N ${st.estX.toFixed(2)}°E (±${Math.round(st.unc)} km).`;
           st.notifSeq = (st.notifSeq || 0) + 1;
           st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `${sosText} Diffusion émise.`, kind: "warn", cat: "radio" });
@@ -530,7 +532,7 @@ wss.on("connection", (ws, req) => {
             const dKm = distKm(ost.x, ost.y, st.x, st.y);
             const brg = bearingTo(ost.x, ost.y, st.x, st.y);
             const { strength } = callStrengthAtKm(st, dKm, brg);
-            if (strength < 1) continue;
+            if (strength < RADIO_MIN_STRENGTH) continue;
             ost.notifSeq = (ost.notifSeq || 0) + 1;
             ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: sosText, kind: "bad", cat: "radio" });
           }
@@ -544,7 +546,7 @@ wss.on("connection", (ws, req) => {
       if (c.shipMsg && ["posq", "mypos"].includes(c.shipMsg.kind)) {
         const radioOkMsg = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
         if (radioOkMsg) {
-          st.battery = Math.max(0, st.battery - 0.5);
+          st.battery = Math.max(0, st.battery - CALL_BATTERY_COST);
           const isBroadcast = !c.shipMsg.to;
           const buildText = (recipientEst) => {
             if (c.shipMsg.kind === "posq") return `❓ Navire ${st.code} demande : « Position ? »`;
@@ -570,7 +572,7 @@ wss.on("connection", (ws, req) => {
             const dKm = distKm(ost.x, ost.y, st.x, st.y);
             const brg = bearingTo(ost.x, ost.y, st.x, st.y);
             const { strength } = callStrengthAtKm(st, dKm, brg);
-            if (strength < 1) continue;
+            if (strength < RADIO_MIN_STRENGTH) continue;
             ost.notifSeq = (ost.notifSeq || 0) + 1;
             if (isBroadcast) {
               // diffusion : contenu lisible par tous
@@ -608,7 +610,7 @@ wss.on("connection", (ws, req) => {
       // points aux étoiles et consommations sont conservés pour tous).
       if (c.timeSkipMin != null && isSuper(id)) {
         const mins = Math.round(clamp(Number(c.timeSkipMin) || 0, 1, 24 * 60));
-        race.epoch = (race.epoch || new Date(race.startedAt).getTime()) - mins * 60000 / TIME_MULT;
+        race.epoch = (race.epoch || new Date(race.startedAt).getTime()) - mins * MS_PER_MIN / TIME_MULT;
         const now = gameMinutesNow();
         // (displayEpoch reste fixe : l'heure affichée avance avec t)
         for (const [, pst] of states) {
@@ -645,7 +647,7 @@ wss.on("connection", (ws, req) => {
           race.spawnOrder[pid] = slotIdx;
           let shipCode;
           do {
-            shipCode = String(Math.floor(Math.random() * 10000)).padStart(4, "0");
+            shipCode = randomCode();
           } while (usedCodes.has(shipCode));
           usedCodes.add(shipCode);
           const nst = newPlayerState(world, {

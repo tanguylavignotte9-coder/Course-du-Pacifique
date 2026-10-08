@@ -13,6 +13,36 @@ export const CAPTURE_R_KM = 0.5;  // capture à 500 m
 export const DELIVERY_R_KM = 0.5; // livraison à 500 m
 export const WP_R_KM = 0.1;       // validation des points de passage : 100 m
 
+// Vitesses et propulsion (équilibrage validé)
+export const VMAX_KMH = 45;          // vitesse max de coque (km/h)
+export const SAIL_SPD_KMH = 35;       // voile pleine à vent de référence
+export const DIESEL_SPD_KMH = 30;     // moteur thermique
+export const SCOPE_SPD_KMH = 15;      // électrique en périscope
+export const SUB_SPD_KMH = 20;        // électrique en plongée (> périscope : voulu)
+export const WIND_REF_KMH = 50;       // vent donnant la pleine puissance de voile
+export const ACCEL_SURF = 11;         // inertie : km/h gagnés par minute de jeu (surface)
+export const ACCEL_SUB = 4;           // idem en plongée
+export const DECEL_SURF = 5.556;      // inertie : km/h perdus par minute (surface)
+export const DECEL_SUB = 2.9632;      // idem en plongée
+
+// Radio
+export const RADIO_EDGE_MALUS = 0.2;    // malus de bord faisceau (émission = réception)
+export const RADIO_EST_ERR = 0.2;       // erreur distance estimée : ±20 %
+export const RADIO_MIN_STRENGTH = 1;    // sous 1 % : silence radio total
+export const OMNI_CALL_RANGE_KM = 250;  // portée appel omnidirectionnel
+export const OMNI_DETECT_PCT = 75;      // seuil détection omni d'un ping
+
+// Monde et gameplay
+export const ISLAND_SEP_KM = 200;         // séparation minimale entre îles
+export const BEACON_MAX_TRIES = 200000;   // garde-fou placement balises
+export const RES_WARN_PCT = 15;           // seuil alerte ressources
+export const RES_WARN_RESET_PCT = 30;     // seuil réarmement alertes
+export const CODE_POOL = 10000;           // pool codes radio (0000-9999)
+export const MS_PER_MIN = 60000;          // millisecondes réelles par minute de jeu
+export function randomCode() {
+  return String(Math.floor(Math.random() * CODE_POOL)).padStart(4, "0");
+}
+
 // ---------- Utilitaires ----------
 export function mulberry32(a) {
   return function () {
@@ -180,7 +210,7 @@ export function buildWorld(seed) {
           best = { x, y, r, verts: b.verts, radii: b.radii, maxR: Math.max(...b.radii.map((p) => p.rad)) };
         }
       }
-      if (bestScore > 166.68) out.push(best); // 166.68 km de séparation minimale entre îles
+      if (bestScore > ISLAND_SEP_KM) out.push(best); // séparation minimale entre îles
     }
     return out;
   })();
@@ -233,7 +263,7 @@ export function buildWorld(seed) {
       const minPort = m.port, minOut = m.outpost, minBcn = m.beacon; // km
       for (let i = 0; i < n; i++) {
         let x = 0, y = 0, ok = false, tries = 0;
-        while (tries++ < 200000 && !ok) {
+        while (tries++ < BEACON_MAX_TRIES && !ok) {
           x = 2 + rng() * 56;
           y = 2 + rng() * 56;
           ok = !isLand(x, y)
@@ -440,7 +470,7 @@ export const signalStrengthKm = (dKm) => Math.max(0, Math.round(100 * (1 - dKm /
 export const dirSensitivity = (antBeam) => 1 + ((antBeam - 1) / 179) * 49;
 export function dirEffSensitivity(antBeam, diff, sens) {
   const ratio = clamp(diff / (antBeam / 2), 0, 1);
-  return 100 - (100 - sens) * (1 - 0.2 * ratio);
+  return 100 - (100 - sens) * (1 - RADIO_EDGE_MALUS * ratio);
 }
 
 // Détection d'une émission par les capteurs radio du navire.
@@ -450,7 +480,7 @@ export function detectBeacon(st, b, world) {
   const strength = signalStrengthKm(dKm);
   const brg = bearingTo(st.x, st.y, b.x, b.y);
   let got = null;
-  if (strength >= 75) got = { t: st.t, beaconId: b.code, bearing: null, strength, source: "omni" };
+  if (strength >= OMNI_DETECT_PCT) got = { t: st.t, beaconId: b.code, bearing: null, strength, source: "omni" };
   const sens = dirSensitivity(st.antBeam);
   const antHeading = (st.heading + st.antOrient + 720) % 360;
   const signedDiff = angDiff(brg, antHeading);
@@ -484,13 +514,13 @@ export function dirRangeKm(antBeam) {
 }
 // Force reçue par une cible à dKm de la source (émission double chemin).
 export function callStrengthAtKm(st, dKm, targetBrg) {
-  const omni = Math.max(0, 100 * (1 - dKm / 250));
+  const omni = Math.max(0, 100 * (1 - dKm / OMNI_CALL_RANGE_KM));
   const range = dirRangeKm(st.antBeam);
   const antHeading = (st.heading + st.antOrient + 720) % 360;
   const diff = Math.abs(angDiff(targetBrg, antHeading));
   if (diff > st.antBeam / 2) return { strength: omni, path: "omni" };
   const ratio = clamp(diff / (st.antBeam / 2), 0, 1);
-  const edgeMalus = 1 - 0.2 * ratio;
+  const edgeMalus = 1 - RADIO_EDGE_MALUS * ratio;
   const effRange = range * edgeMalus;
   const dir = Math.max(0, 100 * (1 - dKm / effRange));
   return dir > omni ? { strength: dir, path: "dir" } : { strength: omni, path: "omni" };
@@ -512,12 +542,12 @@ export function callPosition(st, code, world, noCost = false) {
   const dKm = d;
   const brg = bearingTo(st.x, st.y, target.x, target.y);
   const { strength } = callStrengthAtKm(st, dKm, brg);
-  if (strength < 1) return null;
+  if (strength < RADIO_MIN_STRENGTH) return null;
   const respStrength = signalStrengthKm(dKm);
   // réponse audible par l'appelant : contenu privé complet (inchangé)
   if (respStrength > 0) {
     const dEst = Math.round(RADIO_DECAY_KM * (1 - respStrength / 100));
-    const dErr = Math.round(dEst * 0.2);
+    const dErr = Math.round(dEst * RADIO_EST_ERR);
     st.notifSeq = (st.notifSeq || 0) + 1;
     st.notifications.unshift({
       id: st.notifSeq, t: st.t,
@@ -539,7 +569,7 @@ export function scrambledIntercept(strength, source, antBeam, antOrient, heading
     const signedDiff = angDiff(brg, antHeading);
     const diff = Math.abs(signedDiff);
     const side = diff < 1 ? "centre" : signedDiff > 0 ? (diff < antBeam / 4 ? "D1" : "D2") : (diff < antBeam / 4 ? "G1" : "G2");
-    return { text: `📡 Transmission brouillée captée (directionnelle) — signal ${strength}%, azimut ${Math.round(antHeading)}°, zone ${side}, distance estimée ${dEst} ± ${Math.round(dEst * 0.2)} km. Contenu : illisible.`, cat: "radio" };
+    return { text: `📡 Transmission brouillée captée (directionnelle) — signal ${strength}%, azimut ${Math.round(antHeading)}°, zone ${side}, distance estimée ${dEst} ± ${Math.round(dEst * RADIO_EST_ERR)} km. Contenu : illisible.`, cat: "radio" };
   }
   return { text: `📡 Transmission brouillée captée (omnidirectionnelle) — signal ${strength}%. Contenu : illisible, origine inconnue.`, cat: "radio" };
 }
@@ -563,7 +593,7 @@ export function newPlayerState(world, opts = {}) {
     grounded: false, wasStorm: false, warnedFood: false, warnedFuel: false, warnedBatt: false,
     ffEvents: [], travelledKm: 0, dailyKm: 0, dayIdx: 0,
     weatherSeed: opts.weatherSeed ?? Math.floor(Math.random() * 1000), weatherName: null,
-    code: opts.shipCode ?? String(Math.floor(Math.random() * 10000)).padStart(4, "0"),
+    code: opts.shipCode ?? randomCode(),
     sawIsland: false, sawBeaconId: null, sawPort: false, sawCont: false, sawOutpostIds: [], pins: [], measures: [],
     seaDouglas: null,
     // Défauts d'instruments fixes pour toute la course, inconnus du navigateur
@@ -588,13 +618,13 @@ function speedKmh(st, w) {
     if (st.mast) {
       const windTo = (w.windDir + 180) % 360;
       const angle = Math.abs(angDiff(st.heading + (st.compDev || 0), windTo));
-      const wf = clamp(w.windSpd / 37.04, 0, 1.1); // vent de référence 20 km/h -> 37,04
-      v += 31.484 * wf * st.sail * sailPolarFactor(angle);
+      const wf = clamp(w.windSpd / WIND_REF_KMH, 0, 1.1); // pleine puissance de voile à 50 km/h de vent
+      v += SAIL_SPD_KMH * wf * st.sail * sailPolarFactor(angle);
     }
-    if (st.engineOn && st.fuel > 0) v += 27.78 * st.engine;
-    v = Math.min(v, 37.04);
+    if (st.engineOn && st.fuel > 0) v += DIESEL_SPD_KMH * st.engine;
+    v = Math.min(v, VMAX_KMH);
   } else {
-    if (st.electricOn && st.battery > 0) v += (st.periscope ? 11.112 : 7.408) * st.engine;
+    if (st.electricOn && st.battery > 0) v += (st.periscope ? SCOPE_SPD_KMH : SUB_SPD_KMH) * st.engine;
   }
   return v;
 }
@@ -642,7 +672,7 @@ export function tick(st, dtMin, world) {
     const order = st.headingOrder ?? st.heading; // migration des états anciens
     const TURN_MAX = surface ? 270 : 90;              // °/min
     const STEER_AT_REST = surface ? 0.25 : 0.15;
-    const vRef = surface ? 37.04 : 11.112;
+    const vRef = surface ? VMAX_KMH : SCOPE_SPD_KMH;
     const rate = TURN_MAX * (STEER_AT_REST + (1 - STEER_AT_REST) * clamp(st.vkmh / vRef, 0, 1));
     // SOUS-DÉCOUPAGE : à haut taux, un grand pas de rattrapage ne doit pas
     // intégrer 1350° d'un coup. Tant que la rotation restante du pas dépasse
@@ -692,8 +722,8 @@ export function tick(st, dtMin, world) {
   // sous-pas de giration a déjà été intégrée physiquement ci-dessus ; ce
   // bloc gère l'inertie de vitesse, l'estime et l'échouement au cap final)
   const target = speedKmh(st, w);
-  const accel = surface ? 11.112 : 3.704;
-  const decel = surface ? 5.556 : 2.9632;
+  const accel = surface ? ACCEL_SURF : ACCEL_SUB;
+  const decel = surface ? DECEL_SURF : DECEL_SUB;
   if (st.vkmh < target) st.vkmh = Math.min(target, st.vkmh + accel * dtMin);
   else st.vkmh = Math.max(target, st.vkmh - decel * dtMin);
   const rad = (st.heading * Math.PI) / 180;
@@ -806,12 +836,12 @@ export function tick(st, dtMin, world) {
   }
 
   // Alertes ressources
-  if (st.food < 15 && !st.warnedFood) { ev(st, "res", "Vivres < 15%", "alertes"); st.warnedFood = true; }
-  if (st.fuel < 15 && st.engineOn && !st.warnedFuel) { ev(st, "res", "Carburant < 15%", "alertes"); st.warnedFuel = true; }
-  if (st.battery < 15 && !st.warnedBatt) { ev(st, "res", "Batteries < 15%", "alertes"); st.warnedBatt = true; }
-  if (st.food > 30) st.warnedFood = false;
-  if (st.fuel > 30) st.warnedFuel = false;
-  if (st.battery > 30) st.warnedBatt = false;
+  if (st.food < RES_WARN_PCT && !st.warnedFood) { ev(st, "res", `Vivres < ${RES_WARN_PCT}%`, "alertes"); st.warnedFood = true; }
+  if (st.fuel < RES_WARN_PCT && st.engineOn && !st.warnedFuel) { ev(st, "res", `Carburant < ${RES_WARN_PCT}%`, "alertes"); st.warnedFuel = true; }
+  if (st.battery < RES_WARN_PCT && !st.warnedBatt) { ev(st, "res", `Batteries < ${RES_WARN_PCT}%`, "alertes"); st.warnedBatt = true; }
+  if (st.food > RES_WARN_RESET_PCT) st.warnedFood = false;
+  if (st.fuel > RES_WARN_RESET_PCT) st.warnedFuel = false;
+  if (st.battery > RES_WARN_RESET_PCT) st.warnedBatt = false;
 
   // Radio : pulsations par balise (phase aléatoire propre à chaque balise)
   const radioOk = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
@@ -826,8 +856,8 @@ export function tick(st, dtMin, world) {
         if (st.signals.length > 30) st.signals.pop();
         const dEst = Math.round(RADIO_DECAY_KM * (1 - got.strength / 100));
         const txt = got.source === "omni"
-          ? `📡 Ping ${b.code} — signal ${got.strength}% (distance estimée : ${dEst} ± ${Math.round(dEst * 0.2)} km, omnidirectionnelle, azimut inconnu)`
-          : `📡 Ping ${b.code} — azimut ${got.bearing}°, signal ${got.strength}% (distance estimée : ${dEst} ± ${Math.round(dEst * 0.2)} km), partie ${got.side} du cône (ouverture ${got.beam}°)`;
+          ? `📡 Ping ${b.code} — signal ${got.strength}% (distance estimée : ${dEst} ± ${Math.round(dEst * RADIO_EST_ERR)} km, omnidirectionnelle, azimut inconnu)`
+          : `📡 Ping ${b.code} — azimut ${got.bearing}°, signal ${got.strength}% (distance estimée : ${dEst} ± ${Math.round(dEst * RADIO_EST_ERR)} km), partie ${got.side} du cône (ouverture ${got.beam}°)`;
         notify(st, txt, "info", "radio");
       }
     }
