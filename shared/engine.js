@@ -378,7 +378,7 @@ export function shipsCollide(ax, ay, aHead, bx, by, bHead) {
 // (caps, baies), aucun offset fixe n'est fiable. On scanne une spirale
 // autour du port par distance croissante et on retient le PREMIER candidat
 // valide : en pleine eau (pas terre, pas île), à >= 50 m de la côte, à
-// >= 300 m de tout navire déjà placé (taken), de préférence dans la zone
+// >= 50 m de tout navire déjà placé (taken), de préférence dans la zone
 // d'accostage de 500 m. `taken` accumule les positions posées — l'appelant
 // fournit la liste (elle est modifiée en place).
 export function spawnPosition(world, taken = []) {
@@ -386,7 +386,7 @@ export function spawnPosition(world, taken = []) {
   const okSpot = (x, y) =>
     !world.isLand(x, y) &&
     distToLine(x, y, world.COAST) * M_PER_DEG >= 50 &&
-    taken.every((t) => Math.hypot(t.x - x, t.y - y) * M_PER_DEG >= 300);
+    taken.every((t) => Math.hypot(t.x - x, t.y - y) * M_PER_DEG >= 50);
   const candidate = (x, y) => {
     if (!okSpot(x, y)) return null;
     const pos = { x, y };

@@ -94,7 +94,7 @@ if (!race.migrated) {
         distNm(a.x, a.y, world.PORT.x, world.PORT.y) * 1852 < 500 &&
         distNm(b.x, b.y, world.PORT.x, world.PORT.y) * 1852 < 500;
       const dm = distNm(a.x, a.y, b.x, b.y) * 1852;
-      if (dm < 300 && bothAtPort) {
+      if (dm < 50 && bothAtPort) {
         // re-loger via la spirale : le premier garde sa place (ou en trouve
         // une nouvelle), le second est repoussé au prochain point valide.
         const fresh = [];
@@ -103,7 +103,7 @@ if (!race.migrated) {
         a.x = sa.x; a.y = sa.y; a.estX = sa.x; a.estY = sa.y;
         b.x = sb.x; b.y = sb.y; b.estX = sb.x; b.estY = sb.y;
         a.collided = false; b.collided = false;
-        console.log(`[migration] Navires ${ids[i]} et ${ids[j]} re-logés à 300 m (superposés à quai, sauvegarde antérieure)`);
+        console.log(`[migration] Navires ${ids[i]} et ${ids[j]} re-logés à 50 m (superposés à quai, sauvegarde antérieure)`);
       }
     }
   }
@@ -595,7 +595,7 @@ wss.on("connection", (ws, req) => {
         world.ISLANDS = fresh.ISLANDS; world.OUTPOSTS = fresh.OUTPOSTS;
         world.BEACONS = fresh.BEACONS; world.COAST = fresh.COAST;
         world.isLand = fresh.isLand;
-        // Réattribution des slots d'amarrage (espacement 300 m) et de codes
+        // Réattribution des slots d'amarrage (espacement 50 m) et de codes
         // radio NEUFS, garantis sans collision avec les balises de la NOUVELLE
         // graine ni entre navires.
         let slotIdx = 0;
