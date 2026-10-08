@@ -568,18 +568,28 @@ function NavMap({ snap, sock }) {
           const wps = player.waypoints;
           const segs = [];
           // segment navire → 1er point non atteint, puis entre points
+          // (px/py pour le rendu, coordonnées degrés pour la distance km)
           const cur = player.wpIdx;
           if (cur < wps.length) {
-            segs.push([px(player.estX), py(player.estY), px(wps[cur].x), py(wps[cur].y)]);
+            segs.push([px(player.estX), py(player.estY), px(wps[cur].x), py(wps[cur].y), player.estX, player.estY, wps[cur].x, wps[cur].y]);
           }
           for (let i = cur; i < wps.length - 1; i++) {
-            segs.push([px(wps[i].x), py(wps[i].y), px(wps[i + 1].x), py(wps[i + 1].y)]);
+            segs.push([px(wps[i].x), py(wps[i].y), px(wps[i + 1].x), py(wps[i + 1].y), wps[i].x, wps[i].y, wps[i + 1].x, wps[i + 1].y]);
           }
           return (
             <g>
-              {segs.map(([x1, y1, x2, y2], i) => (
-                <line key={"s" + i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#0ea5e9" strokeWidth="1.4" strokeDasharray="6 4" opacity="0.85" />
-              ))}
+              {segs.map((s, i) => {
+                const [x1, y1, x2, y2] = s;
+                const km = Math.round(distNm(s[4], s[5], s[6], s[7]) * 1.852);
+                return (
+                  <g key={"s" + i}>
+                    <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#0ea5e9" strokeWidth="1.4" strokeDasharray="6 4" opacity="0.85" />
+                    {km > 0 && (
+                      <text x={(x1 + x2) / 2} y={(y1 + y2) / 2 - 4} fontSize="10" fill="#0369a1" fontWeight="bold" textAnchor="middle" stroke="#cfe0f0" strokeWidth="2.5" paintOrder="stroke">{km} km</text>
+                    )}
+                  </g>
+                );
+              })}
               {wps.map((wp, i) => (
                 <g key={i}>
                   <circle cx={px(wp.x)} cy={py(wp.y)} r="5.5"
