@@ -98,8 +98,7 @@ function Btn({ active, onClick, children, className = "" }) {
 function TopView({ snap }) {
   const { player, view, weather } = snap;
   const svgRef = useRef(null);
-  const [zoom, setZoom] = useState(1);          // ×1 – ×16
-  const [pan, setPan] = useState({ x: 0, y: 0 }); // décalage px (200-viewBox)
+  const [zoom, setZoom] = useState(1);          // ×1 – ×16 (pas de pan : le navire reste au centre)
   const ptrs = useRef({});
   const drag = useRef(null);
   const pinch = useRef(null);
@@ -117,11 +116,11 @@ function TopView({ snap }) {
   // dessinés autour de l'estimé : l'écart est couvert par l'incertitude).
   const proj = (az, km) => {
     const a = (az * Math.PI) / 180;
-    const x = 100 + pan.x + Math.sin(a) * km * P;
-    const y = 100 + pan.y - Math.cos(a) * km * P;
+    const x = 100 + Math.sin(a) * km * P;
+    const y = 100 - Math.cos(a) * km * P;
     return [x, y];
   };
-  const inDisk = ([x, y]) => Math.hypot(x - (100 + pan.x), y - (100 + pan.y)) < 96;
+  const inDisk = ([x, y]) => Math.hypot(x - 100, y - 100) < 96;
 
   // tailles adaptatives : les éléments restent lisibles à tout zoom
   const font = (px) => Math.max(px / Math.sqrt(zoom), 4.5);      // labels
@@ -145,8 +144,8 @@ function TopView({ snap }) {
   }, []);
 
   const wrad = (view.windDir * Math.PI) / 180;
-  const wax = 100 + pan.x + Math.sin(wrad) * 91, way = 100 + pan.y - Math.cos(wrad) * 91;
-  const wbx = 100 + pan.x + Math.sin(wrad) * 67, wby = 100 + pan.y - Math.cos(wrad) * 67;
+  const wax = 100 + Math.sin(wrad) * 91, way = 100 - Math.cos(wrad) * 91;
+  const wbx = 100 + Math.sin(wrad) * 67, wby = 100 - Math.cos(wrad) * 67;
   const wux = (wbx - wax) / 24, wuy = (wby - way) / 24;
 
   return (
@@ -154,15 +153,12 @@ function TopView({ snap }) {
       ref={svgRef}
       viewBox="0 0 200 200"
       className="mx-auto w-full max-w-[280px] touch-none select-none"
-      style={{ cursor: drag.current ? "grabbing" : "grab" }}
+      style={{ cursor: "default" }}
       onPointerDown={(e) => {
         e.currentTarget.setPointerCapture(e.pointerId);
         ptrs.current[e.pointerId] = { x: e.clientX, y: e.clientY };
         const ids = Object.keys(ptrs.current);
-        if (ids.length === 1) {
-          drag.current = { id: e.pointerId, sx: e.clientX, sy: e.clientY, pan };
-        } else if (ids.length === 2) {
-          drag.current = null;
+        if (ids.length === 2) {
           const [a, b] = Object.values(ptrs.current);
           pinch.current = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, zoom };
         }
@@ -172,21 +168,14 @@ function TopView({ snap }) {
         if (pt) { pt.x = e.clientX; pt.y = e.clientY; }
         const ids = Object.keys(ptrs.current);
         if (ids.length >= 2 && pinch.current) {
+          // pincement tactile : zoom uniquement, pas de translation
           const [a, b] = Object.values(ptrs.current);
           const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
           setZoom(clamp(pinch.current.zoom * d / pinch.current.d0, 1, 16));
-        } else if (drag.current && e.pointerId === drag.current.id && zoom === 1) {
-          // pan seulement à zoom 1+ (translation px réels)
-          const rect = e.currentTarget.getBoundingClientRect();
-          const scale = rect.width / 200;
-          setPan({
-            x: clamp(drag.current.pan.x + (e.clientX - drag.current.sx) / scale, -60, 60),
-            y: clamp(drag.current.pan.y - (e.clientY - drag.current.sy) / scale, -60, 60),
-          });
         }
       }}
-      onPointerUp={(e) => { delete ptrs.current[e.pointerId]; drag.current = null; pinch.current = null; }}
-      onPointerLeave={(e) => { delete ptrs.current[e.pointerId]; drag.current = null; pinch.current = null; }}
+      onPointerUp={(e) => { delete ptrs.current[e.pointerId]; if (Object.keys(ptrs.current).length < 2) pinch.current = null; }}
+      onPointerLeave={(e) => { delete ptrs.current[e.pointerId]; if (Object.keys(ptrs.current).length < 2) pinch.current = null; }}
     >
       <defs>
         <clipPath id="localClip"><circle cx="100" cy="100" r="98" /></clipPath>
@@ -201,8 +190,8 @@ function TopView({ snap }) {
       <g clipPath="url(#localClip)">
         {/* Côte du continent — échelle exacte, suivie par le zoom */}
         {view.coast && view.continentVerts && (() => {
-          const kx = (x) => 100 + pan.x + (x - snap.player.estX) * KM_PER_DEG * P;
-          const ky = (y) => 100 + pan.y - (y - snap.player.estY) * KM_PER_DEG * P;
+          const kx = (x) => 100 + (x - snap.player.estX) * KM_PER_DEG * P;
+          const ky = (y) => 100 - (y - snap.player.estY) * KM_PER_DEG * P;
           return (
             <polygon
               points={view.continentVerts.map(([vx, vy]) => `${kx(vx).toFixed(1)},${ky(vy).toFixed(1)}`).join(" ")}
@@ -259,15 +248,15 @@ function TopView({ snap }) {
         {/* Navires au-delà de la portée visible : indicateur au bord */}
         {(snap.ships || []).filter((s) => s.km > visRangeKm + 30).map((s) => (
           <g key={"b" + s.id}>
-            <text x={100 + pan.x + Math.sin((s.az * Math.PI) / 180) * 78} y={100 + pan.y - Math.cos((s.az * Math.PI) / 180) * 78} fontSize={font(9)} textAnchor="middle">⛵</text>
-            <text x={100 + pan.x + Math.sin((s.az * Math.PI) / 180) * 78} y={100 + pan.y - Math.cos((s.az * Math.PI) / 180) * 78 + font(8)} fontSize={font(6)} fill="#cbd5e1" textAnchor="middle">{Math.round(s.km)} km</text>
+            <text x={100 + Math.sin((s.az * Math.PI) / 180) * 78} y={100 - Math.cos((s.az * Math.PI) / 180) * 78} fontSize={font(9)} textAnchor="middle">⛵</text>
+            <text x={100 + Math.sin((s.az * Math.PI) / 180) * 78} y={100 - Math.cos((s.az * Math.PI) / 180) * 78 + font(8)} fontSize={font(6)} fill="#cbd5e1" textAnchor="middle">{Math.round(s.km)} km</text>
           </g>
         ))}
         {/* Brume : voile gris au-delà de la visibilité météo */}
         {view.visKm < visRangeKm - 0.3 && (
           <g>
             <rect x="0" y="0" width="200" height="200" fill="url(#visGrad2)" />
-            <circle cx={100 + pan.x} cy={100 + pan.y} r={Math.min(visRangeKm, view.visKm) * P} fill="none" stroke="rgba(203,213,225,0.45)" strokeDasharray="2 3" />
+            <circle cx={100} cy={100} r={Math.min(visRangeKm, view.visKm) * P} fill="none" stroke="rgba(203,213,225,0.45)" strokeDasharray="2 3" />
           </g>
         )}
         {/* Vent : flèche au bord du disque */}
@@ -278,26 +267,26 @@ function TopView({ snap }) {
         </g>
         {/* Anneaux de distance : 10 km et 3,7 km — échelle réelle au zoom */}
         {10 * P < 96 && (
-          <circle cx={100 + pan.x} cy={100 + pan.y} r={10 * P} fill="none" stroke="rgba(56,189,248,0.25)" strokeDasharray="3 3" strokeWidth={lw(0.8)} />
+          <circle cx={100} cy={100} r={10 * P} fill="none" stroke="rgba(56,189,248,0.25)" strokeDasharray="3 3" strokeWidth={lw(0.8)} />
         )}
         {0.5 * P > 0.8 && (
-          <circle cx={100 + pan.x} cy={100 + pan.y} r={0.5 * P} fill="none" stroke="rgba(251,191,36,0.5)" strokeDasharray="1 2" strokeWidth={lw(0.6)} />
+          <circle cx={100} cy={100} r={0.5 * P} fill="none" stroke="rgba(251,191,36,0.5)" strokeDasharray="1 2" strokeWidth={lw(0.6)} />
         )}
         {/* Faisceau de l'antenne directionnelle */}
         <path
-          transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${antHeading})`}
+          transform={`translate(${100},${100}) rotate(${antHeading})`}
           d={`M 0 0 L ${(-98 * Math.sin(hr)).toFixed(1)} ${(-98 * Math.cos(hr)).toFixed(1)} A 98 98 0 0 1 ${(98 * Math.sin(hr)).toFixed(1)} ${(-98 * Math.cos(hr)).toFixed(1)} Z`}
           fill="rgba(192,132,252,0.16)" stroke="rgba(192,132,252,0.45)" strokeWidth={lw(0.7)}
         />
-        <line transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${antHeading})`} x1="0" y1="0" x2="0" y2="-94" stroke="#c084fc" strokeDasharray="4 3" strokeWidth={lw(0.7)} />
+        <line transform={`translate(${100},${100}) rotate(${antHeading})`} x1="0" y1="0" x2="0" y2="-94" stroke="#c084fc" strokeDasharray="4 3" strokeWidth={lw(0.7)} />
         {/* Consigne de cap : marqueur pointillé vers l'avant */}
         <line
-          transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${player.headingOrder})`}
+          transform={`translate(${100},${100}) rotate(${player.headingOrder})`}
           x1="0" y1="0" x2="0" y2={-70 / Math.max(zoom, 1.4)}
           stroke="#fbbf24" strokeWidth={lw(1)} strokeDasharray="3 4" opacity="0.8"
         />
         {/* Navire au centre, orienté au cap */}
-        <g transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${heading})`}>
+        <g transform={`translate(${100},${100}) rotate(${heading})`}>
           <path d={`M 0 ${-12 / Math.max(zoom, 1.2)} L ${8 / Math.max(zoom, 1.2)} ${10 / Math.max(zoom, 1.2)} L 0 ${5 / Math.max(zoom, 1.2)} L ${-8 / Math.max(zoom, 1.2)} ${10 / Math.max(zoom, 1.2)} Z`} fill={player.grounded ? "#f87171" : "#38bdf8"} stroke="#e0f2fe" strokeWidth={lw(0.8)} />
         </g>
         {/* Indicateur de zoom */}

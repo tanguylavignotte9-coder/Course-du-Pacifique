@@ -259,6 +259,27 @@ function multiplayerPass(now) {
   }
 }
 
+// Émission OMNIDIRECTIONNELLE depuis un point (balise répondante) vers tous
+// les navires tiers à portée (décroissance 2000 km) : chacun capte une
+// TRANSMISSION BROUILLÉE — signal, azimut, distance estimée — sans jamais
+// le contenu. « Émettre, c'exister » : la balise n'échappe pas à la règle.
+function broadcastScrambledFrom(fromX, fromY, exceptId) {
+  for (const [oid, ost] of states) {
+    if (oid === exceptId) continue;
+    const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
+    if (!otherRadioOk) continue;
+    const dKm = distNm(fromX, fromY, ost.x, ost.y) * KM_PER_NM;
+    const strength = signalStrengthKm(dKm);
+    if (strength < 1) continue;
+    const brg = bearingTo(ost.x, ost.y, fromX, fromY);
+    const antHeading = (ost.heading + ost.antOrient + 720) % 360;
+    const caughtDir = Math.abs(angDiff(brg, antHeading)) <= ost.antBeam / 2;
+    ost.notifSeq = (ost.notifSeq || 0) + 1;
+    const info = scrambledIntercept(Math.round(strength), caughtDir ? "dir" : "omni", ost.antBeam, ost.antOrient, ost.heading, brg);
+    ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: info.text, kind: "info", cat: info.cat });
+  }
+}
+
 // ---------- HTTP ----------
 const app = express();
 app.use(express.json());
@@ -536,10 +557,11 @@ wss.on("connection", (ws, req) => {
           // « Position ? » adressé : si le code composé est une BALISE, elle
           // l'interprète automatiquement et répond (réponse gratuite : le coût
           // a déjà été débité par l'émission du message). Si c'est un navire,
-          // il lit la question — rien d'automatique.
+          // il lit la question — rien d'automatique. La réponse de la balise
+          // est ÉMISE sur les ondes : les tiers à portée capte du brouillé.
           if (c.shipMsg.kind === "posq" && !isBroadcast) {
-            const targetBeacon = world.BEACONS.find((b) => b.code === c.shipMsg.to && b.active);
-            if (targetBeacon) callPosition(st, c.shipMsg.to, world, true);
+            const answered = callPosition(st, c.shipMsg.to, world, true);
+            if (answered) broadcastScrambledFrom(answered.x, answered.y, id);
           }
           for (const [oid, ost] of states) {
             if (oid === id) continue;

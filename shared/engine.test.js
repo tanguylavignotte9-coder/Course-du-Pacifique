@@ -194,7 +194,7 @@ test("grands pas : rotation totale bornée par le taux, trajectoire cohérente",
 });
 
 // ---------- Pilote automatique / planificateur ----------
-import { WP_R_NM, bearingTo, KM_PER_DEG } from "./engine.js";
+import { WP_R_NM, bearingTo, KM_PER_DEG, callPosition } from "./engine.js";
 
 test("pilote : la consigne vise le point depuis l'estime", () => {
   const w = buildWorld(42);
@@ -340,4 +340,33 @@ test("déterminisme : même état + même route + mêmes ticks = même trajectoi
   const a = run();
   const b = run();
   assert.equal(a, b, "trajectoire identique au rejeu");
+});
+
+test("callPosition : retourne la balise répondue — même si l'appelant n'entend pas la réponse", () => {
+  const w = buildWorld(77);
+  // navire A à ~3000 km d'une balise, faisceau 1° (portée ~4950 km : joignable)
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  const d2 = 3000 / 111.12;
+  st.x = b.x; st.y = b.y - d2;
+  st.antBeam = 1; st.heading = 0; st.antOrient = 0; st.headingOrder = 0;
+  const nAvant = st.notifications.length;
+  const answered = callPosition(st, b.code, w);
+  // la balise a entendu (strength >= 1 via le faisceau serré) → elle répond :
+  // returned non-null, MAIS l'appelant (> 2000 km) ne lit rien
+  assert.ok(answered, "la balise répond sur les ondes");
+  assert.equal(answered.x, b.x);
+  assert.equal(st.notifications.length, nAvant, "réponse inaudible pour l'appelant : silence total pour lui");
+  // à 300 km : l'appelant lit sa réponse privée complète
+  const st2 = newPlayerState(w, { weatherSeed: 1 });
+  st2.x = b.x; st2.y = b.y - 300 / 111.12;
+  st2.antBeam = 180; st2.heading = 0; st2.antOrient = 0; st2.headingOrder = 0;
+  const answered2 = callPosition(st2, b.code, w);
+  assert.ok(answered2);
+  const resp = st2.notifications.find((n) => n.text.includes("Position de " + b.code));
+  assert.ok(resp, "l'appelant à 300 km reçoit sa réponse privée complète");
+  assert.ok(resp.text.includes("°N"), "coordonnées présentes pour l'appelant");
+  // silence : mauvais numéro
+  const answered3 = callPosition(st2, "9999", w);
+  assert.equal(answered3, null, "mauvais numéro : null, silence");
 });
