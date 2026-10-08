@@ -185,7 +185,7 @@ function multiplayerPass(now) {
     infos.set(id, {
       st, w,
       night: hour < 6 || hour >= 20,
-      observerKm: (st.location === "surface" || st.periscope) ? w.visibility * DEG_KM : 0,
+      observerKm: (st.location === "surface" || st.periscope) ? w.visibility : 0,
       seenShips: new Set(),
     });
   }
@@ -197,7 +197,7 @@ function multiplayerPass(now) {
       if (tid === oid) continue;
       const targetRange = shipPassiveKm(ti.st, oi.night);
       if (targetRange <= 0) continue;
-      const km = distKm(oi.st.x, oi.st.y, ti.st.x, ti.st.y) * DEG_KM;
+      const km = distKm(oi.st.x, oi.st.y, ti.st.x, ti.st.y);
       if (km <= Math.min(oi.observerKm, targetRange)) {
         oi.seenShips.add(tid);
       }
@@ -211,7 +211,7 @@ function multiplayerPass(now) {
     for (const tid of seen) {
       if (!before.includes(tid)) {
         const ti = infos.get(tid).st;
-        const km = distKm(st.x, st.y, ti.x, ti.y) * DEG_KM;
+        const km = distKm(st.x, st.y, ti.x, ti.y);
         st.notifSeq = (st.notifSeq || 0) + 1;
         const az = Math.round((Math.atan2(ti.x - st.x, ti.y - st.y) * 180) / Math.PI + 360) % 360;
         st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⛵ Navire repéré (${infos.get(tid).st.code}) : ~${Math.round(km)} km, azimut ${az}°.`, kind: "info", cat: "vision" });
@@ -268,7 +268,7 @@ function broadcastScrambledFrom(fromX, fromY, exceptId) {
     if (oid === exceptId) continue;
     const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
     if (!otherRadioOk) continue;
-    const dKm = distKm(fromX, fromY, ost.x, ost.y) * DEG_KM;
+    const dKm = distKm(fromX, fromY, ost.x, ost.y);
     const strength = signalStrengthKm(dKm);
     if (strength < 1) continue;
     const brg = bearingTo(ost.x, ost.y, fromX, fromY);
@@ -326,7 +326,7 @@ function publicSnapshot(id) {
     // absolue — le client dessine depuis son estimé, comme pour les îles).
     ships: (st.sawShips || []).map((tid) => {
       const ts = states.get(tid);
-      const km = distKm(st.x, st.y, ts.x, ts.y) * DEG_KM;
+      const km = distKm(st.x, st.y, ts.x, ts.y);
       const az = Math.round((Math.atan2(ts.x - st.x, ts.y - st.y) * 180) / Math.PI + 360) % 360;
       return { id: ts.code, km: Math.round(km * 10) / 10, az, light: !!ts.light };
     }),
@@ -527,7 +527,7 @@ wss.on("connection", (ws, req) => {
             if (oid === id) continue;
             const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
             if (!otherRadioOk) continue;
-            const dKm = distKm(ost.x, ost.y, st.x, st.y) * DEG_KM;
+            const dKm = distKm(ost.x, ost.y, st.x, st.y);
             const brg = bearingTo(ost.x, ost.y, st.x, st.y);
             const { strength } = callStrengthAtKm(st, dKm, brg);
             if (strength < 1) continue;
@@ -567,7 +567,7 @@ wss.on("connection", (ws, req) => {
             if (oid === id) continue;
             const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
             if (!otherRadioOk) continue;
-            const dKm = distKm(ost.x, ost.y, st.x, st.y) * DEG_KM;
+            const dKm = distKm(ost.x, ost.y, st.x, st.y);
             const brg = bearingTo(ost.x, ost.y, st.x, st.y);
             const { strength } = callStrengthAtKm(st, dKm, brg);
             if (strength < 1) continue;

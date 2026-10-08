@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { KM_PER_NM } from "../../shared/engine.js";
+// La visibilité météo est déjà exprimée en km (plus d'import nécessaire).
 
 // ============================================================
 // Scène d'ambiance — fond plein écran derrière l'interface.
