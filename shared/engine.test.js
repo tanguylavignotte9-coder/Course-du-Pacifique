@@ -5,7 +5,7 @@ import {
   distKm, CAPTURE_R_KM, DELIVERY_R_KM, WP_R_KM, DEG_KM, LONG_DECAY_KM, VMAX_KMH, DIESEL_SPD_KMH,
   sailAutoDrive, apparentWind, SAIL_SPD_KMH, clamp, callPosition, RARITY_MIN, bearingTo, segDistKm,
   longStrengthKm, strengthKm, SHORT_DECAY_KM, recvCapture, detectBeacon, onProximityPing,
-  proxPingIntervalS, captureBeacon, beaconLockTick, pushBeaconSignal, SIGNAL_LOG_MAX, PROX_ARM_KM,
+  proxPingIntervalS, captureBeacon, beaconLockTick, beaconLockSteer, pushBeaconSignal, SIGNAL_LOG_MAX, PROX_ARM_KM, ANCHOR_DROP_KM,
   scrambledIntercept,
 } from "./engine.js";
 
@@ -555,15 +555,46 @@ test("pilote de route vs verrou : le recalcul de consigne respecte le verrou", (
   st.autopilot = true; // état incohérent (migration à chaud) : verrou SANS coupure
   st.beaconLock = b.code;
   const wpBrg = bearingTo(st.estX, st.estY, 35, 30);
-  st.heading = 0; st.headingOrder = (wpBrg + 90) % 360; // consigne du verrou ≠ visée du point
+  st.heading = 0; st.headingOrder = (wpBrg + 90) % 360; // consigne de départ ≠ visée du point
   tick(st, 1 / 60, w);
-  assert.equal(Math.round(st.headingOrder), Math.round((wpBrg + 90) % 360),
-    "le pilote de route n'écrase pas la consigne du verrou");
+  const lockBrg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
+  assert.equal(Math.round(st.headingOrder), lockBrg,
+    "le pilote de route n'écrase pas le verrou : la consigne suit la balise (poursuite continue)");
+  assert.notEqual(Math.round(st.headingOrder), Math.round(wpBrg),
+    "et non le waypoint du pilote de route");
 });
 
 test("rayon de veille : PROX_ARM_KM émergent = force 75 % en famille courte", () => {
   assert.ok(Math.abs(PROX_ARM_KM - 125) < 1e-9, `125 km attendus (obtenu ${PROX_ARM_KM})`);
   assert.equal(strengthKm(PROX_ARM_KM, SHORT_DECAY_KM), 75, "à PROX_ARM_KM, l'omni capte exactement");
+});
+
+test("verrou : poursuite continue — cap et antenne recalculés à chaque tick", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 40 / DEG_KM;
+  st.heading = 137; st.antOrient = 0; st.headingOrder = 137;
+  st.beaconLock = b.code;
+  beaconLockSteer(st, w);
+  const brg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
+  assert.equal(st.headingOrder, brg, "cap remis sur la balise");
+  assert.equal(st.lockBrg, brg, "azimut du verrou à jour");
+  assert.equal(st.antOrient, Math.round(((brg - st.heading + 540) % 360) - 180), "antenne sur la source");
+});
+
+test("verrou : arrivée par segment (saut de temps) — ancre au point de franchissement", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  const prevX = b.x, prevY = b.y - 5 / DEG_KM;  // départ du pas : 5 km au sud
+  st.x = b.x; st.y = b.y + 1 / DEG_KM;          // fin du pas : 1 km au nord — la balise est franchie
+  st.beaconLock = b.code;
+  beaconLockTick(st, w, prevX, prevY);
+  assert.equal(st.anchored, true, "ancre automatique au franchissement");
+  assert.ok(distKm(st.x, st.y, b.x, b.y) <= ANCHOR_DROP_KM,
+    `arrêt ≤ 50 m de la balise (obtenu ${Math.round(distKm(st.x, st.y, b.x, b.y) * 1000)} m)`);
+  assert.equal(st.beaconLock, null, "verrou libéré");
 });
 
 test("segDistKm : distance point-segment", () => {

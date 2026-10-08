@@ -680,12 +680,40 @@ export function onProximityPing(st, b, cap) {
   }
 }
 
-// Verrou : à ANCHOR_DROP_KM de la balise verrouillée, coupure + ancre auto.
-export function beaconLockTick(st, world) {
+// Poursuite CONTINUE : à chaque tick, l'ordinateur remet cap et antenne sur la
+// balise verrouillée (position VRAIE — exception assumée du scan du verrou,
+// jamais affichée). La poursuite ne dépend plus de la cadence des pings :
+// elle tient aussi pendant les sauts de temps (pings au rythme temps réel).
+export function beaconLockSteer(st, world) {
   if (!st.beaconLock) return;
   const b = world.BEACONS.find((x) => x.code === st.beaconLock && x.active);
   if (!b) { st.beaconLock = null; st.lockBrg = null; return; }
-  const dKm = distKm(st.x, st.y, b.x, b.y);
+  st.lockBrg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
+  st.antOrient = Math.round(((st.lockBrg - st.heading + 540) % 360) - 180); // antenne sur la source
+  st.headingOrder = st.lockBrg; // poursuite
+}
+
+// Arrivée : ancre automatique quand le navire touche le cercle d'ancre — soit
+// à sa position (temps réel : pas d'1 s), soit parce que le SEGMENT de
+// déplacement du pas l'a traversé (saut de temps : MAX_STEP_MIN = 5 min ≈ 3 km
+// de corde à 40 km/h). Dans le second cas, le navire S'ARRÊTE au point du
+// segment le plus proche de la balise (à l'intérieur du cercle) au lieu de
+// filer 3 km plus loin.
+export function beaconLockTick(st, world, prevX = st.x, prevY = st.y) {
+  if (!st.beaconLock) return;
+  const b = world.BEACONS.find((x) => x.code === st.beaconLock && x.active);
+  if (!b) { st.beaconLock = null; st.lockBrg = null; return; }
+  let dKm = distKm(st.x, st.y, b.x, b.y);
+  if (dKm > ANCHOR_DROP_KM && segDistKm(b.x, b.y, prevX, prevY, st.x, st.y) <= ANCHOR_DROP_KM) {
+    const dx = st.x - prevX, dy = st.y - prevY;
+    const len2 = dx * dx + dy * dy;
+    if (len2 > 0) {
+      const t = Math.max(0, Math.min(1, ((b.x - prevX) * dx + (b.y - prevY) * dy) / len2));
+      st.x = prevX + dx * t; // arrêt au point de passage le plus proche (≤ ANCHOR_DROP_KM)
+      st.y = prevY + dy * t;
+      dKm = distKm(st.x, st.y, b.x, b.y);
+    }
+  }
   if (dKm <= ANCHOR_DROP_KM) {
     st.beaconLock = null;
     st.lockBrg = null;
@@ -803,6 +831,11 @@ export function tick(st, dtMin, world) {
     const wp = st.waypoints[st.wpIdx];
     st.headingOrder = bearingTo(st.estX, st.estY, wp.x, wp.y);
   }
+  // Balise-vigie : poursuite CONTINUE — à chaque tick, l'ordinateur remet cap
+  // et antenne sur la balise verrouillée (position VRAIE : exception assumée
+  // du scan du verrou, jamais affichée). La poursuite ne dépend plus de la
+  // cadence des pings — elle tient aussi pendant les sauts de temps.
+  beaconLockSteer(st, world);
   // Giration : le navire converge de son cap réel (heading) vers la
   // CONSIGNE (headingOrder) à un taux borné. À pleine vitesse en surface,
   // 270 °/min : un virage de 90° prend ~20 s de jeu. À l'arrêt, une part de
@@ -859,8 +892,6 @@ export function tick(st, dtMin, world) {
     st.headingOrder = ((order % 360) + 360) % 360;
     dtMin -= integrated; // le bloc mouvement ci-dessous couvre le reste
   }
-  // Balise-vigie : verrou — ancre automatique à ANCHOR_DROP_KM de la balise
-  beaconLockTick(st, world);
   // Mouvement + inertie (sur le temps restant du pas : la position des
   // sous-pas de giration a déjà été intégrée physiquement ci-dessus ; ce
   // bloc gère l'inertie de vitesse, l'estime et l'échouement au cap final)
@@ -1058,6 +1089,12 @@ export function tick(st, dtMin, world) {
   });
 
 
+  // Balise-vigie : arrivée — ancre automatique si le pas de déplacement
+  // (prevX/prevY → position) a touché le cercle d'ancre. En temps réel le
+  // point suffit ; un saut de temps intègre jusqu'à MAX_STEP_MIN de route
+  // d'un seul tenant — le test de segment attrape le franchissement et
+  // arrête le navire au plus près de la balise.
+  beaconLockTick(st, world, prevX, prevY);
   // Livraison au port
   if (segDistKm(world.PORT.x, world.PORT.y, prevX, prevY, st.x, st.y) < DELIVERY_R_KM && st.codes.length > 0) {
     const pts = st.codes.reduce((a, c) => a + c.pts, 0);
