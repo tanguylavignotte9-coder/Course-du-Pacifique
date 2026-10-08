@@ -98,7 +98,7 @@ function Btn({ active, onClick, children, className = "" }) {
 function TopView({ snap }) {
   const { player, view, weather } = snap;
   const svgRef = useRef(null);
-  const [zoom, setZoom] = useState(1);          // ×1 – ×8
+  const [zoom, setZoom] = useState(1);          // ×1 – ×16
   const [pan, setPan] = useState({ x: 0, y: 0 }); // décalage px (200-viewBox)
   const ptrs = useRef({});
   const drag = useRef(null);
@@ -138,7 +138,7 @@ function TopView({ snap }) {
     if (!el) return;
     const onW = (e) => {
       e.preventDefault();
-      setZoom((z) => clamp(z * Math.exp(-e.deltaY * 0.0012), 1, 8));
+      setZoom((z) => clamp(z * Math.exp(-e.deltaY * 0.0012), 1, 16));
     };
     el.addEventListener("wheel", onW, { passive: false });
     return () => el.removeEventListener("wheel", onW);
@@ -174,7 +174,7 @@ function TopView({ snap }) {
         if (ids.length >= 2 && pinch.current) {
           const [a, b] = Object.values(ptrs.current);
           const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
-          setZoom(clamp(pinch.current.zoom * d / pinch.current.d0, 1, 8));
+          setZoom(clamp(pinch.current.zoom * d / pinch.current.d0, 1, 16));
         } else if (drag.current && e.pointerId === drag.current.id && zoom === 1) {
           // pan seulement à zoom 1+ (translation px réels)
           const rect = e.currentTarget.getBoundingClientRect();
