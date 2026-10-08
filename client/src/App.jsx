@@ -97,27 +97,97 @@ function Btn({ active, onClick, children, className = "" }) {
 // détections du serveur sont rapportées en azimut/distance depuis l'estimé.
 function TopView({ snap }) {
   const { player, view, weather } = snap;
-  const R = 20; // horizon km
-  const P = 100 / R; // px par km
+  const svgRef = useRef(null);
+  const [zoom, setZoom] = useState(1);          // ×1 – ×8
+  const [pan, setPan] = useState({ x: 0, y: 0 }); // décalage px (200-viewBox)
+  const ptrs = useRef({});
+  const drag = useRef(null);
+  const pinch = useRef(null);
+
+  const R = 20;                    // horizon km (le disque entier)
+  const HALF = 100;                // demi-taille du viewBox (200x200)
+  // échelle courante : px par km — à ×1, l'horizon remplit le disque (100 px)
+  const P = (HALF / R) * zoom;
   const night = view.night;
   const heading = player.heading;
-  // Position des objets relatifs à l'estimé : le serveur donne az/km depuis
-  // la vraie position ; on les projette depuis le centre (l'erreur de
-  // projection est incluse dans l'incertitude de l'estime).
+  // rayon visible du monde en km selon le zoom (au-delà : clampé au bord)
+  const visRangeKm = R / zoom;
+
+  // Projection azimut/distance (depuis la position VRAIE côté serveur, mais
+  // dessinés autour de l'estimé : l'écart est couvert par l'incertitude).
   const proj = (az, km) => {
-    const r = Math.min(km, 96) * P / 1; // clamp au bord du cercle
     const a = (az * Math.PI) / 180;
-    return [100 + Math.sin(a) * Math.min(km, R + 30) * P / 1, 100 - Math.cos(a) * Math.min(km, R + 30) * P / 1];
+    const x = 100 + pan.x + Math.sin(a) * km * P;
+    const y = 100 + pan.y - Math.cos(a) * km * P;
+    return [x, y];
   };
-  const visF = clamp(view.visKm / R, 0, 1);
+  const inDisk = ([x, y]) => Math.hypot(x - (100 + pan.x), y - (100 + pan.y)) < 96;
+
+  // tailles adaptatives : les éléments restent lisibles à tout zoom
+  const font = (px) => Math.max(px / Math.sqrt(zoom), 4.5);      // labels
+  const marker = (px) => Math.max(px / zoom, 1.6);               // rayons marqueurs
+  const lw = (px) => Math.max(px / zoom, 0.4);                   // épaisseurs traits
+
+  const visF = clamp(view.visKm / visRangeKm, 0, 1);
   const hr = (player.antBeam / 2) * Math.PI / 180;
   const antHeading = view.antHeading;
+
+  // interactions : molette zoom, pincement tactile, glisser = pan
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const onW = (e) => {
+      e.preventDefault();
+      setZoom((z) => clamp(z * Math.exp(-e.deltaY * 0.0012), 1, 8));
+    };
+    el.addEventListener("wheel", onW, { passive: false });
+    return () => el.removeEventListener("wheel", onW);
+  }, []);
+
   const wrad = (view.windDir * Math.PI) / 180;
-  const wax = 100 + Math.sin(wrad) * 91, way = 100 - Math.cos(wrad) * 91;
-  const wbx = 100 + Math.sin(wrad) * 67, wby = 100 - Math.cos(wrad) * 67;
+  const wax = 100 + pan.x + Math.sin(wrad) * 91, way = 100 + pan.y - Math.cos(wrad) * 91;
+  const wbx = 100 + pan.x + Math.sin(wrad) * 67, wby = 100 + pan.y - Math.cos(wrad) * 67;
   const wux = (wbx - wax) / 24, wuy = (wby - way) / 24;
+
   return (
-    <svg viewBox="0 0 200 200" className="mx-auto w-full max-w-[240px]">
+    <svg
+      ref={svgRef}
+      viewBox="0 0 200 200"
+      className="mx-auto w-full max-w-[280px] touch-none select-none"
+      style={{ cursor: drag.current ? "grabbing" : "grab" }}
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        ptrs.current[e.pointerId] = { x: e.clientX, y: e.clientY };
+        const ids = Object.keys(ptrs.current);
+        if (ids.length === 1) {
+          drag.current = { id: e.pointerId, sx: e.clientX, sy: e.clientY, pan };
+        } else if (ids.length === 2) {
+          drag.current = null;
+          const [a, b] = Object.values(ptrs.current);
+          pinch.current = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, zoom };
+        }
+      }}
+      onPointerMove={(e) => {
+        const pt = ptrs.current[e.pointerId];
+        if (pt) { pt.x = e.clientX; pt.y = e.clientY; }
+        const ids = Object.keys(ptrs.current);
+        if (ids.length >= 2 && pinch.current) {
+          const [a, b] = Object.values(ptrs.current);
+          const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+          setZoom(clamp(pinch.current.zoom * d / pinch.current.d0, 1, 8));
+        } else if (drag.current && e.pointerId === drag.current.id && zoom === 1) {
+          // pan seulement à zoom 1+ (translation px réels)
+          const rect = e.currentTarget.getBoundingClientRect();
+          const scale = rect.width / 200;
+          setPan({
+            x: clamp(drag.current.pan.x + (e.clientX - drag.current.sx) / scale, -60, 60),
+            y: clamp(drag.current.pan.y - (e.clientY - drag.current.sy) / scale, -60, 60),
+          });
+        }
+      }}
+      onPointerUp={(e) => { delete ptrs.current[e.pointerId]; drag.current = null; pinch.current = null; }}
+      onPointerLeave={(e) => { delete ptrs.current[e.pointerId]; drag.current = null; pinch.current = null; }}
+    >
       <defs>
         <clipPath id="localClip"><circle cx="100" cy="100" r="98" /></clipPath>
         <radialGradient id="visGrad2" cx="50%" cy="50%" r="50%">
@@ -129,99 +199,107 @@ function TopView({ snap }) {
       </defs>
       <circle cx="100" cy="100" r="98" fill={!view.canSee ? "#010a14" : night ? "#03121f" : "#0b2a4a"} stroke="#38bdf8" strokeWidth="1.5" />
       <g clipPath="url(#localClip)">
-        {/* Côte du continent (dessinée à l'échelle autour de l'estimé) */}
+        {/* Côte du continent — échelle exacte, suivie par le zoom */}
         {view.coast && view.continentVerts && (() => {
-          const kx = (x) => 100 + (x - snap.player.estX) * KM_PER_DEG * (100 / R);
-          const ky = (y) => 100 - (y - snap.player.estY) * KM_PER_DEG * (100 / R);
+          const kx = (x) => 100 + pan.x + (x - snap.player.estX) * KM_PER_DEG * P;
+          const ky = (y) => 100 + pan.y - (y - snap.player.estY) * KM_PER_DEG * P;
           return (
             <polygon
               points={view.continentVerts.map(([vx, vy]) => `${kx(vx).toFixed(1)},${ky(vy).toFixed(1)}`).join(" ")}
               fill={night ? "#0a1f16" : "#1c3a2a"} stroke={night ? "#1f4d38" : "#2f5c43"}
+              strokeWidth={lw(1)}
             />
           );
         })()}
-        {/* Objets détectés : dans l'horizon = forme, au-delà = indicateur bord */}
-        {view.islands.map((e, idx) => e.beyond ? null : (
-          <circle key={idx} cx={proj(e.az, e.km)[0]} cy={proj(e.az, e.km)[1]} r="10"
-            fill={night ? "#0a1f16" : "#1c3a2a"} stroke={night ? "#1f4d38" : "#2f5c43"} />
-        ))}
-        {view.port && !view.port.beyond && (
-          <g>
-            <circle cx={proj(view.port.az, view.port.km)[0]} cy={proj(view.port.az, view.port.km)[1]} r={night ? 3 : 6} fill="#f8fafc" />
-            {!night && <text x={proj(view.port.az, view.port.km)[0]} y={proj(view.port.az, view.port.km)[1] - 9} fontSize="8" fill="#f8fafc" textAnchor="middle">Port</text>}
-          </g>
-        )}
-        {view.outposts.map((e) => e.beyond ? null : (
-          <g key={e.idx}>
-            <circle cx={proj(e.az, e.km)[0]} cy={proj(e.az, e.km)[1]} r={night ? 2.2 : 4} fill="#e2e8f0" />
-          </g>
-        ))}
-        {view.beacons.map((e) => e.beyond ? null : (
-          <g key={e.id}>
-            {night
-              ? <circle cx={proj(e.az, e.km)[0]} cy={proj(e.az, e.km)[1]} r="2.5" fill="#f8fafc" />
-              : <circle cx={proj(e.az, e.km)[0]} cy={proj(e.az, e.km)[1]} r="4" fill={RARITY_STYLE[e.rarity].color} />}
-          </g>
-        ))}
-        {/* Brume : voile gris au-delà de la visibilité */}
-        {view.visKm < R - 0.3 && (
-          <g>
-            <rect x="0" y="0" width="200" height="200" fill="url(#visGrad2)" />
-            <circle cx="100" cy="100" r={Math.min(R, view.visKm) * P} fill="none" stroke="rgba(203,213,225,0.45)" strokeDasharray="2 3" />
-          </g>
-        )}
-        {/* Vent */}
-        <g>
-          <line x1={wax} y1={way} x2={wbx - wux * 5} y2={wby - wuy * 5} stroke="#06263f" strokeWidth="3.6" strokeLinecap="round" />
-          <line x1={wax} y1={way} x2={wbx - wux * 5} y2={wby - wuy * 5} stroke="#93c5fd" strokeWidth="1.7" />
-          <polygon points={`${wbx},${wby} ${wbx - wux * 9 + wuy * 5},${wby - wuy * 9 - wux * 5} ${wbx - wux * 9 - wuy * 5},${wby - wuy * 9 + wux * 5}`} fill="#93c5fd" stroke="#06263f" strokeWidth="1.2" />
-        </g>
-        {/* Navires détectés : marqueurs (azimut/distance), feu si phare la nuit */}
-        {(snap.ships || []).filter((s) => s.km <= R).map((s) => {
-          const sx = proj(s.az, s.km)[0], sy = proj(s.az, s.km)[1];
+        {/* Îles détectées (dans l'horizon agrandi) */}
+        {view.islands.map((e, idx) => {
+          const p = proj(e.az, e.km);
+          return e.beyond ? null : (
+            <circle key={idx} cx={p[0]} cy={p[1]} r={marker(10)}
+              fill={night ? "#0a1f16" : "#1c3a2a"} stroke={night ? "#1f4d38" : "#2f5c43"} strokeWidth={lw(0.8)} />
+          );
+        })}
+        {/* Port */}
+        {view.port && !view.port.beyond && (() => {
+          const p = proj(view.port.az, view.port.km);
+          return (
+            <g>
+              <circle cx={p[0]} cy={p[1]} r={marker(night ? 3 : 6)} fill="#f8fafc" />
+              {!night && <text x={p[0]} y={p[1] - marker(9)} fontSize={font(8)} fill="#f8fafc" textAnchor="middle">Port</text>}
+            </g>
+          );
+        })()}
+        {/* Avant-postes */}
+        {view.outposts.map((e) => {
+          if (e.beyond) return null;
+          const p = proj(e.az, e.km);
+          return <circle key={e.idx} cx={p[0]} cy={p[1]} r={marker(night ? 2.2 : 4)} fill="#e2e8f0" />;
+        })}
+        {/* Balises détectées : coque le jour, feu la nuit */}
+        {view.beacons.map((e) => {
+          if (e.beyond) return null;
+          const p = proj(e.az, e.km);
+          return night
+            ? <circle key={e.id} cx={p[0]} cy={p[1]} r={marker(2.5)} fill="#f8fafc" />
+            : <circle key={e.id} cx={p[0]} cy={p[1]} r={marker(4)} fill={RARITY_STYLE[e.rarity].color} />;
+        })}
+        {/* Navires détectés : marqueur + nom + distance, feu si phare la nuit */}
+        {(snap.ships || []).filter((s) => s.km <= visRangeKm + 30).map((s) => {
+          const p = proj(s.az, s.km);
+          if (!inDisk(p)) return null;
           return (
             <g key={s.id}>
-              <circle cx={sx} cy={sy} r={view.night ? (s.light ? 3 : 2.2) : 3.5}
-                fill={view.night ? (s.light ? "#fde68a" : "#94a3b8") : "#f1f5f9"}
-                stroke="#475569" strokeWidth="0.6" />
-              <text x={sx} y={sy - 6} fontSize="6" fill="#cbd5e1" textAnchor="middle">{s.id.slice(0, 4)} · {Math.round(s.km)} km</text>
+              <circle cx={p[0]} cy={p[1]} r={marker(night ? (s.light ? 3 : 2.2) : 3.5)}
+                fill={night ? (s.light ? "#fde68a" : "#94a3b8") : "#f1f5f9"}
+                stroke="#475569" strokeWidth={lw(0.6)} />
+              <text x={p[0]} y={p[1] - marker(6)} fontSize={font(6)} fill="#cbd5e1" textAnchor="middle">{s.id.slice(0, 4)} · {Math.round(s.km)} km</text>
             </g>
           );
         })}
-        {(snap.ships || []).filter((s) => s.km > R).map((s) => (
+        {/* Navires au-delà de la portée visible : indicateur au bord */}
+        {(snap.ships || []).filter((s) => s.km > visRangeKm + 30).map((s) => (
           <g key={"b" + s.id}>
-            <text x={100 + Math.sin((s.az * Math.PI) / 180) * 78} y={100 - Math.cos((s.az * Math.PI) / 180) * 78} fontSize="9" textAnchor="middle">⛵</text>
-            <text x={100 + Math.sin((s.az * Math.PI) / 180) * 78} y={100 - Math.cos((s.az * Math.PI) / 180) * 78 + 8} fontSize="6" fill="#cbd5e1" textAnchor="middle">{Math.round(s.km)} km</text>
+            <text x={100 + pan.x + Math.sin((s.az * Math.PI) / 180) * 78} y={100 + pan.y - Math.cos((s.az * Math.PI) / 180) * 78} fontSize={font(9)} textAnchor="middle">⛵</text>
+            <text x={100 + pan.x + Math.sin((s.az * Math.PI) / 180) * 78} y={100 + pan.y - Math.cos((s.az * Math.PI) / 180) * 78 + font(8)} fontSize={font(6)} fill="#cbd5e1" textAnchor="middle">{Math.round(s.km)} km</text>
           </g>
         ))}
-        {/* Indicateurs de bord (au-delà de l'horizon) */}
-        {[
-          ...view.islands.filter((e) => e.beyond).slice(0, 2).map((e) => ({ icon: "⛰️", d: Math.round(e.km), az: e.az })),
-          ...(view.port && view.port.beyond ? [{ icon: "🏛️", d: Math.round(view.port.km), az: view.port.az }] : []),
-          ...view.outposts.filter((e) => e.beyond).map((e) => ({ icon: "🏕️", d: Math.round(e.km), az: e.az })),
-          ...view.beacons.filter((e) => e.beyond).map((e) => ({ icon: "🔦", d: Math.round(e.km), az: e.az })),
-        ].map((e, idx) => (
-          <g key={idx}>
-            <text x={100 + Math.sin((e.az * Math.PI) / 180) * 86} y={100 - Math.cos((e.az * Math.PI) / 180) * 86} fontSize="9" textAnchor="middle">{e.icon}</text>
-            <text x={100 + Math.sin((e.az * Math.PI) / 180) * 86} y={100 - Math.cos((e.az * Math.PI) / 180) * 86 + 8} fontSize="6" fill="#cbd5e1" textAnchor="middle">{e.d} km</text>
+        {/* Brume : voile gris au-delà de la visibilité météo */}
+        {view.visKm < visRangeKm - 0.3 && (
+          <g>
+            <rect x="0" y="0" width="200" height="200" fill="url(#visGrad2)" />
+            <circle cx={100 + pan.x} cy={100 + pan.y} r={Math.min(visRangeKm, view.visKm) * P} fill="none" stroke="rgba(203,213,225,0.45)" strokeDasharray="2 3" />
           </g>
-        ))}
-        {/* Anneaux : capture 500 m (proche du centre) et 10 km */}
-        <circle cx="100" cy="100" r={(0.5 / R) * 100} fill="none" stroke="rgba(251,191,36,0.5)" strokeDasharray="1 2" />
-        <circle cx="100" cy="100" r="50" fill="none" stroke="rgba(56,189,248,0.25)" strokeDasharray="3 3" />
-        {/* Faisceau de l'antenne */}
-        <path
-          transform={`translate(100,100) rotate(${antHeading})`}
-          d={`M 0 0 L ${(-98 * Math.sin(hr)).toFixed(1)} ${(-98 * Math.cos(hr)).toFixed(1)} A 98 98 0 0 1 ${(98 * Math.sin(hr)).toFixed(1)} ${(-98 * Math.cos(hr)).toFixed(1)} Z`}
-          fill="rgba(192,132,252,0.16)" stroke="rgba(192,132,254,0.45)" strokeWidth="0.7"
-        />
-        <line transform={`translate(100,100) rotate(${antHeading})`} x1="0" y1="0" x2="0" y2="-94" stroke="#c084fc" strokeDasharray="4 3" strokeWidth="0.7" />
-        {/* Navire au centre, orienté au cap */}
-        <g transform={`translate(100,100) rotate(${heading})`}>
-          <path d="M 0 -12 L 8 10 L 0 5 L -8 10 Z" fill={player.grounded ? "#f87171" : "#38bdf8"} stroke="#e0f2fe" strokeWidth="0.8" />
+        )}
+        {/* Vent : flèche au bord du disque */}
+        <g>
+          <line x1={wax} y1={way} x2={wbx - wux * 5} y2={wby - wuy * 5} stroke="#06263f" strokeWidth={lw(3.6)} strokeLinecap="round" />
+          <line x1={wax} y1={way} x2={wbx - wux * 5} y2={wby - wuy * 5} stroke="#93c5fd" strokeWidth={lw(1.7)} />
+          <polygon points={`${wbx},${wby} ${wbx - wux * 9 + wuy * 5},${wby - wuy * 9 - wux * 5} ${wbx - wux * 9 - wuy * 5},${wby - wuy * 9 + wux * 5}`} fill="#93c5fd" stroke="#06263f" strokeWidth={lw(1.2)} />
         </g>
+        {/* Anneaux de distance : 10 km et 3,7 km — échelle réelle au zoom */}
+        {10 * P < 96 && (
+          <circle cx={100 + pan.x} cy={100 + pan.y} r={10 * P} fill="none" stroke="rgba(56,189,248,0.25)" strokeDasharray="3 3" strokeWidth={lw(0.8)} />
+        )}
+        {0.5 * P > 0.8 && (
+          <circle cx={100 + pan.x} cy={100 + pan.y} r={0.5 * P} fill="none" stroke="rgba(251,191,36,0.5)" strokeDasharray="1 2" strokeWidth={lw(0.6)} />
+        )}
+        {/* Faisceau de l'antenne directionnelle */}
+        <path
+          transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${antHeading})`}
+          d={`M 0 0 L ${(-98 * Math.sin(hr)).toFixed(1)} ${(-98 * Math.cos(hr)).toFixed(1)} A 98 98 0 0 1 ${(98 * Math.sin(hr)).toFixed(1)} ${(-98 * Math.cos(hr)).toFixed(1)} Z`}
+          fill="rgba(192,132,252,0.16)" stroke="rgba(192,132,252,0.45)" strokeWidth={lw(0.7)}
+        />
+        <line transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${antHeading})`} x1="0" y1="0" x2="0" y2="-94" stroke="#c084fc" strokeDasharray="4 3" strokeWidth={lw(0.7)} />
+        {/* Navire au centre, orienté au cap */}
+        <g transform={`translate(${100 + pan.x},${100 + pan.y}) rotate(${heading})`}>
+          <path d={`M 0 ${-12 / Math.max(zoom, 1.2)} L ${8 / Math.max(zoom, 1.2)} ${10 / Math.max(zoom, 1.2)} L 0 ${5 / Math.max(zoom, 1.2)} L ${-8 / Math.max(zoom, 1.2)} ${10 / Math.max(zoom, 1.2)} Z`} fill={player.grounded ? "#f87171" : "#38bdf8"} stroke="#e0f2fe" strokeWidth={lw(0.8)} />
+        </g>
+        {/* Indicateur de zoom */}
+        <text x="100" y="195" fontSize={font(8)} fill="#94a3b8" textAnchor="middle">
+          ×{zoom.toFixed(1)} · horizon {Math.round(visRangeKm)} km
+        </text>
       </g>
-      <text x="100" y="12" fontSize="9" fill="#94a3b8" textAnchor="middle">N</text>
+      <text x="100" y="12" fontSize={font(9)} fill="#94a3b8" textAnchor="middle">N</text>
     </svg>
   );
 }
