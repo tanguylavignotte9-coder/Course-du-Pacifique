@@ -38,6 +38,14 @@ export const RES_WARN_PCT = 15;           // seuil alerte ressources
 export const RES_WARN_RESET_PCT = 30;     // seuil réarmement alertes
 export const CODE_POOL = 10000;           // pool codes radio (0000-9999)
 export const MS_PER_MIN = 60000;          // millisecondes réelles par minute de jeu
+
+// Navigation à l'estime — défauts d'instruments et courant (équilibrage validé)
+export const COMP_DEV_MIN_DEG = 0.15;  // déviation de compas min (°)
+export const COMP_DEV_MAX_DEG = 0.5;   // déviation de compas max (°)
+export const LOG_ERR_MIN_PCT = 0.25;   // erreur de loch min (%)
+export const LOG_ERR_MAX_PCT = 0.75;   // erreur de loch max (%)
+export const CUR_SPD_MIN_KMH = 1.1;    // courant min (km/h)
+export const CUR_SPD_MAX_KMH = 2.05;   // courant max (km/h)
 export function randomCode() {
   return String(Math.floor(Math.random() * CODE_POOL)).padStart(4, "0");
 }
@@ -336,7 +344,7 @@ export function weatherAt(x, y, tMin, seed) {
   const windDir = (220 + 120 * Math.sin(x * 0.08 + y * 0.06 + h * 0.05 + p * 1.7) + 360) % 360;
   const temp = 22 + 6 * Math.sin(y * 0.1) + mix(A.temp, B.temp);
   const curDir = (x * 7 + y * 13 + h * 1.2) % 360;
-  const curSpd = 2.2 + Math.abs(Math.sin(x * 0.3 + y * 0.2)) * 1.9; // 2,2 à 4,1 km/h
+  const curSpd = CUR_SPD_MIN_KMH + Math.abs(Math.sin(x * 0.3 + y * 0.2)) * (CUR_SPD_MAX_KMH - CUR_SPD_MIN_KMH); // 1,1 à 2,05 km/h
   const u = windSpd / 3.6; // vent en m/s
   const hs = Math.round(0.0212 * u * u * 10) / 10;
   const period = Math.round(Math.min(14, Math.max(2, 0.7 * u)) * 10) / 10;
@@ -595,8 +603,8 @@ export function newPlayerState(world, opts = {}) {
     sawIsland: false, sawBeaconId: null, sawPort: false, sawCont: false, sawOutpostIds: [], pins: [], measures: [],
     seaDouglas: null,
     // Défauts d'instruments fixes pour toute la course, inconnus du navigateur
-    compDev: (0.3 + Math.random() * 0.7) * (Math.random() < 0.5 ? -1 : 1),
-    logErr: (0.5 + Math.random()) * (Math.random() < 0.5 ? -1 : 1),
+    compDev: (COMP_DEV_MIN_DEG + Math.random() * (COMP_DEV_MAX_DEG - COMP_DEV_MIN_DEG)) * (Math.random() < 0.5 ? -1 : 1),
+    logErr: (LOG_ERR_MIN_PCT + Math.random() * (LOG_ERR_MAX_PCT - LOG_ERR_MIN_PCT)) * (Math.random() < 0.5 ? -1 : 1),
   };
 }
 

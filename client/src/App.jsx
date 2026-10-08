@@ -602,8 +602,8 @@ function NavMap({ snap, sock }) {
         {/* Punaises A, B, C... */}
         {player.pins.map((p, idx) => (
           <g key={idx}>
-            <circle cx={px(p.x)} cy={py(p.y)} r={5} fill="#dc2626" stroke="#7f1d1d" strokeWidth="1" />
-            <text x={px(p.x)} y={py(p.y) - 7} fontSize="10" fill="#7f1d1d" fontWeight="bold" textAnchor="middle">{p.label}</text>
+            <circle cx={px(p.x)} cy={py(p.y)} r={2.5} fill="#0f172a" stroke="#000000" strokeWidth="0.8" />
+            <text x={px(p.x)} y={py(p.y) - 5} fontSize="9" fill="#000000" fontWeight="bold" textAnchor="middle">{p.label}</text>
           </g>
         ))}
         {/* Position estimée + incertitude + cap */}
