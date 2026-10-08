@@ -76,26 +76,33 @@ for (const [id, saved] of Object.entries(race.players || {})) {
     states.get(id).t = gameMinutesNow();
   }
 }
-// Migration des sauvegardes anciennes : tout navire à moins de 300 m d'un
-// autre au chargement est re-logé sur son slot d'amarrage (espacement 300 m).
-{
+// Migration unique des sauvegardes anciennes : deux navires superposés
+// NE SONT RE-LOGÉS que s'ils sont tous deux DANS LA ZONE D'ACOSTAGE du port
+// (la seule situation « ancienne sauvegarde antérieure aux slots »). Deux
+// navires qui se croisent à < 300 m EN MER (régate, rendez-vous) ne sont
+// JAMAIS déplacés — ils se débrouillent, la collision est gérable en jeu.
+// Marqueur race.migrated : ne s'exécute qu'une fois par course.
+if (!race.migrated) {
+  race.migrated = true;
   const ids = [...states.keys()];
-  const M_PER_DEG = 111120;
   for (let i = 0; i < ids.length; i++) {
     for (let j = i + 1; j < ids.length; j++) {
       const a = states.get(ids[i]), b = states.get(ids[j]);
+      const bothAtPort =
+        distNm(a.x, a.y, world.PORT.x, world.PORT.y) * 1852 < 500 &&
+        distNm(b.x, b.y, world.PORT.x, world.PORT.y) * 1852 < 500;
       const dm = distNm(a.x, a.y, b.x, b.y) * 1852;
-      if (dm < 300) {
-        // re-loger les deux sur leurs slots
+      if (dm < 300 && bothAtPort) {
         const sa = spawnPosition(world, race.spawnOrder?.[ids[i]] ?? i);
         const sb = spawnPosition(world, race.spawnOrder?.[ids[j]] ?? j);
         a.x = sa.x; a.y = sa.y; a.estX = sa.x; a.estY = sa.y;
         b.x = sb.x; b.y = sb.y; b.estX = sb.x; b.estY = sb.y;
         a.collided = false; b.collided = false;
-        console.log(`[migration] Navires ${ids[i]} et ${ids[j]} re-logés à 300 m (sauvegarde antérieure)`);
+        console.log(`[migration] Navires ${ids[i]} et ${ids[j]} re-logés à 300 m (superposés à quai, sauvegarde antérieure)`);
       }
     }
   }
+  store.save();
 }
 function persistPlayer(id) {
   race.players[id] = states.get(id);
