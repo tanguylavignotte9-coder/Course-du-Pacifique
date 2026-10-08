@@ -375,8 +375,10 @@ export function shipsCollide(ax, ay, aHead, bx, by, bHead) {
   return true;
 }
 // Position de spawn d'un navire au port : quai décalé le long de la côte
-// pour que les navires ne se chevauchent pas (espacement 40 m, dans la
-// zone d'accostage de 500 m). idx = rangée d'amarrage du joueur.
+// pour que les navires ne se chevauchent pas (espacement 300 m). idx =
+// rangée d'amarrage du joueur. Les slots au-delà de la zone d'accostage
+// de 500 m (|slot| >= 2) démarrent au large du quai : ils navigueront
+// 100 m pour accoster.
 export function spawnPosition(world, idx) {
   const eastCoast = world.CONTINENT.x1 <= MAP / 2;
   const sx = eastCoast ? world.PORT.x + 0.0027 : world.PORT.x - 0.0027;
@@ -385,7 +387,7 @@ export function spawnPosition(world, idx) {
   // décalage perpendiculaire au cap de sortie (le long de la côte)
   const dir = eastCoast ? 1 : -1; // vers le large selon le coin
   const slot = Math.ceil(idx / 2) * (idx % 2 === 0 ? 1 : -1); // +1, -1, +2, -2...
-  const off = (slot * 40) / M_PER_DEG; // 40 m par slot d'amarrage
+  const off = (slot * 300) / M_PER_DEG; // 300 m par slot d'amarrage
   return { x: sx, y: sy + off * dir * (eastCoast ? 1 : 1) };
 }
 

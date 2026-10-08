@@ -666,7 +666,7 @@ export default function App() {
       <div className="grid gap-4 md:grid-cols-2">
         {/* Navire + vue de dessus */}
         <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
-          <h2 className="text-sm font-semibold text-sky-300">Navire — {session.account}</h2>
+          <h2 className="text-sm font-semibold text-sky-300">Navire <span className="font-mono text-sky-200">{player.code}</span></h2>
           {atDock && (
             <div className="grid grid-cols-2 gap-2">
               <Btn active onClick={() => setShopOpen(true)}>🛒 Avitaillement</Btn>

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distNm, DELIVERY_R_NM, shipVisibleKm, shipsCollide, KM_PER_NM, callPosition, callStrengthAtKm, scrambledIntercept, bearingTo, angDiff } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distNm, DELIVERY_R_NM, shipVisibleKm, shipsCollide, KM_PER_NM, callPosition, callStrengthAtKm, scrambledIntercept, bearingTo, angDiff, spawnPosition } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -74,6 +74,27 @@ for (const [id, saved] of Object.entries(race.players || {})) {
   if (saved) {
     states.set(id, saved);
     states.get(id).t = gameMinutesNow();
+  }
+}
+// Migration des sauvegardes anciennes : tout navire à moins de 300 m d'un
+// autre au chargement est re-logé sur son slot d'amarrage (espacement 300 m).
+{
+  const ids = [...states.keys()];
+  const M_PER_DEG = 111120;
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      const a = states.get(ids[i]), b = states.get(ids[j]);
+      const dm = distNm(a.x, a.y, b.x, b.y) * 1852;
+      if (dm < 300) {
+        // re-loger les deux sur leurs slots
+        const sa = spawnPosition(world, race.spawnOrder?.[ids[i]] ?? i);
+        const sb = spawnPosition(world, race.spawnOrder?.[ids[j]] ?? j);
+        a.x = sa.x; a.y = sa.y; a.estX = sa.x; a.estY = sa.y;
+        b.x = sb.x; b.y = sb.y; b.estX = sb.x; b.estY = sb.y;
+        a.collided = false; b.collided = false;
+        console.log(`[migration] Navires ${ids[i]} et ${ids[j]} re-logés à 300 m (sauvegarde antérieure)`);
+      }
+    }
   }
 }
 function persistPlayer(id) {
@@ -174,13 +195,13 @@ function multiplayerPass(now) {
         const km = distNm(st.x, st.y, ti.x, ti.y) * KM_PER_NM;
         st.notifSeq = (st.notifSeq || 0) + 1;
         const az = Math.round((Math.atan2(ti.x - st.x, ti.y - st.y) * 180) / Math.PI + 360) % 360;
-        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⛵ Navire repéré (${tid}) : ~${Math.round(km)} km, azimut ${az}°.`, kind: "info", cat: "vision" });
+        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⛵ Navire repéré (${infos.get(tid).st.code}) : ~${Math.round(km)} km, azimut ${az}°.`, kind: "info", cat: "vision" });
       }
     }
     for (const tid of before) {
       if (!seen.includes(tid)) {
         st.notifSeq = (st.notifSeq || 0) + 1;
-        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `👁️ Navire ${tid} perdu de vue.`, kind: "info", cat: "vision" });
+        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `👁️ Navire ${infos.get(tid).st.code} perdu de vue.`, kind: "info", cat: "vision" });
       }
     }
     st.sawShips = seen;
@@ -266,7 +287,7 @@ function publicSnapshot(id) {
       const ts = states.get(tid);
       const km = distNm(st.x, st.y, ts.x, ts.y) * KM_PER_NM;
       const az = Math.round((Math.atan2(ts.x - st.x, ts.y - st.y) * 180) / Math.PI + 360) % 360;
-      return { id: tid, km: Math.round(km * 10) / 10, az, light: !!ts.light };
+      return { id: ts.code, km: Math.round(km * 10) / 10, az, light: !!ts.light };
     }),
   };
 }
