@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, shipVisibleKm, shipsCollide, callPosition, callStrengthAtKm, scrambledIntercept, signalStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, OMNI_DETECT_PCT, randomCode, MS_PER_MIN } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -72,6 +72,7 @@ function gameMinutesNow() {
 }
 
 const states = new Map(); // accountId -> player state (engine)
+const proxLast = new Map(); // code balise → dernier ping court (ms)
 // Positions de spawn déjà posées au port (anti-chevauchement, ordre d'arrivée)
 let takenSpawns = [];
 for (const [id, saved] of Object.entries(race.players || {})) {
@@ -160,6 +161,30 @@ setInterval(() => {
     }
   }
   multiplayerPass(now);
+    // — Balise-vigie : signal de proximité (famille courte), accéléré —
+    // l'intervalle se règle sur le navire le plus proche de la balise.
+    const nowMs = Date.now();
+    for (const b of world.BEACONS) {
+      if (!b.active) continue;
+      let dMin = Infinity;
+      for (const st of states.values()) dMin = Math.min(dMin, distKm(st.x, st.y, b.x, b.y));
+      if (!isFinite(dMin)) continue; // personne sur l'eau
+      // VIGIE ARMÉE : la balise n'émet son signal de proximité que si un
+      // navire est dans son rayon de veille (PROX_ARM_KM — tout navire,
+      // même plongé : la vigie détecte la coque, pas la radio). Silencieuse
+      // sinon, et c'est l'information : une balise qui s'affole au loin
+      // dans un faisceau, c'est un concurrent qui approche.
+      if (dMin > PROX_ARM_KM) continue;
+      const intervalMs = proxPingIntervalS(dMin) * 1000;
+      if (nowMs - (proxLast.get(b.code) || 0) < intervalMs) continue;
+      proxLast.set(b.code, nowMs);
+      for (const st of states.values()) {
+        const radioOk = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
+        if (!radioOk) continue;
+        const cap = detectBeacon(st, b, world, SHORT_DECAY_KM);
+        if (cap) onProximityPing(st, b, cap);
+      }
+    }
   if (Date.now() - lastPersist > PERSIST_MS) {
     lastPersist = Date.now();
     for (const [id] of states) race.players[id] = states.get(id);
@@ -262,22 +287,22 @@ function multiplayerPass(now) {
 }
 
 // Émission OMNIDIRECTIONNELLE depuis un point (balise répondante) vers tous
-// les navires tiers à portée (décroissance RADIO_DECAY_KM, 1000 km) : chacun capte une
-// TRANSMISSION BROUILLÉE — signal, azimut, distance estimée — sans jamais
-// le contenu. « Émettre, c'exister » : la balise n'échappe pas à la règle.
+// les navires tiers : chacun capte selon la LOI UNIQUE (omni ≥ 75 % / directionnel
+// ≥ sens) une TRANSMISSION BROUILLÉE — signal, zone du faisceau si directionnel —
+// jamais le contenu, jamais d'azimut. « Émettre, c'exister ».
 function broadcastScrambledFrom(fromX, fromY, exceptId) {
   for (const [oid, ost] of states) {
     if (oid === exceptId) continue;
     const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
     if (!otherRadioOk) continue;
     const dKm = distKm(fromX, fromY, ost.x, ost.y);
-    const strength = signalStrengthKm(dKm);
+    const strength = longStrengthKm(dKm);
     if (strength < RADIO_MIN_STRENGTH) continue;
     const brg = bearingTo(ost.x, ost.y, fromX, fromY);
-    const antHeading = (ost.heading + ost.antOrient + 720) % 360;
-    const caughtDir = Math.abs(angDiff(brg, antHeading)) <= ost.antBeam / 2;
+    const cap = recvCapture(ost, brg, strength);
+    if (!cap) continue; // ne capte pas : silence
     ost.notifSeq = (ost.notifSeq || 0) + 1;
-    const info = scrambledIntercept(Math.round(strength), caughtDir ? "dir" : "omni", ost.antBeam, ost.antOrient, ost.heading, brg);
+    const info = scrambledIntercept(Math.round(strength), cap.source, cap.side);
     ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: info.text, kind: "info", cat: info.cat });
   }
 }
@@ -309,6 +334,8 @@ function publicSnapshot(id) {
       collided: !!st.collided,
       light: !!st.light,
       boom: st.boom ?? 0, awSpd: st.awSpd ?? 0, awRel: st.awRel ?? 0,
+      beaconLock: st.beaconLock ?? null, anchored: !!st.anchored,
+      signals: (st.signals || []).slice(-10),
       antBeam: st.antBeam, antOrient: st.antOrient,
       code: st.code,
       notifications: st.notifications.slice(0, 60),
@@ -500,8 +527,11 @@ wss.on("connection", (ws, req) => {
       // Pilotage par CONSIGNE : le curseur fixe headingOrder, le moteur
       // fait converger le cap réel (giration bornée). L'ancien champ
       // « heading » reste accepté pendant la transition.
-      if (typeof c.headingOrder === "number") st.headingOrder = ((Math.round(c.headingOrder) % 360) + 360) % 360;
-      if (typeof c.heading === "number") st.headingOrder = ((Math.round(c.heading) % 360) + 360) % 360;
+      // Reprise en main : toute consigne de cap COUPE le verrou balise-vigie.
+      if (typeof c.headingOrder === "number" || typeof c.heading === "number") {
+        st.headingOrder = ((Math.round(typeof c.headingOrder === "number" ? c.headingOrder : c.heading) % 360) + 360) % 360;
+        if (st.beaconLock) { st.beaconLock = null; st.lockBrg = null; }
+      }
       if (typeof c.sail === "number") st.sail = clamp01(c.sail);
       if (typeof c.engine === "number") st.engine = clamp01(c.engine);
       if (typeof c.antBeam === "number") st.antBeam = Math.round(clamp(c.antBeam, 1, 180));
@@ -511,6 +541,16 @@ wss.on("connection", (ws, req) => {
       if (typeof c.electricOn === "boolean") st.electricOn = c.electricOn;
       if (typeof c.periscope === "boolean") st.periscope = c.periscope;
       if (typeof c.light === "boolean") st.light = c.light;
+      // Ancre : mécanique générale, activable / désactivable à la main.
+      if (typeof c.anchor === "boolean") st.anchored = c.anchor;
+      // Capture de balise : action MANUELLE du joueur.
+      if (c.capture === true) {
+        const r = captureBeacon(st, world);
+        if (!r.ok) {
+          st.notifSeq = (st.notifSeq || 0) + 1;
+          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⚠️ ${r.error}`, kind: "warn", cat: "radio" });
+        }
+      }
       if (c.dive === true) { st.location = "underwater"; st.mast = false; st.engineOn = false; }
       if (c.surface === true) st.location = "surface";
       // Appel « Position ? » : coût batteries, réponse privée de la balise,
@@ -532,8 +572,10 @@ wss.on("connection", (ws, req) => {
             if (!otherRadioOk) continue;
             const dKm = distKm(ost.x, ost.y, st.x, st.y);
             const brg = bearingTo(ost.x, ost.y, st.x, st.y);
-            const { strength } = callStrengthAtKm(st, dKm, brg);
+            const strength = longStrengthKm(dKm); // émission navire : omni, longue
             if (strength < RADIO_MIN_STRENGTH) continue;
+            const cap = recvCapture(ost, brg, strength); // lire exige capter
+            if (!cap) continue;
             ost.notifSeq = (ost.notifSeq || 0) + 1;
             ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: sosText, kind: "bad", cat: "radio" });
           }
@@ -572,8 +614,10 @@ wss.on("connection", (ws, req) => {
             if (!otherRadioOk) continue;
             const dKm = distKm(ost.x, ost.y, st.x, st.y);
             const brg = bearingTo(ost.x, ost.y, st.x, st.y);
-            const { strength } = callStrengthAtKm(st, dKm, brg);
+            const strength = longStrengthKm(dKm); // émission navire : omni, longue
             if (strength < RADIO_MIN_STRENGTH) continue;
+            const cap = recvCapture(ost, brg, strength); // lire exige capter
+            if (!cap) continue;
             ost.notifSeq = (ost.notifSeq || 0) + 1;
             if (isBroadcast) {
               // diffusion : contenu lisible par tous
@@ -583,9 +627,7 @@ wss.on("connection", (ws, req) => {
               ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text, kind: "good", cat: "radio" });
             } else {
               // tiers : transmission brouillée, aucun contenu
-              const antHeading = (ost.heading + ost.antOrient + 720) % 360;
-              const caughtDir = Math.abs(angDiff(brg, antHeading)) <= ost.antBeam / 2;
-              const info = scrambledIntercept(Math.round(strength), caughtDir ? "dir" : "omni", ost.antBeam, ost.antOrient, ost.heading, brg);
+              const info = scrambledIntercept(Math.round(strength), cap.source, cap.side);
               ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: info.text, kind: "info", cat: info.cat });
             }
           }
@@ -602,7 +644,13 @@ wss.on("connection", (ws, req) => {
         st.waypoints = c.waypoints.slice(0, 30).map((p) => ({ x: clamp(+p.x || 0, 0, MAP), y: clamp(+p.y || 0, 0, MAP) }));
         st.wpIdx = 0;
       }
-      if (typeof c.autopilot === "boolean") st.autopilot = c.autopilot;
+      // Un seul pilote à la fois : reprendre le pilote de route coupe le
+      // verrou balise-vigie (l'inverse est déjà vrai : le verrou coupe le
+      // pilote de route à l'engagement).
+      if (typeof c.autopilot === "boolean") {
+        st.autopilot = c.autopilot;
+        if (c.autopilot && st.beaconLock) { st.beaconLock = null; st.lockBrg = null; }
+      }
       if (Array.isArray(c.pins)) st.pins = c.pins.slice(0, 26);
       if (Array.isArray(c.measures)) st.measures = c.measures.slice(0, 40);
       // Saut de temps : super utilisateur uniquement. L'horloge de course est

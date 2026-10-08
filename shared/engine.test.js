@@ -2,8 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildWorld, newPlayerState, tick, weatherAt,
-  distKm, CAPTURE_R_KM, DELIVERY_R_KM, WP_R_KM, DEG_KM, RADIO_DECAY_KM, VMAX_KMH, DIESEL_SPD_KMH,
+  distKm, CAPTURE_R_KM, DELIVERY_R_KM, WP_R_KM, DEG_KM, LONG_DECAY_KM, VMAX_KMH, DIESEL_SPD_KMH,
   sailAutoDrive, apparentWind, SAIL_SPD_KMH, clamp, callPosition, RARITY_MIN, bearingTo, segDistKm,
+  longStrengthKm, strengthKm, SHORT_DECAY_KM, recvCapture, detectBeacon, onProximityPing,
+  proxPingIntervalS, captureBeacon, beaconLockTick, beaconLockSteer, pushBeaconSignal, SIGNAL_LOG_MAX, PROX_ARM_KM, ANCHOR_DROP_KM,
+  scrambledIntercept,
 } from "./engine.js";
 
 // Navire de test en pleine eau (loin du port et des terres), pleine vitesse.
@@ -93,18 +96,24 @@ test("tick : estime diverge de la position vraie (dérive du courant)", () => {
   assert.ok(st.unc > 0, "l'incertitude doit croître");
 });
 
-test("capture de balise : usage unique, partagée entre navires", () => {
+test("capture de balise : MANUELLE, usage unique, partagée entre navires", () => {
   const w = buildWorld(4242);
   const alice = newPlayerState(w, { weatherSeed: 1 });
   const bob = newPlayerState(w, { weatherSeed: 1 });
   const b = w.BEACONS.find((x) => x.active);
   alice.x = b.x + 0.001; alice.y = b.y;
   tick(alice, 1, w);
+  assert.equal(b.active, true, "plus de capture automatique au tick");
+  assert.equal(alice.codes.length, 0, "rien sans action du joueur");
+  const r = captureBeacon(alice, w);
+  assert.ok(r.ok, "capture manuelle à portée");
   assert.equal(b.active, false);
   assert.equal(alice.codes.length, 1);
   bob.x = b.x; bob.y = b.y;
-  tick(bob, 1, w);
-  assert.equal(bob.codes.length, 0, "balise déjà éteinte : usage unique");
+  assert.equal(captureBeacon(bob, w).ok, false, "balise déjà éteinte : usage unique");
+  assert.equal(bob.codes.length, 0);
+  alice.x = 30; alice.y = 30; // loin de toute balise active
+  assert.equal(captureBeacon(alice, w).ok, false, "aucune balise à portée : refus");
 });
 
 test("livraison au port marque les points", () => {
@@ -360,32 +369,232 @@ test("déterminisme : même état + mêmes ticks = même trajectoire", () => {
 });
 
 // ---------- Radio ----------
-test("callPosition : retourne la balise répondue — même si l'appelant n'entend pas", () => {
+test("familles de décroissance : LONGUE 1000 km, COURTE 500 km", () => {
+  assert.equal(longStrengthKm(0), 100);
+  assert.equal(longStrengthKm(LONG_DECAY_KM), 0);
+  assert.equal(longStrengthKm(500), 50, "50 % à mi-portée longue");
+  assert.equal(strengthKm(400, SHORT_DECAY_KM), 20, "famille courte : 20 % à 400 km");
+  assert.equal(strengthKm(SHORT_DECAY_KM, SHORT_DECAY_KM), 0, "famille courte : 0 % à 500 km");
+});
+
+test("intervalle du ping de proximité : géométrique par décade", () => {
+  assert.equal(proxPingIntervalS(100), 30);
+  assert.ok(Math.abs(proxPingIntervalS(10) - 20.8) < 0.1, `10 km : ~20,8 s (obtenu ${proxPingIntervalS(10).toFixed(1)})`);
+  assert.ok(Math.abs(proxPingIntervalS(1) - 14.4) < 0.1, `1 km : ~14,4 s (obtenu ${proxPingIntervalS(1).toFixed(1)})`);
+  assert.equal(proxPingIntervalS(0.1), 10);
+  assert.equal(proxPingIntervalS(0.05), 10, "sous 100 m : plancher 10 s");
+});
+
+test("réception : omni à 100 km (80 %), refus omni à 130 km, directionnel si pointé", () => {
+  const mk = (beam, orient) => ({ heading: 0, antBeam: beam, antOrient: orient });
+  const cap100 = recvCapture(mk(5, 90), 0, strengthKm(100, SHORT_DECAY_KM)); // faisceau étroit ailleurs
+  assert.ok(cap100 && cap100.source === "omni", "100 km : capture omni (80 %)");
+  const cap130 = recvCapture(mk(5, 90), 0, strengthKm(130, SHORT_DECAY_KM)); // faisceau étroit ailleurs
+  assert.equal(cap130, null, "130 km (74 %), faisceau ailleurs : silence");
+  const cap130dir = recvCapture(mk(5, 0), 0, strengthKm(130, SHORT_DECAY_KM));
+  assert.ok(cap130dir && cap130dir.source === "dir", "130 km : capture directionnelle faisceau pointé");
+});
+
+test("callPosition : station entend à 995 km, silence total à 1000 km", () => {
   const w = buildWorld(77);
   const b = w.BEACONS.find((x) => x.active);
   const st = newPlayerState(w, { weatherSeed: 1 });
-  st.x = b.x; st.y = b.y - 1500 / DEG_KM; // 1500 km, faisceau 1° (portée 2500 km)
-  st.antBeam = 1; st.heading = 0; st.antOrient = 0; st.headingOrder = 0;
-  const nAvant = st.notifications.length;
+  st.x = b.x; st.y = b.y - 995 / DEG_KM; // 995 km : force 1 %
+  st.antBeam = 180; st.heading = 0; st.antOrient = 0; st.headingOrder = 0;
   const answered = callPosition(st, b.code, w);
-  assert.ok(answered, "la balise répond sur les ondes");
-  assert.equal(answered.x, b.x);
-  assert.equal(st.notifications.length, nAvant, "réponse inaudible (> 1000 km) : silence pour l'appelant");
-  const st2 = newPlayerState(w, { weatherSeed: 1 });
-  st2.x = b.x; st2.y = b.y - 300 / DEG_KM;
-  st2.antBeam = 180; st2.heading = 0; st2.antOrient = 0; st2.headingOrder = 0;
-  const answered2 = callPosition(st2, b.code, w);
-  assert.ok(answered2);
-  const resp = st2.notifications.find((n) => n.text.includes("Position de " + b.code));
-  assert.ok(resp, "réponse privée complète à 300 km");
-  assert.equal(callPosition(st2, "9999", w), null, "mauvais numéro : null");
+  assert.ok(answered, "la station entend (force >= 1 %) et répond sur les ondes");
+  const stFar = newPlayerState(w, { weatherSeed: 1 });
+  stFar.x = b.x; stFar.y = b.y - 1000 / DEG_KM; // 1000 km : force 0 %
+  stFar.antBeam = 1; stFar.heading = 0; stFar.antOrient = 0; stFar.headingOrder = 0;
+  assert.equal(callPosition(stFar, b.code, w), null, "silence total à 1000 km");
+  assert.equal(callPosition(st, "9999", w), null, "mauvais numéro : null");
 });
 
-test("radio : décroissance centralisée à 1000 km", async () => {
-  const { signalStrengthKm } = await import("./engine.js");
-  assert.equal(signalStrengthKm(0), 100);
-  assert.equal(signalStrengthKm(RADIO_DECAY_KM), 0);
-  assert.ok(signalStrengthKm(500) === 50, "50 % à mi-portée");
+test("réponse de balise : lue à 600 km faisceau pointé, silence faisceau opposé, broadcast dans les deux cas", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const mk = (orient) => {
+    const st = newPlayerState(w, { weatherSeed: 1 });
+    st.x = b.x; st.y = b.y - 600 / DEG_KM; // 600 km : force 40 %
+    st.antBeam = 5; st.heading = 0; st.antOrient = orient; st.headingOrder = 0;
+    return st;
+  };
+  const pointed = mk(0);
+  const answered = callPosition(pointed, b.code, w);
+  assert.ok(answered, "broadcast tiers émis (la balise répond sur les ondes)");
+  const resp = pointed.notifications.find((n) => n.text.includes("Position de " + b.code));
+  assert.ok(resp, "réponse lue à 600 km, faisceau pointé (dir >= sens)");
+  const opposite = mk(180);
+  const answered2 = callPosition(opposite, b.code, w);
+  assert.ok(answered2, "broadcast tiers émis aussi (la station a entendu)");
+  assert.ok(!opposite.notifications.some((n) => n.text.includes("Position de " + b.code)),
+    "faisceau opposé : réponse non captée, silence pour l'appelant");
+});
+
+test("textes radio : la réponse « Position ? » n'affiche pas d'azimut", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 300 / DEG_KM;
+  st.antBeam = 5; st.heading = 0; st.antOrient = 0; st.headingOrder = 0;
+  callPosition(st, b.code, w);
+  const resp = st.notifications.find((n) => n.text.includes("Position de " + b.code));
+  assert.ok(resp, "réponse lue à 300 km faisceau pointé");
+  assert.ok(!resp.text.includes("azimut"), `sans azimut dans le texte (obtenu : ${resp.text})`);
+  assert.ok(resp.text.includes("signal"), "la force du signal reste affichée");
+});
+
+test("scrambledIntercept : zone sans azimut (nouvelle signature)", () => {
+  const dir = scrambledIntercept(50, "dir", "D1");
+  assert.ok(!dir.text.includes("azimut"), `sans azimut (obtenu : ${dir.text})`);
+  assert.ok(dir.text.includes("zone D1"), "zone du faisceau affichée");
+  const omni = scrambledIntercept(50, "omni");
+  assert.ok(!omni.text.includes("azimut"), "sans azimut en omni");
+  assert.ok(omni.text.includes("signal 50%"), "force affichée");
+});
+
+test("journal des signaux : borné à 10 après 15 pings", () => {
+  const st = { signals: [] };
+  for (let i = 0; i < 15; i++) pushBeaconSignal(st, { t: i, beaconId: "x" + i });
+  assert.equal(st.signals.length, SIGNAL_LOG_MAX, `borné à ${SIGNAL_LOG_MAX}`);
+  assert.equal(st.signals[0].beaconId, "x5", "les plus anciens sont éjectés");
+  assert.equal(st.signals[9].beaconId, "x14", "le plus récent en dernier");
+});
+
+test("ancre : position figée malgré courant et voile", () => {
+  const w = buildWorld(42);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = 30; st.y = 30; st.estX = 30; st.estY = 30;
+  st.mast = true; st.sail = 1; st.engineOn = true; st.engine = 1;
+  st.heading = 90; st.headingOrder = 90;
+  st.anchored = true;
+  const x0 = st.x, y0 = st.y;
+  for (let i = 0; i < 30; i++) tick(st, 1, w);
+  assert.equal(st.x, x0); assert.equal(st.y, y0, "ancre : position exactement figée");
+  assert.equal(st.vkmh, 0, "vitesse nulle");
+  assert.equal(st.travelledKm, 0, "aucune distance parcourue");
+});
+
+test("beaconLockTick : à < 50 m -> ancre auto, verrou vidé, barre arrêtée", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y + 0.0005; // 25 m au sud de la balise
+  st.heading = 45; st.headingOrder = 45;
+  st.beaconLock = b.code; st.lockBrg = 0;
+  beaconLockTick(st, w);
+  assert.equal(st.anchored, true, "ancre automatique");
+  assert.equal(st.beaconLock, null, "verrou vidé");
+  assert.equal(st.lockBrg, null);
+  assert.equal(st.headingOrder, st.heading, "barre arrêtée");
+  assert.ok(st.notifications.some((n) => n.text.includes("Ancre jetée")));
+});
+
+test("verrou balise-vigie : engagement, poursuite d'azimut, antenne sur la source", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 40 / DEG_KM; // 40 km au sud, balise au nord
+  st.heading = 90;
+  onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
+  assert.equal(st.beaconLock, b.code, "verrou engagé");
+  const brg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
+  assert.equal(st.headingOrder, brg, "poursuite : consigne = azimut de la source");
+  assert.ok(st.notifications.some((n) => n.text.includes("verrouillé")), "notification d'engagement");
+  assert.equal(st.signals[st.signals.length - 1].kind, "prox", "ping de proximité journalisé");
+  const n = st.notifications.length;
+  onProximityPing(st, b, { strength: 95, source: "dir", bearing: 0, side: "centre" });
+  assert.equal(st.notifications.length, n, "déjà verrouillé : pas de re-notification");
+});
+
+test("verrou : signal faible (balise lointaine) = journal seul, pilote intact", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 400 / DEG_KM; // 400 km : 20 %, directionnel pointé
+  st.heading = 0; st.headingOrder = 90;
+  onProximityPing(st, b, { strength: 20, source: "dir", bearing: 0, side: "centre" });
+  assert.equal(st.beaconLock, null, "signal < 75 % : pas de verrou");
+  assert.equal(st.headingOrder, 90, "consigne de cap intacte");
+  assert.equal(st.signals[st.signals.length - 1].kind, "prox", "le ping reste journalisé");
+});
+
+test("verrou : l'engagement coupe le pilote de route (un seul pilote à la fois)", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 40 / DEG_KM;
+  st.waypoints = [{ x: 30.5, y: 30.5 }]; st.wpIdx = 0;
+  st.autopilot = true;
+  onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
+  assert.equal(st.beaconLock, b.code, "verrou engagé");
+  assert.equal(st.autopilot, false, "le verrou coupe le pilote de route");
+  assert.equal(st.waypoints.length, 1, "waypoints conservés (inactifs)");
+});
+
+test("verrou : anti-bascule — le premier verrou tient, l'autre balise est journalisée", () => {
+  const w = buildWorld(77);
+  const b1 = w.BEACONS.find((x) => x.active);
+  const b2 = w.BEACONS.find((x) => x.active && x.code !== b1.code);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b1.x; st.y = b1.y - 40 / DEG_KM;
+  onProximityPing(st, b1, { strength: 92, source: "omni", bearing: null });
+  const order = st.headingOrder;
+  onProximityPing(st, b2, { strength: 95, source: "omni", bearing: null });
+  assert.equal(st.beaconLock, b1.code, "le premier verrou tient");
+  assert.equal(st.headingOrder, order, "la consigne n'est pas détournée");
+  assert.equal(st.signals[st.signals.length - 1].beaconId, b2.code, "le ping de l'autre balise est journalisé");
+});
+
+test("pilote de route vs verrou : le recalcul de consigne respecte le verrou", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 40 / DEG_KM; st.estX = st.x; st.estY = st.y;
+  st.waypoints = [{ x: 35, y: 30 }]; st.wpIdx = 0;
+  st.autopilot = true; // état incohérent (migration à chaud) : verrou SANS coupure
+  st.beaconLock = b.code;
+  const wpBrg = bearingTo(st.estX, st.estY, 35, 30);
+  st.heading = 0; st.headingOrder = (wpBrg + 90) % 360; // consigne de départ ≠ visée du point
+  tick(st, 1 / 60, w);
+  const lockBrg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
+  assert.equal(Math.round(st.headingOrder), lockBrg,
+    "le pilote de route n'écrase pas le verrou : la consigne suit la balise (poursuite continue)");
+  assert.notEqual(Math.round(st.headingOrder), Math.round(wpBrg),
+    "et non le waypoint du pilote de route");
+});
+
+test("rayon de veille : PROX_ARM_KM émergent = force 75 % en famille courte", () => {
+  assert.ok(Math.abs(PROX_ARM_KM - 125) < 1e-9, `125 km attendus (obtenu ${PROX_ARM_KM})`);
+  assert.equal(strengthKm(PROX_ARM_KM, SHORT_DECAY_KM), 75, "à PROX_ARM_KM, l'omni capte exactement");
+});
+
+test("verrou : poursuite continue — cap et antenne recalculés à chaque tick", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 40 / DEG_KM;
+  st.heading = 137; st.antOrient = 0; st.headingOrder = 137;
+  st.beaconLock = b.code;
+  beaconLockSteer(st, w);
+  const brg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
+  assert.equal(st.headingOrder, brg, "cap remis sur la balise");
+  assert.equal(st.lockBrg, brg, "azimut du verrou à jour");
+  assert.equal(st.antOrient, Math.round(((brg - st.heading + 540) % 360) - 180), "antenne sur la source");
+});
+
+test("verrou : arrivée par segment (saut de temps) — ancre au point de franchissement", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  const prevX = b.x, prevY = b.y - 5 / DEG_KM;  // départ du pas : 5 km au sud
+  st.x = b.x; st.y = b.y + 1 / DEG_KM;          // fin du pas : 1 km au nord — la balise est franchie
+  st.beaconLock = b.code;
+  beaconLockTick(st, w, prevX, prevY);
+  assert.equal(st.anchored, true, "ancre automatique au franchissement");
+  assert.ok(distKm(st.x, st.y, b.x, b.y) <= ANCHOR_DROP_KM,
+    `arrêt ≤ 50 m de la balise (obtenu ${Math.round(distKm(st.x, st.y, b.x, b.y) * 1000)} m)`);
+  assert.equal(st.beaconLock, null, "verrou libéré");
 });
 
 test("segDistKm : distance point-segment", () => {

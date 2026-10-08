@@ -8,7 +8,6 @@
 export const MAP = 60; // degres
 export const DEG_KM = 50; // 1° = 50 km -> carte 3000x3000 km (échelle fictive)
 export const PULSE_MIN = 60; // pulsation radio horaire
-export const RADIO_DECAY_KM = 1000; // décroissance du signal : 0 % à 1000 km
 export const CAPTURE_R_KM = 0.5;  // capture à 500 m
 export const DELIVERY_R_KM = 0.5; // livraison à 500 m
 export const WP_R_KM = 0.1;       // validation des points de passage : 100 m
@@ -25,11 +24,21 @@ export const ACCEL_SUB = 4;           // idem en plongée
 export const DECEL_SURF = 5.556;      // inertie : km/h perdus par minute (surface)
 export const DECEL_SUB = 2.9632;      // idem en plongée
 
-// Radio
-export const RADIO_EDGE_MALUS = 0.2;    // malus de bord faisceau (émission = réception)
-export const RADIO_MIN_STRENGTH = 1;    // sous 1 % : silence radio total
-export const OMNI_CALL_RANGE_KM = 250;  // portée appel omnidirectionnel
-export const OMNI_DETECT_PCT = 75;      // seuil détection omni d'un ping
+// Radio — taxonomie : deux familles de propagation (critère = cadence)
+export const LONG_DECAY_KM = 1000;  // famille LONGUE : 0 % à 1000 km (pulsations, réponses, émissions de navire)
+export const SHORT_DECAY_KM = 500; // famille COURTE : 0 % à 500 km (pulsations rapides : proximité)
+export const RADIO_EDGE_MALUS = 0.2;    // malus de bord faisceau (réception)
+export const RADIO_MIN_STRENGTH = 1;    // sous 1 % : silence radio total (écoute des stations)
+export const OMNI_DETECT_PCT = 75;      // canal omni de réception : capte à ≥ 75 % (sans azimut)
+
+// Balise-vigie — signal de proximité (famille courte)
+export const PROX_PING_MAX_KM = 100;   // ancrage haut de la courbe d'accélération
+export const PROX_PING_MAX_S = 30;     // intervalle à ≥ 100 km
+export const PROX_PING_MIN_KM = 0.1;   // 100 m : ancrage bas
+export const PROX_PING_MIN_S = 10;     // intervalle à ≤ 100 m
+export const ANCHOR_DROP_KM = 0.05;    // 50 m : coupure du verrou + ancre automatique
+export const SIGNAL_LOG_MAX = 10;       // journal : les 10 derniers pings de balise (longs et courts)
+export const PROX_ARM_KM = SHORT_DECAY_KM * (1 - OMNI_DETECT_PCT / 100); // rayon de VEILLE émergent : armée ⇔ un navire à ≤ ~125 km (force omni 75 %)
 
 // Monde et gameplay
 export const ISLAND_SEP_KM = 200;         // séparation minimale entre îles
@@ -523,21 +532,30 @@ export function spawnPosition(world, taken = []) {
 }
 
 // ---------- Radio ----------
-export const signalStrengthKm = (dKm) => Math.max(0, Math.round(100 * (1 - dKm / RADIO_DECAY_KM)));
+// PRINCIPE D'AFFICHAGE : une position se révèle en clair (coordonnées que
+// l'émetteur met lui-même dans son message) ou en gisement (le faisceau du
+// récepteur, zone D1/D2/G1/G2/centre) — jamais en azimut imprimé. Exception
+// interne assumée : le scan du verrou balise-vigie (onProximityPing) utilise
+// l'azimut vrai en interne, sans jamais l'afficher.
+// Force d'un signal à la distance dKm pour une famille de décroissance donnée.
+export const strengthKm = (dKm, decayKm) => Math.max(0, Math.round(100 * (1 - dKm / decayKm)));
+export const longStrengthKm = (dKm) => strengthKm(dKm, LONG_DECAY_KM);
+export const shortStrengthKm = (dKm) => strengthKm(dKm, SHORT_DECAY_KM);
 export const dirSensitivity = (antBeam) => 1 + ((antBeam - 1) / 179) * 49;
 export function dirEffSensitivity(antBeam, diff, sens) {
   const ratio = clamp(diff / (antBeam / 2), 0, 1);
   return 100 - (100 - sens) * (1 - RADIO_EDGE_MALUS * ratio);
 }
 
-// Détection d'une émission par les capteurs radio du navire.
-export function detectBeacon(st, b, world) {
-  const d = distKm(st.x, st.y, b.x, b.y);
-  const dKm = d;
-  const strength = signalStrengthKm(dKm);
-  const brg = bearingTo(st.x, st.y, b.x, b.y);
+// Réception — LOI UNIQUE (« lire exige capter ») :
+// - canal omni : force ≥ OMNI_DETECT_PCT → existence + force, sans gisement ;
+// - canal directionnel : force ≥ sens(faisceau), dans le faisceau, malus de
+//   bord → gisement (zone du faisceau du récepteur). Le directionnel l'emporte.
+// Les champs bearing/beam restent dans les objets de capture (usage interne,
+// ex. verrou) — ils ne sont jamais imprimés dans les textes.
+export function recvCapture(st, brg, strength) {
   let got = null;
-  if (strength >= OMNI_DETECT_PCT) got = { t: st.t, beaconId: b.code, bearing: null, strength, source: "omni" };
+  if (strength >= OMNI_DETECT_PCT) got = { bearing: null, strength, source: "omni" };
   const sens = dirSensitivity(st.antBeam);
   const antHeading = (st.heading + st.antOrient + 720) % 360;
   const signedDiff = angDiff(brg, antHeading);
@@ -549,39 +567,28 @@ export function detectBeacon(st, b, world) {
       : signedDiff > 0
         ? (diff < st.antBeam / 4 ? "D1" : "D2")
         : (diff < st.antBeam / 4 ? "G1" : "G2");
-    got = { t: st.t, beaconId: b.code, bearing: Math.round(antHeading), beam: st.antBeam, side, strength, source: "dir" };
+    got = { bearing: Math.round(antHeading), beam: st.antBeam, side, strength, source: "dir" };
   }
   return got;
 }
 
-// ---------- Émission « Position ? » ----------
-// L'appel part SIMULTANÉMENT sur deux chemins :
-// - Omnidirectionnel : 100 % à la source, 0 % à 250 km.
-// - Directionnel : portée = 500 + 2000 × (180 − ouverture)/179 km
-//   (500 km à 180°, 2500 km à 1°), force 100 % à la source, 0 % à la
-//   portée du faisceau. Malus de bord symétrique de la réception.
-// Les balises écoutent tout message de force reçue >= 1 % : la balise
-// composée — et elle seule — répond immédiatement en PRIVÉ avec ses
-// coordonnées exactes. La réponse suit les règles de réception
-// habituelles (décroissance 1000 km) : on peut joindre une balise à
-// ~2475 km au faisceau 1° et ne pas entendre sa réponse au-delà de ~980 km.
+// Détection d'une émission de balise (family = décroissance : LONG_DECAY_KM
+// pour la pulsation horaire, SHORT_DECAY_KM pour le signal de proximité).
+export function detectBeacon(st, b, world, family = LONG_DECAY_KM) {
+  const dKm = distKm(st.x, st.y, b.x, b.y);
+  const strength = strengthKm(dKm, family);
+  const brg = bearingTo(st.x, st.y, b.x, b.y);
+  const cap = recvCapture(st, brg, strength);
+  return cap ? { t: st.t, beaconId: b.code, ...cap } : null;
+}
+
+// Émission — LOI UNIVERSELLE : toute émission de navire (appels, messages,
+// SOS) est OMNIDIRECTIONNELLE, famille longue (1000 km). L'antenne
+// directionnelle ne sert qu'à l'écoute. Les balises-stations écoutent tout
+// message de force ≥ 1 % (≤ ~995 km) ; la balise composée répond en privé,
+// famille longue — réponse soumise à la loi de réception de l'appelant :
+// au-delà de ~250 km sans faisceau pointé, l'appelant ne capte pas la réponse.
 export const CALL_BATTERY_COST = 0.5;
-export function dirRangeKm(antBeam) {
-  return 500 + 2000 * (180 - antBeam) / 179; // 500 km à 180°, 2500 km à 1°
-}
-// Force reçue par une cible à dKm de la source (émission double chemin).
-export function callStrengthAtKm(st, dKm, targetBrg) {
-  const omni = Math.max(0, 100 * (1 - dKm / OMNI_CALL_RANGE_KM));
-  const range = dirRangeKm(st.antBeam);
-  const antHeading = (st.heading + st.antOrient + 720) % 360;
-  const diff = Math.abs(angDiff(targetBrg, antHeading));
-  if (diff > st.antBeam / 2) return { strength: omni, path: "omni" };
-  const ratio = clamp(diff / (st.antBeam / 2), 0, 1);
-  const edgeMalus = 1 - RADIO_EDGE_MALUS * ratio;
-  const effRange = range * edgeMalus;
-  const dir = Math.max(0, 100 * (1 - dKm / effRange));
-  return dir > omni ? { strength: dir, path: "dir" } : { strength: omni, path: "omni" };
-}
 // Traite un appel « Position ? » vers le code composé. Le silence (mauvais
 // numéro, hors faisceau, hors de portée, réponse inaudible) EST
 // l'information : aucune notification d'échec. Coût : 0,5 % de batteries.
@@ -595,39 +602,141 @@ export function callPosition(st, code, world, noCost = false) {
   if (!noCost) st.battery = Math.max(0, st.battery - CALL_BATTERY_COST);
   const target = world.BEACONS.find((b) => b.code === code && b.active);
   if (!target) return null;
-  const d = distKm(st.x, st.y, target.x, target.y);
-  const dKm = d;
+  const dKm = distKm(st.x, st.y, target.x, target.y);
   const brg = bearingTo(st.x, st.y, target.x, target.y);
-  const { strength } = callStrengthAtKm(st, dKm, brg);
-  if (strength < RADIO_MIN_STRENGTH) return null;
-  const respStrength = signalStrengthKm(dKm);
-  // réponse audible par l'appelant : contenu privé complet (inchangé)
-  if (respStrength > 0) {
+  const strength = longStrengthKm(dKm);           // émission navire : omni, longue
+  if (strength < RADIO_MIN_STRENGTH) return null; // la station n'entend pas : silence
+  const respStrength = longStrengthKm(dKm);        // réponse : famille longue
+  const cap = recvCapture(st, brg, respStrength);  // lire exige capter
+  if (cap) {
     st.notifSeq = (st.notifSeq || 0) + 1;
     if (st.pins.length < 26)
       st.pins.push({ label: code, x: target.x, y: target.y });
     st.notifications.unshift({
       id: st.notifSeq, t: st.t,
-      text: `📡 Position de ${code} : ${target.y.toFixed(2)}°N ${target.x.toFixed(2)}°E (signal ${respStrength}%, azimut ${Math.round(brg)}°).`,
+      text: `📡 Position de ${code} : ${target.y.toFixed(2)}°N ${target.x.toFixed(2)}°E (signal ${respStrength}%).`,
       kind: "good", cat: "radio",
     });
   }
-  // dans tous les cas où la balise a entendu l'appel (strength >= 1), elle
-  // répond SUR LES ONDES : retour pour émission vers les tiers
+  // La balise a entendu : elle répond SUR LES ONDES (tiers brouillés côté
+  // serveur). Le silence pour l'appelant EST l'information.
   return { x: target.x, y: target.y };
 }
-// Brouillage : un tiers qui capte un message privé sans en être le
-// destinataire détecte une TRANSMISSION BROUILLÉE — niveau de signal (et
-// azimut en directionnel), mais AUCUN contenu.
-export function scrambledIntercept(strength, source, antBeam, antOrient, heading, brg) {
-  const antHeading = (heading + antOrient + 720) % 360;
+// Brouillage : un tiers qui capte un message sans en être le destinataire
+// détecte une TRANSMISSION BROUILLÉE — force, et zone du faisceau en
+// directionnel — mais AUCUN contenu et AUCUN azimut : la direction, c'est le
+// geste du joueur (pointer son antenne), pas une donnée du message.
+export function scrambledIntercept(strength, source, side) {
   if (source === "dir") {
-    const signedDiff = angDiff(brg, antHeading);
-    const diff = Math.abs(signedDiff);
-    const side = diff < 1 ? "centre" : signedDiff > 0 ? (diff < antBeam / 4 ? "D1" : "D2") : (diff < antBeam / 4 ? "G1" : "G2");
-    return { text: `📡 Transmission brouillée captée (directionnelle) — signal ${strength}%, azimut ${Math.round(antHeading)}°, zone ${side}. Contenu : illisible.`, cat: "radio" };
+    return { text: `📡 Transmission brouillée captée (directionnelle) — signal ${strength}%, zone ${side}. Contenu : illisible.`, cat: "radio" };
   }
   return { text: `📡 Transmission brouillée captée (omnidirectionnelle) — signal ${strength}%. Contenu : illisible, origine inconnue.`, cat: "radio" };
+}
+
+// ---------- Balise-vigie : signal de proximité + verrou + ancre ----------
+// Intervalle du ping de proximité : accélération progressive, géométrique par
+// décade — 30 s à ≥ 100 km, 10 s à ≤ 100 m (~21 s à 10 km, ~14 s à 1 km).
+export function proxPingIntervalS(dKm) {
+  const d = Math.min(Math.max(dKm, PROX_PING_MIN_KM), PROX_PING_MAX_KM);
+  const decades = Math.log10(d / PROX_PING_MIN_KM) / Math.log10(PROX_PING_MAX_KM / PROX_PING_MIN_KM);
+  return PROX_PING_MIN_S * Math.pow(PROX_PING_MAX_S / PROX_PING_MIN_S, decades);
+}
+
+// Journal des signaux de balise : les SIGNAL_LOG_MAX derniers pings (longs et courts).
+export function pushBeaconSignal(st, sig) {
+  st.signals.push(sig);
+  if (st.signals.length > SIGNAL_LOG_MAX)
+    st.signals.splice(0, st.signals.length - SIGNAL_LOG_MAX);
+  return sig;
+}
+
+// Réception d'un ping de proximité capté : journal SYSTÉMATIQUE + verrou de
+// l'ordinateur de bord. À CHAQUE ping capté, l'ordinateur re-scanne : antenne
+// sur la source, cap sur la source (poursuite d'azimut radio — immune à la
+// déviation de compas ; le courant continue de pousser, corrigé au ping
+// suivant). Deux gardes :
+// - ANTI-BASCULE : le premier verrou tient jusqu'au bout — les pings d'une
+//   AUTRE balise sont journalisés mais ignorés par le verrou (cas limite :
+//   deux balises dans le rayon de veille, navire entre les deux) ;
+// - SIGNAL FORT : l'ordinateur ne verrouille que sur un signal de niveau omni
+//   (force ≥ OMNI_DETECT_PCT : navire à ≤ rayon de veille ~125 km). Une
+//   capture directionnelle faible (balise armée par un concurrent, au loin
+//   dans le faisceau) = journal seul — le pilote n'est jamais happé.
+export function onProximityPing(st, b, cap) {
+  pushBeaconSignal(st, { t: st.t, beaconId: b.code, kind: "prox", ...cap });
+  if (st.beaconLock && st.beaconLock !== b.code) return; // anti-bascule
+  if (!st.beaconLock && cap.strength < OMNI_DETECT_PCT) return; // signal faible : journal seul
+  const brg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
+  const engaged = !st.beaconLock;
+  st.beaconLock = b.code;
+  st.lockBrg = brg;
+  st.antOrient = Math.round(((brg - st.heading + 540) % 360) - 180); // antenne sur la source
+  st.headingOrder = brg; // poursuite
+  if (engaged) {
+    st.autopilot = false; // UN SEUL pilote à la fois : le verrou coupe le pilote de route (waypoints conservés)
+    st.notifSeq = (st.notifSeq || 0) + 1;
+    st.notifications.unshift({ id: st.notifSeq, t: st.t, kind: "good", cat: "radio",
+      text: `🔒 Signal de proximité de ${b.code} — pilote automatique verrouillé sur la balise.` });
+  }
+}
+
+// Poursuite CONTINUE : à chaque tick, l'ordinateur remet cap et antenne sur la
+// balise verrouillée (position VRAIE — exception assumée du scan du verrou,
+// jamais affichée). La poursuite ne dépend plus de la cadence des pings :
+// elle tient aussi pendant les sauts de temps (pings au rythme temps réel).
+export function beaconLockSteer(st, world) {
+  if (!st.beaconLock) return;
+  const b = world.BEACONS.find((x) => x.code === st.beaconLock && x.active);
+  if (!b) { st.beaconLock = null; st.lockBrg = null; return; }
+  st.lockBrg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
+  st.antOrient = Math.round(((st.lockBrg - st.heading + 540) % 360) - 180); // antenne sur la source
+  st.headingOrder = st.lockBrg; // poursuite
+}
+
+// Arrivée : ancre automatique quand le navire touche le cercle d'ancre — soit
+// à sa position (temps réel : pas d'1 s), soit parce que le SEGMENT de
+// déplacement du pas l'a traversé (saut de temps : MAX_STEP_MIN = 5 min ≈ 3 km
+// de corde à 40 km/h). Dans le second cas, le navire S'ARRÊTE au point du
+// segment le plus proche de la balise (à l'intérieur du cercle) au lieu de
+// filer 3 km plus loin.
+export function beaconLockTick(st, world, prevX = st.x, prevY = st.y) {
+  if (!st.beaconLock) return;
+  const b = world.BEACONS.find((x) => x.code === st.beaconLock && x.active);
+  if (!b) { st.beaconLock = null; st.lockBrg = null; return; }
+  let dKm = distKm(st.x, st.y, b.x, b.y);
+  if (dKm > ANCHOR_DROP_KM && segDistKm(b.x, b.y, prevX, prevY, st.x, st.y) <= ANCHOR_DROP_KM) {
+    const dx = st.x - prevX, dy = st.y - prevY;
+    const len2 = dx * dx + dy * dy;
+    if (len2 > 0) {
+      const t = Math.max(0, Math.min(1, ((b.x - prevX) * dx + (b.y - prevY) * dy) / len2));
+      st.x = prevX + dx * t; // arrêt au point de passage le plus proche (≤ ANCHOR_DROP_KM)
+      st.y = prevY + dy * t;
+      dKm = distKm(st.x, st.y, b.x, b.y);
+    }
+  }
+  if (dKm <= ANCHOR_DROP_KM) {
+    st.beaconLock = null;
+    st.lockBrg = null;
+    st.headingOrder = st.heading; // barre arrêtée
+    st.anchored = true;            // ancre automatique : position figée
+    st.notifSeq = (st.notifSeq || 0) + 1;
+    st.notifications.unshift({ id: st.notifSeq, t: st.t, kind: "good", cat: "navire",
+      text: `⚓ Ancre jetée à ${Math.round(dKm * 1000)} m de la balise ${b.code} — pilote automatique coupé. Capture quand tu veux.` });
+  }
+}
+
+// Capture MANUELLE d'une balise : action du joueur, à portée CAPTURE_R_KM.
+export function captureBeacon(st, world) {
+  const b = world.BEACONS.find((x) => x.active && distKm(st.x, st.y, x.x, x.y) <= CAPTURE_R_KM);
+  if (!b) return { ok: false, error: "Aucune balise à portée de capture (500 m)." };
+  b.active = false;
+  st.codes.push({ id: b.id, rarity: b.rarity, pts: b.pts });
+  st.notifSeq = (st.notifSeq || 0) + 1;
+  st.notifications.unshift({ id: st.notifSeq, t: st.t,
+    text: `📦 Code de la balise ${b.id} (${RARITY_LABEL[b.rarity] || b.rarity}, ${b.pts} pts) enregistré. Balise désactivée.`,
+    kind: "good", cat: "balises" });
+  if (st.beaconLock === b.code) { st.beaconLock = null; st.lockBrg = null; }
+  return { ok: true, code: b.code };
 }
 
 // ---------- État du joueur ----------
@@ -644,6 +753,7 @@ export function newPlayerState(world, opts = {}) {
     navFix: { active: false, startT: 0, doneNight: null, lastTryT: null },
     location: "surface", mast: false, engineOn: false, electricOn: false, periscope: false, vkmh: 0, light: false,
     boom: 0, awSpd: 0, awRel: 0,
+    beaconLock: null, lockBrg: null, anchored: false,
     fuel: 100, battery: 100, food: 100, score: 0, codes: [],
     waypoints: [], wpIdx: 0, autopilot: false,
     antBeam: 45, antOrient: 0, signals: [], notifications: [], notifSeq: 0,
@@ -714,10 +824,18 @@ export function tick(st, dtMin, world) {
   // la position ESTIMÉE (même repère que la validation) — l'auto-correction
   // est gratuite : tout recentrage de l'estime (point aux étoiles) est pris
   // en compte au tick suivant. Le pilote n'est qu'un écrivain de consigne.
-  if (st.autopilot && st.wpIdx < st.waypoints.length) {
+  // UN SEUL PILOTE À LA FOIS : si le verrou balise-vigie tient la barre, le
+  // pilote de route n'écrit rien (il est coupé à l'engagement du verrou ;
+  // garde ceinture+bretelles pour les états migrés à chaud).
+  if (st.autopilot && !st.beaconLock && st.wpIdx < st.waypoints.length) {
     const wp = st.waypoints[st.wpIdx];
     st.headingOrder = bearingTo(st.estX, st.estY, wp.x, wp.y);
   }
+  // Balise-vigie : poursuite CONTINUE — à chaque tick, l'ordinateur remet cap
+  // et antenne sur la balise verrouillée (position VRAIE : exception assumée
+  // du scan du verrou, jamais affichée). La poursuite ne dépend plus de la
+  // cadence des pings — elle tient aussi pendant les sauts de temps.
+  beaconLockSteer(st, world);
   // Giration : le navire converge de son cap réel (heading) vers la
   // CONSIGNE (headingOrder) à un taux borné. À pleine vitesse en surface,
   // 270 °/min : un virage de 90° prend ~20 s de jeu. À l'arrêt, une part de
@@ -777,7 +895,9 @@ export function tick(st, dtMin, world) {
   // Mouvement + inertie (sur le temps restant du pas : la position des
   // sous-pas de giration a déjà été intégrée physiquement ci-dessus ; ce
   // bloc gère l'inertie de vitesse, l'estime et l'échouement au cap final)
-  const target = speedKmh(st, w);
+  // Ancre : position figée — vitesse nulle, AUCUNE intégration (courant inclus)
+  if (st.anchored) st.vkmh = 0;
+  const target = st.anchored ? 0 : speedKmh(st, w);
   const accel = surface ? ACCEL_SURF : ACCEL_SUB;
   const decel = surface ? DECEL_SURF : DECEL_SUB;
   if (st.vkmh < target) st.vkmh = Math.min(target, st.vkmh + accel * dtMin);
@@ -792,8 +912,9 @@ export function tick(st, dtMin, world) {
     (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
      world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM));
   const driftEff = moored ? 0 : drift;
-  const nx = st.x + Math.sin(radT) * throughT + Math.sin(cdr) * driftEff;
-  const ny = st.y + Math.cos(radT) * throughT + Math.cos(cdr) * driftEff;
+  const anchored = !!st.anchored;
+  const nx = st.x + (anchored ? 0 : Math.sin(radT) * throughT + Math.sin(cdr) * driftEff);
+  const ny = st.y + (anchored ? 0 : Math.cos(radT) * throughT + Math.cos(cdr) * driftEff);
   st.travelledKm += st.vkmh * (dtMin / 60);
   const day = Math.floor(st.t / 1440);
   if (day !== st.dayIdx) { st.dayIdx = day; st.dailyKm = 0; }
@@ -817,6 +938,7 @@ export function tick(st, dtMin, world) {
         st.autopilot = false;
         notify(st, "⚠️ Échouement — pilote automatique coupé, intervention requise.", "warn", "alertes");
       }
+      st.beaconLock = null; st.lockBrg = null; // échouement coupe le verrou
     }
     st.grounded = true;
     st.vkmh = 0;
@@ -907,11 +1029,10 @@ export function tick(st, dtMin, world) {
       if (!pulsed) continue;
       const got = detectBeacon(st, b);
       if (got) {
-        st.signals.unshift(got);
-        if (st.signals.length > 30) st.signals.pop();
+        pushBeaconSignal(st, got);
         const txt = got.source === "omni"
-          ? `📡 Ping ${b.code} — signal ${got.strength}% (omnidirectionnelle, azimut inconnu)`
-          : `📡 Ping ${b.code} — azimut ${got.bearing}°, signal ${got.strength}%, partie ${got.side} du cône (ouverture ${got.beam}°)`;
+          ? `📡 Ping ${b.code} — signal ${got.strength}% (omnidirectionnelle)`
+          : `📡 Ping ${b.code} — signal ${got.strength}%, zone ${got.side} du cône`;
         notify(st, txt, "info", "radio");
       }
     }
@@ -967,19 +1088,13 @@ export function tick(st, dtMin, world) {
     }
   });
 
-  // Capture (surface ou immersion périscope) — balise partagée : première
-  // capture gagne, désactivée pour tous les joueurs.
-  if (st.location === "surface" || (st.location === "underwater" && st.periscope)) {
-    for (const b of world.BEACONS) {
-      if (!b.active) continue;
-      if (segDistKm(b.x, b.y, prevX, prevY, st.x, st.y) < CAPTURE_R_KM) {
-        b.active = false;
-        st.codes.push({ id: b.id, rarity: b.rarity, pts: b.pts });
-        ev(st, "capture", `📦 Code de la balise ${b.id} (${RARITY_LABEL[b.rarity] || b.rarity}, ${b.pts} pts) enregistré. Balise désactivée.`, "balises");
-      }
-    }
-  }
 
+  // Balise-vigie : arrivée — ancre automatique si le pas de déplacement
+  // (prevX/prevY → position) a touché le cercle d'ancre. En temps réel le
+  // point suffit ; un saut de temps intègre jusqu'à MAX_STEP_MIN de route
+  // d'un seul tenant — le test de segment attrape le franchissement et
+  // arrête le navire au plus près de la balise.
+  beaconLockTick(st, world, prevX, prevY);
   // Livraison au port
   if (segDistKm(world.PORT.x, world.PORT.y, prevX, prevY, st.x, st.y) < DELIVERY_R_KM && st.codes.length > 0) {
     const pts = st.codes.reduce((a, c) => a + c.pts, 0);

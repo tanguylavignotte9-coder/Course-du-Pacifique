@@ -3,7 +3,7 @@ import { login, GameSocket } from "./net.js";
 import Scene from "./Scene.jsx";
 import {
   MAP, DEG_KM, RARITY_STYLE,
-  distKm, dirSensitivity, DOUGLAS_LABEL, RADIO_DECAY_KM, dirRangeKm,
+  distKm, dirSensitivity, DOUGLAS_LABEL, LONG_DECAY_KM,
   DELIVERY_R_KM, OMNI_DETECT_PCT, MS_PER_MIN,
 } from "../../shared/engine.js";
 
@@ -737,7 +737,7 @@ export default function App() {
           <p className="text-[11px] text-slate-500">
             {uw && !player.periscope && "🕳️ Périscope rentré : aucune observation visuelle · "}
             {!daylight && "🌙 Nuit : seuls les feux sont visibles · "}
-            Antenne : azimut {Math.round(antHeading)}°, ouverture {player.antBeam}°
+            Antenne : direction d'écoute {Math.round(antHeading)}°, ouverture {player.antBeam}°
           </p>
           <div className="grid grid-cols-2 gap-2">
             <Btn active={player.location === "surface"} onClick={() => cmd({ surface: true })}>☀️ Surface</Btn>
@@ -756,18 +756,23 @@ export default function App() {
           )}
           <div className="grid grid-cols-2 gap-2">
             <Btn active={player.light} onClick={() => cmd({ light: !player.light })}>💡 Phare{player.light ? " — visible la nuit à 10 km" : ""}</Btn>
+            <Btn active={player.anchored} onClick={() => cmd({ anchor: !player.anchored })}>⚓ Ancre{player.anchored ? " — position figée" : ""}</Btn>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <Btn onClick={() => cmd({ capture: true })}>📦 Capturer la balise (≤ 500 m)</Btn>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-slate-400">Cap</span>
             {player.autopilot && <span className="rounded bg-sky-900/70 px-1.5 py-0.5 text-[10px] font-semibold text-sky-200">🤖 pilotage automatique</span>}
-            <Btn disabled={player.autopilot} onClick={() => cmd({ headingOrder: player.headingOrder - 10 })}>◀</Btn>
+            {player.beaconLock && <span className="rounded bg-purple-900/70 px-1.5 py-0.5 text-[10px] font-semibold text-purple-200">🔒 Verrou : balise {player.beaconLock}</span>}
+            <Btn disabled={player.autopilot || !!player.beaconLock} onClick={() => cmd({ headingOrder: player.headingOrder - 10 })}>◀</Btn>
             <input
               type="range" min={0} max={359} value={Math.round(player.headingOrder)}
-              disabled={player.autopilot}
+              disabled={player.autopilot || !!player.beaconLock}
               onChange={(e) => cmd({ headingOrder: +e.target.value })}
               className="w-full accent-sky-400"
             />
-            <Btn disabled={player.autopilot} onClick={() => cmd({ headingOrder: player.headingOrder + 10 })}>▶</Btn>
+            <Btn disabled={player.autopilot || !!player.beaconLock} onClick={() => cmd({ headingOrder: player.headingOrder + 10 })}>▶</Btn>
             <span className="w-14 text-right text-xs tabular-nums text-sky-300">{Math.round(player.heading)}°</span>
           </div>
           {Math.abs(((player.headingOrder - player.heading + 540) % 360) - 180) > 2 && (
@@ -869,11 +874,23 @@ export default function App() {
               <span className="w-10 text-right text-xs tabular-nums text-purple-300">{player.antOrient}°</span>
             </div>
             <p className="text-[11px] text-slate-500">
-              Directionnelle : capte dès <b className="text-purple-300">{antSens}%</b> (≈ {Math.round(RADIO_DECAY_KM * (1 - antSens / 100))} km) si la balise est centrée · omnidirectionnelle : dès {OMNI_DETECT_PCT} % (≈ {Math.round(RADIO_DECAY_KM * (1 - OMNI_DETECT_PCT / 100))} km), azimut inconnu.
+              Émission : omnidirectionnelle, {LONG_DECAY_KM} km. Écoute : omni dès {OMNI_DETECT_PCT} % (sans gisement) ; faisceau serré = sensible et pointé, large = sourd et panoramique.
             </p>
             <p className="text-[11px] text-slate-400">
               Code du navire : <b className="font-mono text-sm text-sky-300">{player.code}</b> — c'est votre numéro radio (donnez-le aux autres navires pour qu'ils vous appellent).
             </p>
+            {(player.signals || []).length > 0 && (
+              <div className="rounded-lg border border-slate-700/60 bg-slate-900/60 p-2">
+                <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">Journal des signaux (10 derniers)</p>
+                <div className="space-y-0.5">
+                  {[...player.signals].reverse().map((sg, i) => (
+                    <p key={i} className={`text-[10px] leading-snug tabular-nums ${sg.kind === "prox" ? "text-purple-300" : "text-slate-400"}`}>
+                      {sg.kind === "prox" ? "⚡" : "📡"} {sg.beaconId} — signal {sg.strength}%{sg.side ? `, zone ${sg.side}` : ""}
+                    </p>
+                  ))}
+                </div>
+              </div>
+            )}
             {/* Mode radio : privé (appels) ou diffusion (SOS) */}
             <div className="flex gap-1.5">
               <Btn active={radioMode === "prive"} onClick={() => setRadioMode("prive")}>🔒 Privé — appels</Btn>
@@ -885,7 +902,6 @@ export default function App() {
                 onDial={setDial}
                 onAction={(kind, code) => cmd({ shipMsg: { kind, to: code } })}
                 radioOk={radioOk}
-                portee={Math.round(dirRangeKm(player.antBeam))}
               />
             ) : (
               <div className="space-y-2">
