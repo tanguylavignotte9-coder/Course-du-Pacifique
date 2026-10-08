@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -169,6 +169,12 @@ setInterval(() => {
       let dMin = Infinity;
       for (const st of states.values()) dMin = Math.min(dMin, distKm(st.x, st.y, b.x, b.y));
       if (!isFinite(dMin)) continue; // personne sur l'eau
+      // VIGIE ARMÉE : la balise n'émet son signal de proximité que si un
+      // navire est dans son rayon de veille (PROX_ARM_KM — tout navire,
+      // même plongé : la vigie détecte la coque, pas la radio). Silencieuse
+      // sinon, et c'est l'information : une balise qui s'affole au loin
+      // dans un faisceau, c'est un concurrent qui approche.
+      if (dMin > PROX_ARM_KM) continue;
       const intervalMs = proxPingIntervalS(dMin) * 1000;
       if (nowMs - (proxLast.get(b.code) || 0) < intervalMs) continue;
       proxLast.set(b.code, nowMs);
@@ -638,7 +644,13 @@ wss.on("connection", (ws, req) => {
         st.waypoints = c.waypoints.slice(0, 30).map((p) => ({ x: clamp(+p.x || 0, 0, MAP), y: clamp(+p.y || 0, 0, MAP) }));
         st.wpIdx = 0;
       }
-      if (typeof c.autopilot === "boolean") st.autopilot = c.autopilot;
+      // Un seul pilote à la fois : reprendre le pilote de route coupe le
+      // verrou balise-vigie (l'inverse est déjà vrai : le verrou coupe le
+      // pilote de route à l'engagement).
+      if (typeof c.autopilot === "boolean") {
+        st.autopilot = c.autopilot;
+        if (c.autopilot && st.beaconLock) { st.beaconLock = null; st.lockBrg = null; }
+      }
       if (Array.isArray(c.pins)) st.pins = c.pins.slice(0, 26);
       if (Array.isArray(c.measures)) st.measures = c.measures.slice(0, 40);
       // Saut de temps : super utilisateur uniquement. L'horloge de course est

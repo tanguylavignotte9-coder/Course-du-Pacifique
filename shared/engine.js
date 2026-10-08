@@ -38,6 +38,7 @@ export const PROX_PING_MIN_KM = 0.1;   // 100 m : ancrage bas
 export const PROX_PING_MIN_S = 10;     // intervalle à ≤ 100 m
 export const ANCHOR_DROP_KM = 0.05;    // 50 m : coupure du verrou + ancre automatique
 export const SIGNAL_LOG_MAX = 10;       // journal : les 10 derniers pings de balise (longs et courts)
+export const PROX_ARM_KM = SHORT_DECAY_KM * (1 - OMNI_DETECT_PCT / 100); // rayon de VEILLE émergent : armée ⇔ un navire à ≤ ~125 km (force omni 75 %)
 
 // Monde et gameplay
 export const ISLAND_SEP_KM = 200;         // séparation minimale entre îles
@@ -649,12 +650,22 @@ export function pushBeaconSignal(st, sig) {
   return sig;
 }
 
-// Réception d'un ping de proximité capté : journal + verrou de l'ordinateur de
-// bord. À CHAQUE ping capté, l'ordinateur re-scanne : antenne sur la source,
-// cap sur la source (poursuite d'azimut radio — immune à la déviation de
-// compas ; le courant continue de pousser, corrigé au ping suivant).
+// Réception d'un ping de proximité capté : journal SYSTÉMATIQUE + verrou de
+// l'ordinateur de bord. À CHAQUE ping capté, l'ordinateur re-scanne : antenne
+// sur la source, cap sur la source (poursuite d'azimut radio — immune à la
+// déviation de compas ; le courant continue de pousser, corrigé au ping
+// suivant). Deux gardes :
+// - ANTI-BASCULE : le premier verrou tient jusqu'au bout — les pings d'une
+//   AUTRE balise sont journalisés mais ignorés par le verrou (cas limite :
+//   deux balises dans le rayon de veille, navire entre les deux) ;
+// - SIGNAL FORT : l'ordinateur ne verrouille que sur un signal de niveau omni
+//   (force ≥ OMNI_DETECT_PCT : navire à ≤ rayon de veille ~125 km). Une
+//   capture directionnelle faible (balise armée par un concurrent, au loin
+//   dans le faisceau) = journal seul — le pilote n'est jamais happé.
 export function onProximityPing(st, b, cap) {
   pushBeaconSignal(st, { t: st.t, beaconId: b.code, kind: "prox", ...cap });
+  if (st.beaconLock && st.beaconLock !== b.code) return; // anti-bascule
+  if (!st.beaconLock && cap.strength < OMNI_DETECT_PCT) return; // signal faible : journal seul
   const brg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
   const engaged = !st.beaconLock;
   st.beaconLock = b.code;
@@ -662,6 +673,7 @@ export function onProximityPing(st, b, cap) {
   st.antOrient = Math.round(((brg - st.heading + 540) % 360) - 180); // antenne sur la source
   st.headingOrder = brg; // poursuite
   if (engaged) {
+    st.autopilot = false; // UN SEUL pilote à la fois : le verrou coupe le pilote de route (waypoints conservés)
     st.notifSeq = (st.notifSeq || 0) + 1;
     st.notifications.unshift({ id: st.notifSeq, t: st.t, kind: "good", cat: "radio",
       text: `🔒 Signal de proximité de ${b.code} — pilote automatique verrouillé sur la balise.` });
@@ -784,7 +796,10 @@ export function tick(st, dtMin, world) {
   // la position ESTIMÉE (même repère que la validation) — l'auto-correction
   // est gratuite : tout recentrage de l'estime (point aux étoiles) est pris
   // en compte au tick suivant. Le pilote n'est qu'un écrivain de consigne.
-  if (st.autopilot && st.wpIdx < st.waypoints.length) {
+  // UN SEUL PILOTE À LA FOIS : si le verrou balise-vigie tient la barre, le
+  // pilote de route n'écrit rien (il est coupé à l'engagement du verrou ;
+  // garde ceinture+bretelles pour les états migrés à chaud).
+  if (st.autopilot && !st.beaconLock && st.wpIdx < st.waypoints.length) {
     const wp = st.waypoints[st.wpIdx];
     st.headingOrder = bearingTo(st.estX, st.estY, wp.x, wp.y);
   }

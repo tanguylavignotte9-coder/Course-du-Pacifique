@@ -5,7 +5,7 @@ import {
   distKm, CAPTURE_R_KM, DELIVERY_R_KM, WP_R_KM, DEG_KM, LONG_DECAY_KM, VMAX_KMH, DIESEL_SPD_KMH,
   sailAutoDrive, apparentWind, SAIL_SPD_KMH, clamp, callPosition, RARITY_MIN, bearingTo, segDistKm,
   longStrengthKm, strengthKm, SHORT_DECAY_KM, recvCapture, detectBeacon, onProximityPing,
-  proxPingIntervalS, captureBeacon, beaconLockTick, pushBeaconSignal, SIGNAL_LOG_MAX,
+  proxPingIntervalS, captureBeacon, beaconLockTick, pushBeaconSignal, SIGNAL_LOG_MAX, PROX_ARM_KM,
   scrambledIntercept,
 } from "./engine.js";
 
@@ -505,6 +505,65 @@ test("verrou balise-vigie : engagement, poursuite d'azimut, antenne sur la sourc
   const n = st.notifications.length;
   onProximityPing(st, b, { strength: 95, source: "dir", bearing: 0, side: "centre" });
   assert.equal(st.notifications.length, n, "déjà verrouillé : pas de re-notification");
+});
+
+test("verrou : signal faible (balise lointaine) = journal seul, pilote intact", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 400 / DEG_KM; // 400 km : 20 %, directionnel pointé
+  st.heading = 0; st.headingOrder = 90;
+  onProximityPing(st, b, { strength: 20, source: "dir", bearing: 0, side: "centre" });
+  assert.equal(st.beaconLock, null, "signal < 75 % : pas de verrou");
+  assert.equal(st.headingOrder, 90, "consigne de cap intacte");
+  assert.equal(st.signals[st.signals.length - 1].kind, "prox", "le ping reste journalisé");
+});
+
+test("verrou : l'engagement coupe le pilote de route (un seul pilote à la fois)", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 40 / DEG_KM;
+  st.waypoints = [{ x: 30.5, y: 30.5 }]; st.wpIdx = 0;
+  st.autopilot = true;
+  onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
+  assert.equal(st.beaconLock, b.code, "verrou engagé");
+  assert.equal(st.autopilot, false, "le verrou coupe le pilote de route");
+  assert.equal(st.waypoints.length, 1, "waypoints conservés (inactifs)");
+});
+
+test("verrou : anti-bascule — le premier verrou tient, l'autre balise est journalisée", () => {
+  const w = buildWorld(77);
+  const b1 = w.BEACONS.find((x) => x.active);
+  const b2 = w.BEACONS.find((x) => x.active && x.code !== b1.code);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b1.x; st.y = b1.y - 40 / DEG_KM;
+  onProximityPing(st, b1, { strength: 92, source: "omni", bearing: null });
+  const order = st.headingOrder;
+  onProximityPing(st, b2, { strength: 95, source: "omni", bearing: null });
+  assert.equal(st.beaconLock, b1.code, "le premier verrou tient");
+  assert.equal(st.headingOrder, order, "la consigne n'est pas détournée");
+  assert.equal(st.signals[st.signals.length - 1].beaconId, b2.code, "le ping de l'autre balise est journalisé");
+});
+
+test("pilote de route vs verrou : le recalcul de consigne respecte le verrou", () => {
+  const w = buildWorld(77);
+  const b = w.BEACONS.find((x) => x.active);
+  const st = newPlayerState(w, { weatherSeed: 1 });
+  st.x = b.x; st.y = b.y - 40 / DEG_KM; st.estX = st.x; st.estY = st.y;
+  st.waypoints = [{ x: 35, y: 30 }]; st.wpIdx = 0;
+  st.autopilot = true; // état incohérent (migration à chaud) : verrou SANS coupure
+  st.beaconLock = b.code;
+  const wpBrg = bearingTo(st.estX, st.estY, 35, 30);
+  st.heading = 0; st.headingOrder = (wpBrg + 90) % 360; // consigne du verrou ≠ visée du point
+  tick(st, 1 / 60, w);
+  assert.equal(Math.round(st.headingOrder), Math.round((wpBrg + 90) % 360),
+    "le pilote de route n'écrase pas la consigne du verrou");
+});
+
+test("rayon de veille : PROX_ARM_KM émergent = force 75 % en famille courte", () => {
+  assert.ok(Math.abs(PROX_ARM_KM - 125) < 1e-9, `125 km attendus (obtenu ${PROX_ARM_KM})`);
+  assert.equal(strengthKm(PROX_ARM_KM, SHORT_DECAY_KM), 75, "à PROX_ARM_KM, l'omni capte exactement");
 });
 
 test("segDistKm : distance point-segment", () => {
