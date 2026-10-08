@@ -296,7 +296,7 @@ function publicSnapshot(id) {
     epoch: race.displayEpoch ?? race.epoch ?? new Date(race.startedAt).getTime(),
     isSuper: isSuper(id),
     player: {
-      heading: st.heading, headingOrder: st.headingOrder ?? st.heading, sail: st.sail, engine: st.engine,
+      heading: st.heading, headingOrder: st.headingOrder ?? st.heading, sail: st.sail ?? 0.8, engine: st.engine,
       location: st.location, mast: st.mast, engineOn: st.engineOn,
       electricOn: st.electricOn, periscope: st.periscope, vkmh: st.vkmh,
       fuel: st.fuel, battery: st.battery, food: st.food,
@@ -308,6 +308,7 @@ function publicSnapshot(id) {
       grounded: st.grounded,
       collided: !!st.collided,
       light: !!st.light,
+      boom: st.boom ?? 0, awSpd: st.awSpd ?? 0, awRel: st.awRel ?? 0,
       antBeam: st.antBeam, antOrient: st.antOrient,
       code: st.code,
       notifications: st.notifications.slice(0, 60),
