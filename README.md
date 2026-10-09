@@ -4,6 +4,52 @@ Course nautique en temps réel dans le Pacifique — jeu amateur navigateur (PC 
 
 Le serveur fait **autorité** : il simule la météo, la mer, le courant, les balises et votre navire en continu (même déconnecté, le navire continue de naviguer). Le client n'envoie que des intentions (cap, voiles, moteur, plongée, antenne) et affiche ce que le joueur connaît : position **estimée**, incertitude, relevés radio et détections visuelles.
 
+## L'univers du jeu — la Grande Course du Pacifique
+
+### Le monde en 2060
+
+Le Vendée Globe a connu en son temps un engouement immense et fut l'événement sportif mondial numéro un. Depuis, les multinationales ont pris une place majeure : elles gouvernent le monde. Les populations, ultra-connectées, nourries au toujours-plus-grand et au spectaculaire, ont besoin d'un vrai show pour rester diverties.
+
+### Le show : la Grande Course du Pacifique
+
+MaxMedia, l'une des entreprises mondiales les plus influentes, a décidé de créer le plus grand show télévisé au monde dans le Pacifique : une course nautique mettant en scène des marins sélectionnés, partis en mer pour capturer successivement des objectifs — des balises disséminées sur des milliers de kilomètres d'océan.
+
+Le vainqueur est celui qui capture le plus de balises et revient au port d'origine. La récompense : **100 millions d'euros**.
+
+Les courses sont longues — plusieurs semaines — et les risques immenses : la météo, les pénuries de ressources, la perte en mer.
+
+### La face officielle de la course
+
+MaxMedia tient à apparaître irréprochable. La course offre à ses participants des services publics, exacts et gratuits :
+
+- Des **prévisions météo** à plusieurs jours d'horizon, accessibles à quai, aux avant-postes et aux balises via le **NETWORK** — à condition de se connecter, donc de révéler son identité et sa position.
+- Les **balises de course**, qui pulsent leur signal sur les ondes, emportent chacune un code, et restent en mer une fois capturées.
+- La **Patrouille de sécurité**, chargée d'encadrer la course et de protéger les marins en cas de problème. Sa position est publiée : transparence oblige.
+- Les **bulletins de zones d'exclusion**, mis à jour périodiquement : de grandes zones dangereuses que la compagnie demande d'éviter, justifiées par des raisons d'ordre administratif — opérations hydrographiques, champs de débris sous-marins, exercices militaires.
+- La **newsletter**, le journal des courses et les « statistiques de course ».
+
+Le public, lui, garde les racines du savoir sportif : il ne tolère **aucune forme d'anti-jeu**.
+
+### Les coulisses
+
+Mais d'autres ennemis existent, plus sournois. Les participants rusent, usant de tous les stratagèmes pour déstabiliser leurs adversaires sans éveiller les soupçons du public — ni ceux de la production.
+
+Et la production, justement, ferme parfois les yeux : le spectacle, par moment, a besoin d'être stimulé.
+
+### Ce que la caméra ne montre pas
+
+Sous le show, la Grande Course du Pacifique est une opération. MaxMedia étudie quelque chose dans ces eaux — et la course est son instrument.
+
+- **Une course-outil.** Chaque navire sélectionné embarque des instruments qui mesurent en permanence des dizaines de paramètres. Les marins croient remonter des statistiques de course et environnementales. En réalité, chaque connexion au NETWORK — à chaque escale de balise, de port ou d'avant-poste — exfiltre les relevés vers la compagnie. La donnée est le produit. Et les balises elles-mêmes ne sont pas des trophées : ce sont des stations de mesure déguisées en prix sportifs.
+
+- **La Bête.** Les opérations profondes antérieures de la compagnie ont dérangé quelque chose dans ces fonds. Cela remonte, attiré par le bruit des coques et des moteurs — et il ne porte pas de code. Ceux qui font trop de bruit peuvent l'attirer ; ceux qui le rencontrent peuvent repartir amoindris : une antenne arrachée, un mât fouetté, des provisions raquées. MaxMedia ne l'a jamais nommée. Les bulletins parlent d'avarie.
+
+- **La Patrouille.** Officiellement, elle encadre la course et protège les marins. Officieusement, elle traque la Bête — et navigue au moyen des données mêmes que la flotte lui fournit malgré elle. Sa position publique n'est pas un mensonge : c'est une transparence à sens unique.
+
+- **Les zones d'exclusion.** Officiellement : des dangers génériques, des prétextes administratifs interchangeables. Officieusement : la position probable de la Bête — la meilleure estimation sincère de la compagnie, calculée sur les relevés de la flotte, masquée sous une étiquette ennuyeuse.
+
+- **La rumeur de la flotte.** Le public voit le show. La flotte, elle, entend des choses dans la nuit : un chant sans identité, le tonnerre d'un engagement lointain, une zone qui se déplace comme quelque chose de vivant. Le journal des courses porte les contradictions : des pannes qui n'en sont pas, des avaries qui tombent trop bien. Et personne — ni la newsletter, ni la Patrouille, ni le jeu — ne confirmera jamais rien. **Chaque marin ne connaît que ce qu'il a déduit lui-même.**
+
 ## Structure
 
 ```
