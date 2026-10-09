@@ -846,8 +846,8 @@ test("nearestOnLine : point le plus proche de la polyligne", () => {
 });
 
 // ---------- Vie du monde (NPC v1) ----------
-test("npcs : constantes (50 pêcheurs, 3 cargos, 100 baleines)", () => {
-  assert.equal(NPC_FISHERMEN, 50);
+test("npcs : constantes (25 pêcheurs, 3 cargos, 100 baleines)", () => {
+  assert.equal(NPC_FISHERMEN, 25);
   assert.equal(NPC_CARGOS, 3);
   assert.equal(NPC_WHALES, 100);
   assert.equal(FISHER_RANGE_KM, 100);
@@ -1314,4 +1314,54 @@ test("onProximityPing : navire échoué — le guidage ne s'engage pas (journal 
   onProximityPing(st, w.PORT, { strength: 100, bearing: 90 });
   assert.equal(st.beaconLock, null, "échoué : le verrou ne pointe pas vers la terre — le joueur se dégage à la main");
   assert.ok(st.signals.length > 0, "le ping est quand même journalisé");
+});
+
+// ---------- Hotfix : pêcheurs NPC (population & phases) ----------
+test("génération : phases des pêcheurs échauffées — population mélangée dès t=0", () => {
+  let transit = 0, peche = 0;
+  for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
+    const w = buildWorld(seed);
+    const npcs = generateNpcs(w);
+    assert.equal(npcs.fishermen.length, NPC_FISHERMEN);
+    for (const f of npcs.fishermen) {
+      assert.ok(f.mode === "peche" || f.mode === "transit", `mode inconnu : ${f.mode}`);
+      assert.ok(!w.isLand(f.x, f.y), "un pêcheur échauffé reste en eau libre");
+      if (f.mode === "transit") transit++; else peche++;
+    }
+  }
+  // Sans échauffement, TOUS naissent en PÊCHE (mode initial de makeFisherman) :
+  // transit > 0 prouve le mélange des phases dès la génération.
+  assert.ok(transit > 0, `au moins un pêcheur en transit à t=0 (actuel : ${transit})`);
+  assert.ok(peche > 0, `au moins un pêcheur en pêche à t=0 (actuel : ${peche})`);
+});
+
+// ---------- Hotfix : le point visuel recentre l'estime ----------
+test("point visuel sur la balise : l'estime est recentrée dans le cercle rétréci", () => {
+  const w = buildWorld(7);
+  const st = newPlayerState(w, { weatherSeed: 9 });
+  const b = w.BEACONS[0];
+  st.t = 600; // plein jour
+  st.x = b.x - 4 / DEG_KM; st.y = b.y; // 4 km de la balise : en vue
+  st.heading = 90; st.headingOrder = 90; st.engineOn = false; st.autopilot = false;
+  st.estX = st.x + 1.0; st.estY = st.y; st.unc = 60; // estime décalée de 50 km
+  for (let i = 0; i < 30; i++) tick(st, 1, w);
+  assert.ok(st.notifications.some((n) => n.text.includes("Point visuel sur la balise")), "le point visuel doit se déclencher");
+  assert.ok(st.unc < 60, `l'incertitude doit retomber (actuel : ${st.unc.toFixed(2)})`);
+  const errKm = distKm(st.x, st.y, st.estX, st.estY);
+  assert.ok(errKm <= st.unc + 0.5,
+    `l'estime doit être dans le cercle autour de la position vraie (écart ${errKm.toFixed(1)} km, unc ${st.unc.toFixed(1)} km)`);
+});
+
+test("point visuel sur le port : l'estime est recentrée dans le cercle rétréci", () => {
+  const w = buildWorld(7);
+  const st = newPlayerState(w, { weatherSeed: 0 }); // navire à quai : le port est en vue
+  st.t = 600; // plein jour
+  st.heading = 90; st.headingOrder = 90; st.engineOn = false; st.autopilot = false;
+  st.estX = st.x + 1.0; st.estY = st.y; st.unc = 60; // estime décalée de 50 km
+  for (let i = 0; i < 30; i++) tick(st, 1, w);
+  assert.ok(st.notifications.some((n) => n.text.includes("Point visuel sur le port")), "le point visuel doit se déclencher");
+  assert.ok(st.unc < 60, `l'incertitude doit retomber (actuel : ${st.unc.toFixed(2)})`);
+  const errKm = distKm(st.x, st.y, st.estX, st.estY);
+  assert.ok(errKm <= st.unc + 0.5,
+    `l'estime doit être dans le cercle autour de la position vraie (écart ${errKm.toFixed(1)} km, unc ${st.unc.toFixed(1)} km)`);
 });

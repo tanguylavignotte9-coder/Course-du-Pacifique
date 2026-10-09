@@ -257,14 +257,16 @@ for (const [id, saved] of Object.entries(race.players || {})) {
     }
   }
 }
-// Migration unique des sauvegardes anciennes : deux navires superposés
-// NE SONT RE-LOGÉS que s'ils sont tous deux DANS LA ZONE D'ACOSTAGE du port
-// (la seule situation « ancienne sauvegarde antérieure aux slots »). Deux
-// navires qui se croisent à < 300 m EN MER (régate, rendez-vous) ne sont
-// JAMAIS déplacés — ils se débrouillent, la collision est gérable en jeu.
-// Marqueur race.migrated : ne s'exécute qu'une fois par course.
-if (!race.migrated) {
-  race.migrated = true;
+// Re-logement des navires superposés à quai — rejoué à CHAQUE démarrage :
+// les superpositions peuvent renaître après coup (un serveur redémarré
+// « oubliait » le quai occupé : takenSpawns repartait vide et le premier
+// nouveau join tombait pile sur le premier point de spirale, déjà occupé).
+// Deux navires superposés NE SONT RE-LOGÉS que s'ils sont tous deux DANS LA
+// ZONE D'ACOSTAGE du port. Deux navires qui se croisent à < 300 m EN MER
+// (régate, rendez-vous) ne sont JAMAIS déplacés — ils se débrouillent, la
+// collision est gérable en jeu.
+let reHoused = false;
+{
   const ids = [...states.keys()];
   for (let i = 0; i < ids.length; i++) {
     for (let j = i + 1; j < ids.length; j++) {
@@ -274,20 +276,26 @@ if (!race.migrated) {
         distKm(b.x, b.y, world.PORT.x, world.PORT.y) < SPAWN_SEP_KM;
       const dm = distKm(a.x, a.y, b.x, b.y);
       if (dm < 0.05 && bothAtPort) {
-        // re-loger via la spirale : le premier garde sa place (ou en trouve
-        // une nouvelle), le second est repoussé au prochain point valide.
-        const fresh = [];
+        // re-loger via la spirale, en partant des positions DÉJÀ occupées
+        // par TOUS les navires : les deux sont repoussés aux prochains
+        // points valides — jamais sur un navire existant.
+        const fresh = [...states.values()].map((s) => ({ x: s.x, y: s.y }));
         const sa = spawnPosition(world, fresh);
         const sb = spawnPosition(world, fresh);
         a.x = sa.x; a.y = sa.y; a.estX = sa.x; a.estY = sa.y;
         b.x = sb.x; b.y = sb.y; b.estX = sb.x; b.estY = sb.y;
         a.collided = false; b.collided = false;
-        console.log(`[migration] Navires ${ids[i]} et ${ids[j]} re-logés à 50 m (superposés à quai, sauvegarde antérieure)`);
+        reHoused = true;
+        console.log(`[migration] Navires ${ids[i]} et ${ids[j]} re-logés à 50 m (superposés à quai)`);
       }
     }
   }
-  store.save();
 }
+// Réamorçage des slots d'amarrage : TOUTE position persistée occupe son
+// point de spawn (y compris les re-logés ci-dessus) — un serveur redémarré
+// ne « vide » pas le quai, le prochain join part du prochain point libre.
+for (const s of states.values()) takenSpawns.push({ x: s.x, y: s.y });
+if (reHoused) store.save();
 
 // ---------- Vie du monde : population NPC (pêcheurs, cargos, baleines) ----------
 // Générée une fois, PERSISTÉE dans la course (positions + timers vivent dans
@@ -1377,7 +1385,6 @@ wss.on("connection", (ws, req) => {
         race.network = [];      // nouvelle course : journal global réinitialisé
         race.spawnOrder = {};   // réattribué ci-dessous, dans l'ordre actuel
         takenSpawns = [];       // nouvelle course : quai vidé
-        race.migrated = false;  // la migration pourra rejouer si besoin
         const fresh = buildWorld(race.seed);
         world.PORT = fresh.PORT; world.CONTINENT = fresh.CONTINENT;
         world.ISLANDS = fresh.ISLANDS; world.OUTPOSTS = fresh.OUTPOSTS;

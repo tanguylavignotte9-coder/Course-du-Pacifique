@@ -739,8 +739,9 @@ function SonarTile({ snap, cmd }) {
             </g>
           );
         })}
-        {/* Navire au centre */}
-        <path d="M 0 -7 L 5 6 L -5 6 Z" transform="translate(100 100)" fill="#38bdf8" stroke="#e0f2fe" strokeWidth="0.7" />
+        {/* Navire au centre, orienté au cap — même convention que TopView :
+            le cadran reste nord en haut, le pictogramme pivote au cap réel. */}
+        <path d="M 0 -7 L 5 6 L -5 6 Z" transform={`translate(100 100) rotate(${p.heading})`} fill="#38bdf8" stroke="#e0f2fe" strokeWidth="0.7" />
         <text x="100" y="188" fontSize="6.5" fill="#475569" textAnchor="middle">
           cercle = {SONAR_RANGE_KM} km · bruits {SOUND_DECAY_KM} km
         </text>

@@ -776,7 +776,7 @@ export function sonarPing(st, world, others = [], biologics = []) {
 // - la RADIO : bafouillage des pêcheurs en diffusion (lisible), messages
 //   privés des cargos (brouillés pour les joueurs — jamais destinataires).
 // Aucune collision, aucune capture, aucune détection visuelle en v1.
-export const NPC_FISHERMEN = 50;        // pêcheurs autour du continent et des îles
+export const NPC_FISHERMEN = 25;        // pêcheurs autour du continent et des îles (50 : cacophonie à l'hydrophone)
 export const NPC_CARGOS = 3;            // cargos simultanés, traversées bord à bord
 export const NPC_WHALES = 100;          // baleines réparties sur la carte
 export const FISHER_RANGE_KM = 100;     // rayon d'action max d'un pêcheur au large
@@ -787,6 +787,7 @@ export const WHALE_SPD_KMH = 10;        // errance d'une baleine
 export const FISHER_SPOT_R_KM = 2;      // arrivée sur le spot de pêche
 export const FISHER_FISH_MIN = 30;      // durée d'une marée : min (minutes de jeu)
 export const FISHER_FISH_SPAN_MIN = 240; // durée d'une marée : étendue au-delà du min
+export const FISHER_WARMUP_MAX_MIN = 720; // génération : durée max simulée par pêcheur pour dé-synchroniser les phases
 export const CARGO_ARRIVE_KM = 5;       // arrivée du cargo → nouvelle traversée
 export const CARGO_EDGE_MIN_DEG = 1;    // marge de départ/arrivée d'une traversée
 export const CARGO_EDGE_MAX_DEG = 3;
@@ -921,6 +922,21 @@ export function generateNpcs(world, usedCodes = [], nowMin = 0) {
     return c;
   };
   const fishermen = Array.from({ length: NPC_FISHERMEN }, (_, i) => makeFisherman(world, pickCode(), nowMin, `f${i}`));
+  // Échauffement des phases : à la naissance, TOUS les pêcheurs sont en
+  // PÊCHE (silencieux) et synchrones — d'où une vague de bruit collective
+  // quand les marées s'achèvent puis transitent ensemble (calme, puis
+  // cacophonie). Chaque pêcheur vieillit donc d'une durée ALÉATOIRE (0 à
+  // FISHER_WARMUP_MAX_MIN) au moment de la génération : la population
+  // démarre mélangée (certains mi-transit, d'autres mi-marée) — bruit
+  // moteur uniforme dès la première minute de jeu.
+  for (const f of fishermen) {
+    let rem = Math.random() * FISHER_WARMUP_MAX_MIN;
+    while (rem > 0) {
+      const dt = Math.min(NPC_SUBSTEP_MIN, rem);
+      npcFishermanTick(f, dt, world);
+      rem -= dt;
+    }
+  }
   const cargos = Array.from({ length: NPC_CARGOS }, (_, i) => makeCargo(world, pickCode(), nowMin, `c${i}`));
   const whales = Array.from({ length: NPC_WHALES }, (_, i) => makeWhale(world, nowMin, `w${i}`));
   return { fishermen, cargos, whales };
@@ -1547,6 +1563,20 @@ function speedKmh(st, w) {
   return v;
 }
 
+// Recentrage de l'estime lors d'un point (étoiles, visuel) : l'estimation est
+// REPLACÉE dans le cercle de la nouvelle incertitude, autour de la position
+// vraie. Un point qui réduit l'incertitude SANS recentrer laisse l'estime à
+// son erreur accumulée sous un cercle rétréci — un instrument qui ment (le
+// point rouge reste à des dizaines de km de la vérité alors que la carte
+// affiche ± quelques km). Même loi que le point aux étoiles, partout.
+export function recenterEst(st, newUnc) {
+  const fa = Math.random() * Math.PI * 2;
+  const fr = Math.sqrt(Math.random()) * (newUnc / DEG_KM);
+  st.estX = st.x + Math.cos(fa) * fr;
+  st.estY = st.y + Math.sin(fa) * fr;
+  st.unc = newUnc;
+}
+
 // Un tick = dtMin minutes de jeu. Le monde (balises) est partagé entre
 // joueurs : toute capture par un joueur désactive la balise pour tous —
 // désactivée, elle continue d'exister et d'émettre (« ping désactivé »).
@@ -1746,11 +1776,7 @@ export function tick(st, dtMin, world) {
       if (navOk) {
         const newUnc = Math.max(NAVFIX_BASE_KM, NAVFIX_BASE_KM + NAVFIX_CLOUD_KM * w.clouds + NAVFIX_SEA_KM * w.hs + NAVFIX_VIS_KM * Math.max(0, NAVFIX_VIS_REF_KM - w.visibility));
         if (newUnc < st.unc) {
-          const fa = Math.random() * Math.PI * 2;
-          const fr = Math.sqrt(Math.random()) * (newUnc / DEG_KM);
-          st.estX = st.x + Math.cos(fa) * fr;
-          st.estY = st.y + Math.sin(fa) * fr;
-          st.unc = newUnc;
+          recenterEst(st, newUnc);
           ev(st, "nav", `🔭 Point aux étoiles réussi : incertitude ± ${newUnc.toFixed(1)} km.`, "nav");
         } else {
           notify(st, `🔭 Point aux étoiles réalisé (± ${newUnc.toFixed(1)} km) — sans gain.`, "info", "nav");
@@ -1811,7 +1837,7 @@ export function tick(st, dtMin, world) {
   const islandVis = canSee && nearIsl.c <= detectKm("ile", visKm, night2);
   if (islandVis && !st.sawIsland) {
     notify(st, `🏝️ Île en vue : ~${Math.round(nearIsl.c)} km, azimut ${azTo(nearIsl.i.x, nearIsl.i.y)}°.`, "info", "vision");
-    if (st.unc > 8) { st.unc = 8; notify(st, "🔭 Point visuel sur l'île : incertitude ± 8 km.", "good", "nav"); }
+    if (st.unc > 8) { recenterEst(st, 8); notify(st, "🔭 Point visuel sur l'île : incertitude ± 8 km.", "good", "nav"); }
   }
   st.sawIsland = islandVis;
   const bVis = canSee ? world.BEACONS.map((b) => ({ b, km: kmOf(b.x, b.y) })).find((e) => e.km <= detectKm("balise", visKm, night2)) : null; // capturée ou non : l'objet physique existe
@@ -1819,21 +1845,21 @@ export function tick(st, dtMin, world) {
     notify(st, night2
       ? `🔦 Feu de balise en vue (${bVis.b.id}) : ${Math.round(bVis.km)} km, azimut ${azTo(bVis.b.x, bVis.b.y)}°.`
       : `📍 Balise en vue (${bVis.b.id}) : ${Math.round(bVis.km)} km, azimut ${azTo(bVis.b.x, bVis.b.y)}°.`, "info", "vision");
-    if (st.unc > 3.7) { st.unc = 3.7; notify(st, "🔭 Point visuel sur la balise : incertitude ± 3,7 km.", "good", "nav"); }
+    if (st.unc > 3.7) { recenterEst(st, 3.7); notify(st, "🔭 Point visuel sur la balise : incertitude ± 3,7 km.", "good", "nav"); }
   }
   st.sawBeaconId = bVis ? bVis.b.id : null;
   const portKm = kmOf(world.PORT.x, world.PORT.y);
   const portVis = canSee && portKm <= detectKm("port", visKm, night2);
   if (portVis && !st.sawPort) {
     notify(st, `🏛️ Port en vue : ${Math.round(portKm)} km, azimut ${azTo(world.PORT.x, world.PORT.y)}°.`, "info", "vision");
-    if (st.unc > 0.9) { st.unc = 0.9; notify(st, "🔭 Point visuel sur le port : incertitude ± 0,9 km.", "good", "nav"); }
+    if (st.unc > 0.9) { recenterEst(st, 0.9); notify(st, "🔭 Point visuel sur le port : incertitude ± 0,9 km.", "good", "nav"); }
   }
   st.sawPort = portVis;
   const contKm = distToLine(st.x, st.y, world.COAST) * DEG_KM;
   const contVis = canSee && contKm <= detectKm("continent", visKm, night2);
   if (contVis && !st.sawCont) {
     notify(st, `🏞️ Côte en vue : ~${Math.round(contKm)} km.`, "info", "vision");
-    if (st.unc > 10) { st.unc = 10; notify(st, "🔭 Point visuel sur la côte : incertitude ± 10 km.", "good", "nav"); }
+    if (st.unc > 10) { recenterEst(st, 10); notify(st, "🔭 Point visuel sur la côte : incertitude ± 10 km.", "good", "nav"); }
   }
   st.sawCont = contVis;
   world.OUTPOSTS.forEach((o, idx) => {
@@ -1841,7 +1867,7 @@ export function tick(st, dtMin, world) {
     if (canSee && km <= detectKm("poste", visKm, night2) && !st.sawOutpostIds.includes(idx)) {
       st.sawOutpostIds.push(idx);
       notify(st, `🏕️ Avant-poste en vue : ${Math.round(km)} km, azimut ${azTo(o.x, o.y)}°.`, "info", "vision");
-      if (st.unc > 3.7) { st.unc = 3.7; notify(st, "🔭 Point visuel sur l'avant-poste : incertitude ± 3,7 km.", "good", "nav"); }
+      if (st.unc > 3.7) { recenterEst(st, 3.7); notify(st, "🔭 Point visuel sur l'avant-poste : incertitude ± 3,7 km.", "good", "nav"); }
     }
   });
 
