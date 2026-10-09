@@ -640,6 +640,93 @@ export function scrambledIntercept(strength, source, side) {
   return { text: `📡 Transmission brouillée captée (omnidirectionnelle) — signal ${strength}%. Contenu : illisible, origine inconnue.`, cat: "radio" };
 }
 
+// ---------- Sonar ----------
+// DEUX CANAUX, une seule tuile :
+// - ÉCOUTE PASSIVE (hydrophone) : continue, gratuite, en surface comme en
+//   plongée. GISEMENT SEUL, aucune distance : icône au bord du cercle. Force
+//   UNIFORME pour tous les bruits : 100 % -> 0 % sur SOUND_DECAY_KM.
+//   Catalogue v1 : moteur diesel d'un navire en surface ; ping actif d'un
+//   autre navire (événement). (Bête et warship : plus tard, même mécanique.)
+// - PING ACTIF : UN clic = UN ping (pas de mode continu), plongée uniquement,
+//   SONAR_PING_BATTERY_COST % de batterie. Tout ce qui traîne dans
+//   SONAR_RANGE_KM rebondit : îles, côte, balises (capturées ou non),
+//   navires EN SURFACE. Un navire IMMERGÉ est totalement invisible (et
+//   silencieux : il ne se trahit que s'il ping lui-même).
+// Les signaux se déplacent à la vitesse du son dans l'eau : bruits et échos
+// arrivent avec leur vrai retard (aller-retour 200 km ≈ 4,4 min).
+// Un écho/ping entendu s'affiche SONAR_ECHO_PERSIST_S secondes.
+export const SOUND_KMH = 5400;            // vitesse du son dans l'eau ≈ 1500 m/s
+export const SOUND_DECAY_KM = 500;        // bruits : force uniforme, 0 % à 500 km
+export const SONAR_RANGE_KM = 200;        // portée du ping actif
+export const SONAR_PING_BATTERY_COST = 1; // % de batterie par ping
+export const SONAR_ECHO_PERSIST_S = 10;   // affichage d'un écho/ping entendu (s)
+
+// Retard de propagation : minutes de jeu pour que le son parcoure dKm.
+export const soundTravelMin = (dKm) => dKm / (SOUND_KMH / 60);
+
+// Un navire fait du BRUIT (hydrophone des tiers) si son moteur diesel
+// tourne en surface. Voile, électrique, ancre : silencieux.
+export function shipNoisy(st) {
+  return st.location === "surface" && st.engineOn && st.fuel > 0;
+}
+
+// Point le plus proche sur une polyligne (réflexion de la côte au ping).
+export function nearestOnLine(px, py, pts) {
+  let best = [pts[0][0], pts[0][1]], bd = Infinity;
+  for (let k = 0; k < pts.length - 1; k++) {
+    const ax = pts[k][0], ay = pts[k][1], bx = pts[k + 1][0], by = pts[k + 1][1];
+    const dx = bx - ax, dy = by - ay;
+    const t = clamp(((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy || 1), 0, 1);
+    const qx = ax + t * dx, qy = ay + t * dy;
+    const d = (px - qx) * (px - qx) + (py - qy) * (py - qy);
+    if (d < bd) { bd = d; best = [qx, qy]; }
+  }
+  return best;
+}
+
+// Écoute passive d'une source : GISEMENT + FORCE seulement (aucune distance).
+// `srcX/srcY` = position de la source AU MOMENT DE L'ÉMISSION : le retard de
+// propagation est appliqué PAR L'APPELANT (le serveur tient l'historique).
+export function sonarPassiveHear(listenerSt, srcX, srcY) {
+  const dKm = distKm(listenerSt.x, listenerSt.y, srcX, srcY);
+  const strength = strengthKm(dKm, SOUND_DECAY_KM);
+  if (strength <= 0) return null;
+  return { bearing: Math.round(bearingTo(listenerSt.x, listenerSt.y, srcX, srcY)), strength };
+}
+
+// Ping actif : plongée uniquement, coût SONAR_PING_BATTERY_COST.
+// Retourne { ok: false, error } ou { ok: true, echoes }. Chaque écho :
+// { kind: "ile"|"cote"|"balise"|"navire", x, y, dKm, az, arriveMin } —
+// az/dKm FIGÉS au moment du ping ; arriveMin = retour de l'écho
+// (minutes de jeu : t + 2 × retard du son). Le serveur n'expose JAMAIS
+// x/y au client (azimut + distance seulement).
+export function sonarPing(st, world, others = []) {
+  if (st.location !== "underwater")
+    return { ok: false, error: "Sonar actif disponible en plongée uniquement." };
+  if (st.battery < SONAR_PING_BATTERY_COST)
+    return { ok: false, error: "Batteries insuffisantes (1 % par ping)." };
+  st.battery = Math.max(0, st.battery - SONAR_PING_BATTERY_COST);
+  const echoes = [];
+  const push = (kind, x, y) => {
+    const dKm = distKm(st.x, st.y, x, y);
+    if (dKm > SONAR_RANGE_KM || dKm <= 0) return;
+    echoes.push({
+      kind, x, y, dKm,
+      az: Math.round(bearingTo(st.x, st.y, x, y)),
+      arriveMin: st.t + 2 * soundTravelMin(dKm),
+    });
+  };
+  for (const i of world.ISLANDS) push("ile", i.x, i.y);
+  for (const b of world.BEACONS) push("balise", b.x, b.y); // capturée ou non : l'objet existe
+  const coast = nearestOnLine(st.x, st.y, world.COAST);
+  push("cote", coast[0], coast[1]);
+  for (const o of others) {
+    if (o.location !== "surface") continue; // navire immergé : invisible au sonar actif
+    push("navire", o.x, o.y);
+  }
+  return { ok: true, echoes };
+}
+
 // ---------- Balise-vigie : signal de proximité + verrou + ancre ----------
 // Intervalle du ping de proximité : accélération progressive, géométrique par
 // décade — 30 s à ≥ 100 km, 10 s à ≤ 100 m (~21 s à 10 km, ~14 s à 1 km).

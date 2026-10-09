@@ -7,6 +7,8 @@ import {
   longStrengthKm, strengthKm, SHORT_DECAY_KM, recvCapture, detectBeacon, onProximityPing,
   proxPingIntervalS, captureBeacon, beaconLockTick, beaconLockSteer, pushBeaconSignal, SIGNAL_LOG_MAX, PROX_ARM_KM, ANCHOR_DROP_KM,
   scrambledIntercept, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT,
+  sonarPing, sonarPassiveHear, shipNoisy, nearestOnLine, soundTravelMin,
+  SOUND_KMH, SOUND_DECAY_KM, SONAR_RANGE_KM, SONAR_PING_BATTERY_COST, SONAR_ECHO_PERSIST_S,
 } from "./engine.js";
 
 // Navire de test en pleine eau (loin du port et des terres), pleine vitesse.
@@ -738,4 +740,92 @@ test("segDistKm : distance point-segment", () => {
   // point au-dessus du milieu d'un segment horizontal
   const d = segDistKm(30.001, 30.001, 30, 30, 30.002, 30);
   assert.ok(Math.abs(d - 0.001 * DEG_KM) < 0.001, `distance ~0.05 km (actuel: ${d})`);
+});
+
+// ---------- Sonar ----------
+const sonarStubWorld = { ISLANDS: [{ x: 30, y: 31 }], BEACONS: [], COAST: [[20, 30], [20, 20]] };
+function subAt(w) { // navire de test en plongée, à (30, 30)
+  const st = newPlayerState(w);
+  st.x = 30; st.y = 30; st.estX = 30; st.estY = 30;
+  st.location = "underwater";
+  return st;
+}
+
+test("sonar : constantes (son 5400 km/h, décroissance 500 km, portée 200 km, coût 1 %)", () => {
+  assert.equal(SOUND_KMH, 5400);          // ≈ 1500 m/s
+  assert.equal(SOUND_DECAY_KM, 500);
+  assert.equal(SONAR_RANGE_KM, 200);
+  assert.equal(SONAR_PING_BATTERY_COST, 1);
+  assert.equal(SONAR_ECHO_PERSIST_S, 10);
+});
+
+test("sonar : retard du son — 200 km ≈ 2,22 min de jeu", () => {
+  assert.ok(Math.abs(soundTravelMin(200) - 200 / (SOUND_KMH / 60)) < 1e-9);
+  assert.ok(Math.abs(soundTravelMin(200) - 2.222) < 0.01);
+});
+
+test("sonarPing : refusé en surface, refusé sans batteries", () => {
+  const w = buildWorld(42);
+  const st = subAt(w);
+  st.location = "surface";
+  assert.equal(sonarPing(st, w).ok, false, "surface : refus");
+  st.location = "underwater";
+  st.battery = 0.5;
+  assert.equal(sonarPing(st, w).ok, false, "moins de 1 % : refus");
+});
+
+test("sonarPing : coût 1 % + écho d'île (az, distance, arrivée = 2 × retard)", () => {
+  const w = buildWorld(42);
+  const st = subAt(w);
+  st.t = 100;
+  const bat0 = st.battery;
+  const r = sonarPing(st, sonarStubWorld);
+  assert.ok(r.ok);
+  assert.ok(Math.abs(st.battery - (bat0 - SONAR_PING_BATTERY_COST)) < 1e-9, "coût débité");
+  const e = r.echoes.find((x) => x.kind === "ile");
+  assert.ok(e, "l'île à 50 km rebondit");
+  assert.ok(Math.abs(e.dKm - 50) < 1e-6);
+  assert.equal(e.az, 0, "gisement plein nord");
+  assert.ok(Math.abs(e.arriveMin - (100 + 2 * soundTravelMin(50))) < 1e-9, "retour = 2 × retard du son");
+});
+
+test("sonarPing : rien au-delà de 200 km, navire immergé invisible", () => {
+  const w = buildWorld(42);
+  const st = subAt(w);
+  const far = { ISLANDS: [{ x: 30 + 210 / DEG_KM, y: 30 }], BEACONS: [], COAST: [[20, 30], [20, 20]] };
+  assert.ok(!sonarPing(st, far).echoes.some((e) => e.kind === "ile"), "île à 210 km : aucun écho");
+  const others = [
+    { x: 30.5, y: 30, location: "surface" },     // 25 km, en surface
+    { x: 30.4, y: 30, location: "underwater" },   // 20 km, immergé
+  ];
+  const nav = sonarPing(st, sonarStubWorld, others).echoes.filter((e) => e.kind === "navire");
+  assert.equal(nav.length, 1, "un seul navire rebondit");
+  assert.ok(Math.abs(nav[0].dKm - 25) < 0.01, "c'est le navire de surface (l'immergé est invisible)");
+});
+
+test("sonarPassiveHear : gisement seul, force uniforme, silence à 500 km", () => {
+  const w = buildWorld(42);
+  const st = subAt(w);
+  const h250 = sonarPassiveHear(st, 30, 30 + 250 / DEG_KM);
+  assert.ok(h250 && h250.bearing === 0 && h250.strength === 50, "250 km : plein nord, 50 %");
+  assert.equal("distKm" in (h250 || {}), false, "aucune distance en passif");
+  assert.equal(sonarPassiveHear(st, 30, 30 + 500 / DEG_KM), null, "500 km : silence");
+  assert.equal(sonarPassiveHear(st, 30 + 400 / DEG_KM, 30).bearing, 90, "gisement est");
+});
+
+test("shipNoisy : moteur diesel en surface seulement", () => {
+  const w = buildWorld(42);
+  const st = subAt(w);
+  assert.equal(shipNoisy(st), false, "plongée : silencieux");
+  st.location = "surface"; st.mast = true; st.engineOn = false;
+  assert.equal(shipNoisy(st), false, "à la voile : silencieux");
+  st.engineOn = true;
+  assert.equal(shipNoisy(st), true, "moteur en surface : bruyant");
+  st.fuel = 0;
+  assert.equal(shipNoisy(st), false, "panne sèche : silencieux");
+});
+
+test("nearestOnLine : point le plus proche de la polyligne", () => {
+  const p = nearestOnLine(21, 25, [[20, 30], [20, 20]]);
+  assert.ok(Math.abs(p[0] - 20) < 1e-9 && Math.abs(p[1] - 25) < 1e-9);
 });

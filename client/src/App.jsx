@@ -5,6 +5,7 @@ import {
   MAP, DEG_KM, RARITY_STYLE,
   distKm, dirSensitivity, DOUGLAS_LABEL, LONG_DECAY_KM,
   DELIVERY_R_KM, OMNI_DETECT_PCT, MS_PER_MIN, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT,
+  SONAR_RANGE_KM, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, SONAR_PING_BATTERY_COST,
 } from "../../shared/engine.js";
 
 const AUTOGUIDE_LABEL = { disabled: "Désactivées", active: "Actives", all: "Toutes" };
@@ -630,6 +631,97 @@ function nextPhase(tMin, targetHour) {
   return delta * 60;
 }
 
+// ---------- Tuile Sonar (écoute passive continue + ping actif au clic) ----------
+// AUCUN RETOUR TEXTUEL : les bruits (moteur, ping d'un autre navire) sont des
+// icônes au bord du cercle — GISEMENT SEUL, aucune distance. Les échos du
+// ping sont des FORMES en gisement + distance, affichées
+// SONAR_ECHO_PERSIST_S secondes. Le ping est disponible en plongée
+// uniquement ; tout rebondit, sauf un navire immergé.
+function SonarTile({ snap, cmd }) {
+  const p = snap.player;
+  const sonar = snap.sonar || { passive: [], echoes: [] };
+  const uw = p.location === "underwater";
+  const R = 96; // rayon du disque (viewBox 200) — le bord = SONAR_RANGE_KM
+  const kmPx = (km) => (Math.min(km, SONAR_RANGE_KM) / SONAR_RANGE_KM) * (R - 8);
+  const pos = (az, r) => {
+    const a = (az * Math.PI) / 180;
+    return [100 + Math.sin(a) * r, 100 - Math.cos(a) * r];
+  };
+  const ECHO_COLOR = { ile: "#2dd4bf", balise: "#facc15", navire: "#22d3ee", cote: "#94a3b8" };
+  const ECHO_SHAPE = { ile: "triangle", balise: "diamond", navire: "round", cote: "arc" };
+  return (
+    <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
+      <h2 className="text-sm font-semibold text-sky-300">Sonar</h2>
+      <svg viewBox="0 0 200 200" className="mx-auto w-full max-w-[280px]">
+        <circle cx="100" cy="100" r={R} fill="#04121a" stroke="#334155" strokeWidth="1.5" />
+        {[0.25, 0.5, 0.75].map((f) => (
+          <circle key={f} cx="100" cy="100" r={R * f} fill="none" stroke="#1e293b" strokeWidth="0.7" />
+        ))}
+        <line x1={100 - R} y1="100" x2={100 + R} y2="100" stroke="#1e293b" strokeWidth="0.7" />
+        <line x1="100" y1={100 - R} x2="100" y2={100 + R} stroke="#1e293b" strokeWidth="0.7" />
+        <text x="100" y="9" fontSize="7" fill="#64748b" textAnchor="middle">0°</text>
+        <text x="192" y="103" fontSize="7" fill="#64748b" textAnchor="middle">90°</text>
+        <text x="100" y="197" fontSize="7" fill="#64748b" textAnchor="middle">180°</text>
+        <text x="8" y="103" fontSize="7" fill="#64748b" textAnchor="middle">270°</text>
+        {/* Écoute passive : icônes au bord — gisement seul, opacité = force */}
+        {sonar.passive.map((s, i) => {
+          const [x, y] = pos(s.bearing, R - 9);
+          return (
+            <g key={`p${i}`} opacity={Math.max(0.25, s.strength / 100)}>
+              {s.kind === "moteur" ? (
+                <circle cx={x} cy={y} r="4" fill="none" stroke="#f97316" strokeWidth="1.4" />
+              ) : (
+                <path d={`M ${x - 4} ${y - 4} L ${x + 4} ${y + 4} M ${x + 4} ${y - 4} L ${x - 4} ${y + 4}`} stroke="#a855f7" strokeWidth="1.6" />
+              )}
+            </g>
+          );
+        })}
+        {/* Échos du ping : formes en gisement + distance, affichées 10 s */}
+        {sonar.echoes.map((e, i) => {
+          const [x, y] = pos(e.az, kmPx(e.distKm));
+          const col = ECHO_COLOR[e.kind] || "#94a3b8";
+          const fade = Math.max(0.15, 1 - e.ageS / SONAR_ECHO_PERSIST_S);
+          const shape = ECHO_SHAPE[e.kind];
+          return (
+            <g key={`e${i}`} opacity={fade} fill={col} stroke={col}>
+              {shape === "round" && <circle cx={x} cy={y} r="3.5" fill={col} />}
+              {shape === "diamond" && <rect x={x - 3.5} y={y - 3.5} width="7" height="7" transform={`rotate(45 ${x} ${y})`} fill={col} />}
+              {shape === "triangle" && <path d={`M ${x} ${y - 4} L ${x + 3.8} ${y + 3} L ${x - 3.8} ${y + 3} Z`} fill={col} />}
+              {shape === "arc" && (() => {
+                const [x0, y0] = pos(e.az - 12, R - 4);
+                const [x1, y1] = pos(e.az + 12, R - 4);
+                return <path d={`M ${x0} ${y0} A ${R - 4} ${R - 4} 0 0 1 ${x1} ${y1}`} fill="none" strokeWidth="3" />;
+              })()}
+            </g>
+          );
+        })}
+        {/* Navire au centre */}
+        <circle cx="100" cy="100" r="2" fill={uw ? "#38bdf8" : "#94a3b8"} />
+      </svg>
+      <div className="space-y-2">
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-400">
+          <span><span className="text-orange-400">◯</span> moteur (passif)</span>
+          <span><span className="text-purple-400">✕</span> ping d'un autre (passif)</span>
+          <span><span className="text-teal-300">▲</span> île</span>
+          <span><span className="text-yellow-300">◆</span> balise</span>
+          <span><span className="text-cyan-300">●</span> navire</span>
+          <span><span className="text-slate-400">◡</span> côte</span>
+        </div>
+        <button
+          disabled={!uw || p.battery < SONAR_PING_BATTERY_COST}
+          onClick={() => cmd({ ping: true })}
+          className={`w-full rounded-lg py-2 text-sm font-bold transition-colors ${uw && p.battery >= SONAR_PING_BATTERY_COST ? "bg-sky-600 text-white hover:bg-sky-500" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+        >
+          🔊 Ping ({SONAR_PING_BATTERY_COST} % batterie)</button>
+        {!uw && <p className="text-[10px] text-slate-500">Passif : écoute continue (surface et plongée). Ping actif : plongée uniquement.</p>}
+        {!uw && null}
+        {uw && p.battery < SONAR_PING_BATTERY_COST && <p className="text-[10px] text-amber-400/80">Batteries insuffisantes.</p>}
+        <p className="text-[10px] text-slate-500">Échos et bruits : gisement {uw ? "+ distance (ping) " : "" }uniquement — jamais de position. Portée {SONAR_RANGE_KM} km, affichage {SONAR_ECHO_PERSIST_S} s.</p>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Application principale ----------
 export default function App() {
   const [session, setSession] = useState(null);
@@ -836,6 +928,9 @@ export default function App() {
 
         {/* Carte de navigation : côte à côte avec le navire (PC) */}
         <NavMap snap={snap} sock={sock} />
+
+        {/* Sonar : hydrophone passif continu + ping actif au clic */}
+        <SonarTile snap={snap} cmd={cmd} />
       </div>
 
       {/* Météo + radio + journal : en dessous, pleine largeur */}

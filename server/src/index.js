@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -88,6 +88,91 @@ function gameMinutesNow() {
 
 const states = new Map(); // accountId -> player state (engine)
 const proxLast = new Map(); // code balise → dernier ping court (ms)
+
+// ---------- Sonar — état éphémère (non persisté) ----------
+// Le sonar vit côté serveur : positions vraies, historique pour le retard
+// de propagation, files d'échos/pings en transit. Perdu au redémarrage :
+// acceptable (les détections sont des événements courts).
+const noiseHistory = new Map();       // accountId -> [{ t, x, y }] positions récentes (retard du son)
+const sonarPending = new Map();       // accountId -> [{ kind, az, distKm, arriveMin }] échos pas encore revenus
+const sonarLive = new Map();          // accountId -> [{ kind, az, distKm, heardMs }] échos revenus (10 s)
+const sonarNoisePending = new Map();  // accountId -> [{ bearing, strength, arriveMin }] pings des autres en transit
+const sonarHeard = new Map();        // accountId -> [{ bearing, strength, heardMs }] pings entendus (10 s)
+
+// Position retardée dans un historique : dernière entrée <= tMin.
+function posAtT(hist, tMin) {
+  if (!hist || hist.length === 0) return null;
+  for (let i = hist.length - 1; i >= 0; i--) {
+    if (hist[i].t <= tMin) return hist[i];
+  }
+  return hist[0];
+}
+
+// Écoute passive d'un navire : bruits moteurs (positions RETARDÉES) + pings
+// entendus. GISEMENT + FORCE seulement — jamais de position.
+function sonarPassiveFor(id) {
+  const me = states.get(id);
+  if (!me) return [];
+  const out = [];
+  for (const [oid, hist] of noiseHistory) {
+    if (oid === id) continue;
+    const ost = states.get(oid);
+    if (!ost || !shipNoisy(ost)) continue;
+    // le bruit entendu MAINTENANT a été émis il y a d / vitesse du son :
+    // deux itérations convergent (les navires sont lents à l'échelle du son)
+    let d = distKm(me.x, me.y, ost.x, ost.y);
+    let p = posAtT(hist, me.t - soundTravelMin(d));
+    if (!p) continue;
+    d = distKm(me.x, me.y, p.x, p.y);
+    p = posAtT(hist, me.t - soundTravelMin(d));
+    if (!p) continue;
+    const heard = sonarPassiveHear(me, p.x, p.y);
+    if (heard) out.push({ kind: "moteur", bearing: heard.bearing, strength: heard.strength });
+  }
+  for (const ev of (sonarHeard.get(id) || [])) {
+    out.push({ kind: "ping", bearing: ev.bearing, strength: ev.strength });
+  }
+  return out;
+}
+
+// Passe sonar (boucle 1 Hz) : historique des positions, arrivées des échos
+// et des pings entendus, purge des événements expirés.
+function sonarPass() {
+  const nowMs = Date.now();
+  const cut = nowMs - SONAR_ECHO_PERSIST_S * 1000;
+  for (const [id, st] of states) {
+    let hist = noiseHistory.get(id);
+    if (!hist) { hist = []; noiseHistory.set(id, hist); }
+    hist.push({ t: st.t, x: st.x, y: st.y });
+    while (hist.length > 500) hist.shift(); // ~8 min : couvre le retard max (500 km ≈ 5,6 min)
+    const pend = sonarPending.get(id);
+    if (pend && pend.length) {
+      sonarPending.set(id, pend.filter((e) => {
+        if (st.t >= e.arriveMin) {
+          const live = sonarLive.get(id) || [];
+          live.push({ kind: e.kind, az: e.az, distKm: e.distKm, heardMs: nowMs });
+          sonarLive.set(id, live);
+          return false;
+        }
+        return true;
+      }));
+    }
+    const nPend = sonarNoisePending.get(id);
+    if (nPend && nPend.length) {
+      sonarNoisePending.set(id, nPend.filter((ev) => {
+        if (st.t >= ev.arriveMin) {
+          const heard = sonarHeard.get(id) || [];
+          heard.push({ bearing: ev.bearing, strength: ev.strength, heardMs: nowMs });
+          sonarHeard.set(id, heard);
+          return false;
+        }
+        return true;
+      }));
+    }
+    if (sonarLive.has(id)) sonarLive.set(id, sonarLive.get(id).filter((e) => e.heardMs >= cut));
+    if (sonarHeard.has(id)) sonarHeard.set(id, sonarHeard.get(id).filter((e) => e.heardMs >= cut));
+  }
+}
 // Positions de spawn déjà posées au port (anti-chevauchement, ordre d'arrivée)
 let takenSpawns = [];
 for (const [id, saved] of Object.entries(race.players || {})) {
@@ -176,6 +261,7 @@ setInterval(() => {
     }
   }
   multiplayerPass(now);
+  sonarPass();
     // NETWORK : coupure automatique dès que le navire quitte la zone —
     // revenir = se RECONNECTER = nouvelle entrée dans le journal global.
     for (const [, st] of states) if (st.networked && !netZone(st)) st.networked = false;
@@ -385,6 +471,13 @@ function publicSnapshot(id) {
       const az = Math.round((Math.atan2(ts.x - st.x, ts.y - st.y) * 180) / Math.PI + 360) % 360;
       return { id: ts.code, km: Math.round(km * 10) / 10, az, light: !!ts.light };
     }),
+    sonar: {
+      passive: sonarPassiveFor(id),
+      echoes: (sonarLive.get(id) || []).map((e) => ({
+        kind: e.kind, az: e.az, distKm: e.distKm,
+        ageS: (Date.now() - e.heardMs) / 1000,
+      })),
+    },
   };
 }
 
@@ -573,6 +666,36 @@ wss.on("connection", (ws, req) => {
         if (!r.ok) {
           st.notifSeq = (st.notifSeq || 0) + 1;
           st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⚠️ ${r.error}`, kind: "warn", cat: "radio" });
+        }
+      }
+      // Sonar actif : UN clic = UN ping (plongée uniquement, 1 % batterie).
+      // Les échos reviennent avec leur vrai retard (vitesse du son) ; le
+      // ping est un BRUIT : tous les autres navires l'entendent en passif
+      // (gisement + force, décroissance son), avec le même retard.
+      if (c.ping === true) {
+        const res = sonarPing(st, world, [...states.values()].filter((o) => o !== st));
+        if (!res.ok) {
+          st.notifSeq = (st.notifSeq || 0) + 1;
+          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⚠️ Sonar : ${res.error}`, kind: "warn", cat: "sonar" });
+        } else {
+          const pend = sonarPending.get(id) || [];
+          for (const e of res.echoes) pend.push({ kind: e.kind, az: e.az, distKm: e.dKm, arriveMin: e.arriveMin });
+          sonarPending.set(id, pend);
+          for (const [oid, ost] of states) {
+            if (oid === id) continue;
+            const d = distKm(ost.x, ost.y, st.x, st.y);
+            const strength = strengthKm(d, SOUND_DECAY_KM);
+            if (strength <= 0) continue;
+            const q = sonarNoisePending.get(oid) || [];
+            q.push({
+              bearing: Math.round(bearingTo(ost.x, ost.y, st.x, st.y)),
+              strength,
+              arriveMin: ost.t + soundTravelMin(d),
+            });
+            sonarNoisePending.set(oid, q);
+          }
+          st.notifSeq = (st.notifSeq || 0) + 1;
+          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🔊 Ping émis (1 % batteries).", kind: "info", cat: "sonar" });
         }
       }
       if (c.dive === true) { st.location = "underwater"; st.mast = false; st.engineOn = false; }
@@ -772,6 +895,8 @@ wss.on("connection", (ws, req) => {
           race.players[pid] = nst;
           slotIdx++;
         }
+        // Sonar : l'état éphémère suit la remise à neuf
+        for (const m of [noiseHistory, sonarPending, sonarLive, sonarNoisePending, sonarHeard]) m.clear();
         store.save();
         st.notifSeq = (st.notifSeq || 0) + 1;
         st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🔄 Course réinitialisée : nouveau monde, nouvelles balises, navires à quai. Horloge re-synchronisée sur Paris.", kind: "good", cat: "navire" });
