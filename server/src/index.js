@@ -1,5 +1,4 @@
 import fsSync from "node:fs";
-import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -37,11 +36,7 @@ const store = new Store(path.join(ROOT, "data"));
 const auth = new Auth(store);
 
 function readAdminSecret() {
-  try {
-    return fsSync.readFileSync(path.join(ROOT, "data/admin-secret.txt"), "utf8").trim();
-  } catch {
-    return null;
-  }
+  return process.env.ADMIN_SECRET || null;
 }
 
 // ---------- Course ----------
@@ -961,20 +956,11 @@ app.get("/api/wx", (req, res) => {
 });
 
 // ---------- API d'administration (interface /admin) ----------
-// Toutes les routes exigent le secret admin (ADMIN_SECRET ou
-// data/admin-secret.txt). Génération automatique au premier usage.
-function getAdminSecret() {  const env = process.env.ADMIN_SECRET;
-  if (env) return env;
-  try {
-    return fsSync.readFileSync(path.join(ROOT, "data/admin-secret.txt"), "utf8").trim();
-  } catch {
-    // Premier lancement : génération du secret (le fichier data/ existe déjà,
-    // créé par le Store).
-    const s = crypto.randomBytes(12).toString("hex");
-    fsSync.writeFileSync(path.join(ROOT, "data/admin-secret.txt"), s + "\n", { mode: 0o600 });
-    console.log("Secret admin généré : data/admin-secret.txt — notez-le pour la page /admin");
-    return s;
-  }
+// Toutes les routes exigent le secret admin, défini UNIQUEMENT via la
+// variable d'environnement ADMIN_SECRET (jamais généré, jamais écrit sur
+// disque, jamais affiché dans la console).
+function getAdminSecret() {
+  return process.env.ADMIN_SECRET || null;
 }
 function adminGuard(req, res) {
   const secret = getAdminSecret();

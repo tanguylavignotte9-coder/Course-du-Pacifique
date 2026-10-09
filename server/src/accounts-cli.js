@@ -14,7 +14,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import readline from "node:readline";
-import crypto from "node:crypto";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -54,14 +53,10 @@ const ask = (question, hidden = false) =>
     }
   });
 
-const SECRET_FILE = path.join(ROOT, "data/admin-secret.txt");
 function ensureSecret() {
   if (process.env.ADMIN_SECRET) return process.env.ADMIN_SECRET;
-  if (fs.existsSync(SECRET_FILE)) return fs.readFileSync(SECRET_FILE, "utf8").trim();
-  const s = crypto.randomBytes(12).toString("hex");
-  fs.writeFileSync(SECRET_FILE, s + "\n", { mode: 0o600 });
-  console.log(`Secret admin généré : data/admin-secret.txt (gardez-le privé)`);
-  return s;
+  console.log(`Aucun secret admin défini : définissez la variable d'environnement ADMIN_SECRET.`);
+  return null;
 }
 
 function list() {
@@ -156,8 +151,8 @@ async function main() {
       return;
     }
     case "secret": {
-      ensureSecret();
-      console.log("Secret admin disponible (ADMIN_SECRET ou data/admin-secret.txt).");
+      const s = ensureSecret();
+      console.log(s ? "Secret admin défini via ADMIN_SECRET." : "Aucun secret admin défini : définissez la variable d'environnement ADMIN_SECRET.");
       return;
     }
     case undefined:
