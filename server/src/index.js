@@ -1178,6 +1178,12 @@ wss.on("connection", (ws, req) => {
         // vs nouvelles balises + codes joueurs frais).
         race.npcs = generateNpcs(world, usedCodes, gameMinutesNow());
         lastNpcT = gameMinutesNow();
+        // La Bête : nouveau spawn (≥ 1000 km du port du nouveau monde),
+        // ouïe réinitialisée, traces effacées.
+        race.beast = undefined;
+        ensureBeast();
+        recentSongs.length = 0;
+        lastBeastT = gameMinutesNow();
         store.save();
         st.notifSeq = (st.notifSeq || 0) + 1;
         st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🔄 Course réinitialisée : nouveau monde, nouvelles balises, navires à quai. Horloge re-synchronisée sur Paris.", kind: "good", cat: "navire" });

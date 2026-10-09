@@ -236,17 +236,16 @@ function TopView({ snap }) {
             ? <circle key={e.id} cx={p[0]} cy={p[1]} r={marker(2.5)} fill="#f8fafc" />
             : <circle key={e.id} cx={p[0]} cy={p[1]} r={marker(4)} fill={e.off ? "#64748b" : RARITY_STYLE[e.rarity].color} />;
         })}
-        {/* Traces détectées : épave dérivante / mer de sang — jamais nommées */}
-        {(view.traces || []).map((t, i) => {
-          if (t.beyond) return null;
-          const p = proj(t.az, t.km);
-          return (
-            <g key={`tr${i}`}>
-              {t.kind === "epave"
-                ? <rect x={p[0] - marker(4.5)} y={p[1] - marker(2)} width={marker(9)} height={marker(4)}
-                    fill="#475569" stroke="#94a3b8" strokeWidth={lw(0.5)} />
-                : <circle cx={p[0]} cy={p[1]} r={marker(5)} fill="rgba(153,27,27,0.45)" stroke="rgba(185,28,28,0.7)" strokeWidth={lw(0.5)} />}
+        {/* Traces de la Bête : épave (coque grise brisée) / mer de sang (tache rouge) */}
+        {(view.traces || []).map((e, idx) => {
+          if (e.beyond) return null;
+          const p = proj(e.az, e.km);
+          return e.kind === "epave" ? (
+            <g key={"tr" + idx}>
+              <path d={`M ${p[0] - marker(5)} ${p[1] - marker(1.5)} L ${p[0] + marker(5)} ${p[1] + marker(1.5)} M ${p[0] + marker(5)} ${p[1] - marker(1.5)} L ${p[0] - marker(5)} ${p[1] + marker(1.5)}`} stroke="#64748b" strokeWidth={lw(2)} strokeLinecap="round" />
             </g>
+          ) : (
+            <circle key={"tr" + idx} cx={p[0]} cy={p[1]} r={marker(7)} fill="rgba(153,27,27,0.45)" stroke="#b91c1c" strokeWidth={lw(0.8)} />
           );
         })}
         {/* Navires détectés : marqueur + nom + distance, feu si phare la nuit */}
@@ -686,7 +685,7 @@ function SonarTile({ snap, cmd }) {
               ) : s.kind === "biologique" ? (
                 <path d={`M ${x - 4} ${y + 1.5} q 2 -3.5 4 0 q 2 -3.5 4 0`} fill="none" stroke="#c084fc" strokeWidth="1.5" />
               ) : s.kind === "inconnu" ? (
-                <path d={`M ${x - 4} ${y - 4} L ${x - 1.5} ${y + 4} L ${x + 1} ${y - 2.5} L ${x + 4} ${y + 4}`} fill="none" stroke="#f43f5e" strokeWidth="1.6" />
+                <path d={`M ${x - 5} ${y + 1} l 2 -3 l 1.5 3 l 2 -4 l 1.5 4 l 2 -2`} fill="none" stroke="#f8fafc" strokeWidth="1.5" />
               ) : (
                 <path d={`M ${x - 4} ${y - 4} L ${x + 4} ${y + 4} M ${x + 4} ${y - 4} L ${x - 4} ${y + 4}`} stroke="#a855f7" strokeWidth="1.6" />
               )}
@@ -721,7 +720,7 @@ function SonarTile({ snap, cmd }) {
           <span><span className="text-orange-400">◯</span> moteur (passif)</span>
           <span><span className="text-purple-400">✕</span> ping d'un autre (passif)</span>
           <span><span className="text-purple-300">∿</span> chant de baleine</span>
-          <span><span className="text-rose-500">⍨</span> inconnu</span>
+          <span><span className="text-slate-100">⌇</span> son inconnu</span>
           <span><span className="text-teal-300">▲</span> île</span>
           <span><span className="text-yellow-300">◆</span> balise</span>
           <span><span className="text-cyan-300">●</span> navire</span>
