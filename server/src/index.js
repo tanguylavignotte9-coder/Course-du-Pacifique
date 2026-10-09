@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -15,8 +15,7 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
 const TIME_MULT = process.env.TIME_MULT ? Number(process.env.TIME_MULT) : 1;
 const TICK_MS = 1000; // tick serveur : 1 s réelle
 const MAX_STEP_MIN = 5; // pas de simulation max 5 min de jeu (design)
-const PERSIST_MS = 60000;
-const SPAWN_SEP_KM = 0.5; // anti-chevauchement des spawns au port
+const PERSIST_MS = MS_PER_MIN; // persistance disque : 1 min réelle
 
 // Bafouillage des pêcheurs (diffusion) : petites phrases de la vie à bord.
 // JAMAIS de coordonnées dans le texte (règle : pas de position vraie dans
@@ -731,9 +730,6 @@ setInterval(() => {
 // interactions reposent toujours sur les positions vraies, jamais sur les
 // estimés). Chaque joueur ne reçoit que les navires qu'il DÉTECTE, avec
 // azimut et distance depuis sa position vraie.
-function shipPassiveKm(target, night) {
-  return shipVisibleKm(target, night);
-}
 function multiplayerPass(now) {
   const ids = [...states.keys()];
   if (ids.length < 2) return;
@@ -755,7 +751,7 @@ function multiplayerPass(now) {
     if (oi.observerKm <= 0) continue;
     for (const [tid, ti] of infos) {
       if (tid === oid) continue;
-      const targetRange = shipPassiveKm(ti.st, oi.night);
+      const targetRange = shipVisibleKm(ti.st, oi.night);
       if (targetRange <= 0) continue;
       const km = distKm(oi.st.x, oi.st.y, ti.st.x, ti.st.y);
       if (km <= Math.min(oi.observerKm, targetRange)) {
@@ -784,11 +780,10 @@ function multiplayerPass(now) {
       }
     }
     st.sawShips = seen;
-    if (st.notifications.length > 150) st.notifications.length = 150;
+    if (st.notifications.length > NOTIF_MAX) st.notifications.length = NOTIF_MAX;
   }
   // Collisions : coques 15 m x 5 m en rectangles ORIENTÉS (OBB/SAT),
   // précises au mètre. La vitesse de chaque navire en contact est stoppée.
-  const HIST_KM = 0.03; // ~30 m : hystérésis pour débloquer (une demi-longueur)
   for (let i = 0; i < ids.length; i++) {
     for (let j = i + 1; j < ids.length; j++) {
       const a = states.get(ids[i]), b = states.get(ids[j]);
@@ -813,7 +808,7 @@ function multiplayerPass(now) {
     for (const oid of ids) {
       if (oid === id) continue;
       const o = states.get(oid);
-      if (o.location === st.location && distKm(st.x, st.y, o.x, o.y) < HIST_KM) touching = true;
+      if (o.location === st.location && distKm(st.x, st.y, o.x, o.y) < HULL_HIST_KM) touching = true;
     }
     if (!touching) st.collided = false;
   }
@@ -854,7 +849,7 @@ function publicSnapshot(id) {
     epoch: race.displayEpoch ?? race.epoch ?? new Date(race.startedAt).getTime(),
     isSuper: isSuper(id),
     player: {
-      heading: st.heading, headingOrder: st.headingOrder ?? st.heading, sail: st.sail ?? 0.8, engine: st.engine,
+      heading: st.heading, headingOrder: st.headingOrder ?? st.heading, sail: st.sail ?? SAIL_DEFAULT, engine: st.engine,
       location: st.location, mast: st.mast, engineOn: st.engineOn,
       electricOn: st.electricOn, periscope: st.periscope, vkmh: st.vkmh,
       fuel: st.fuel, battery: st.battery, food: st.food,
@@ -882,7 +877,6 @@ function publicSnapshot(id) {
       islands: world.ISLANDS.map((i) => i.verts),
       outposts: world.OUTPOSTS,
       activeBeaconIds: world.BEACONS.filter((b) => b.active).map((b) => b.id),
-      beaconCodes: world.BEACONS.map((b) => ({ id: b.id, code: b.code, active: b.active })),
       beaconCount: world.BEACONS.length,
     },
     weather: w,
@@ -1056,7 +1050,6 @@ const server = app.listen(PORT, () => {
   console.log(`Pacific Chase — serveur prêt sur http://localhost:${PORT} (×${TIME_MULT})`);
   console.log(`Départ de la course : ${race.startedAt}`);
   console.log(`Interface d'administration : http://localhost:${PORT}/admin`);
-  console.log(`Secret admin (page /admin) : ${getAdminSecret()}`);
 });
 const wss = new WebSocketServer({ server });
 
@@ -1283,7 +1276,11 @@ wss.on("connection", (ws, req) => {
           }
         }
       }
-      if (c.refuel === true && st.location === "surface") {
+      // Avitaillement uniquement à quai (port ou avant-poste) : contrôle
+      // serveur — le client masquant le bouton ne suffit pas (anti-triche)
+      if (c.refuel === true && st.location === "surface" &&
+          (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
+           world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM))) {
         st.fuel = 100; st.food = 100;
         st.notifSeq = (st.notifSeq || 0) + 1;
         st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🛒 Avitaillement complet : carburant et vivres à 100 %.", kind: "good", cat: "navire" });
@@ -1301,7 +1298,7 @@ wss.on("connection", (ws, req) => {
         st.autopilot = c.autopilot;
         if (c.autopilot && st.beaconLock) { st.beaconLock = null; st.lockBrg = null; }
       }
-      if (Array.isArray(c.pins)) st.pins = c.pins.slice(0, 26);
+      if (Array.isArray(c.pins)) st.pins = c.pins.slice(0, PINS_MAX);
       if (Array.isArray(c.measures)) st.measures = c.measures.slice(0, 40);
       // Saut de temps : super utilisateur uniquement. L'horloge de course est
       // PARTAGÉE : le saut est global — l'epoch recule, le serveur simule
@@ -1382,8 +1379,13 @@ wss.on("connection", (ws, req) => {
         race.exclusion = null;
         nextBulletinMin = gameMinutesNow();
         store.save();
-        st.notifSeq = (st.notifSeq || 0) + 1;
-        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🔄 Course réinitialisée : nouveau monde, nouvelles balises, navires à quai. Horloge re-synchronisée sur Paris.", kind: "good", cat: "navire" });
+        // Notifier le NOUVEL état du joueur : l'ancien objet `st` a été
+        // remplacé dans `states` par le rebuild ci-dessus (sinon : notif perdue)
+        const newSt = states.get(id);
+        if (newSt) {
+          newSt.notifSeq = (newSt.notifSeq || 0) + 1;
+          newSt.notifications.unshift({ id: newSt.notifSeq, t: newSt.t, text: "🔄 Course réinitialisée : nouveau monde, nouvelles balises, navires à quai. Horloge re-synchronisée sur Paris.", kind: "good", cat: "navire" });
+        }
       }
       persistPlayer(id);
       ws.send(JSON.stringify({ type: "snapshot", data: publicSnapshot(id) }));

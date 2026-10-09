@@ -61,6 +61,32 @@ export const LOG_ERR_MIN_PCT = 0.25;   // erreur de loch min (%)
 export const LOG_ERR_MAX_PCT = 0.75;   // erreur de loch max (%)
 export const CUR_SPD_MIN_KMH = 1.1;    // courant min (km/h)
 export const CUR_SPD_MAX_KMH = 2.05;   // courant max (km/h)
+
+// ---------- Giration, consommations, incertitude, point aux étoiles, tours UI ----------
+export const TURN_MAX_SURF = 270;         // giration max (°/min) — surface
+export const TURN_MAX_SUB = 90;           // giration max (°/min) — plongée
+export const STEER_AT_REST_SURF = 0.25;   // part de barre disponible à l'arrêt (surface)
+export const STEER_AT_REST_SUB = 0.15;    // part de barre disponible à l'arrêt (plongée)
+export const FUEL_RATE_PCT_H = 1.2;       // moteur thermique : carburant %/h à pleine puissance
+export const BATT_PERISCOPE_PCT_H = 2.0;  // électrique en périscope : batteries %/h
+export const BATT_SUB_PCT_H = 1.4;        // électrique en plongée : batteries %/h
+export const SOLAR_PCT_H = 5;             // recharge solaire de jour : %/h (avant couverture nuageuse)
+export const FOOD_PCT_H = 0.22;           // vivres : %/h
+export const UNC_PER_KM = 0.025;          // incertitude gagnée par km parcouru
+export const UNC_PER_H = 0.278;           // incertitude gagnée par heure (dérives lentes)
+export const NAVFIX_MIN = 120;            // durée d'un point aux étoiles (min)
+export const NAVFIX_RETRY_MIN = 120;      // délai avant nouvelle tentative la même nuit (min)
+export const NAVFIX_BASE_KM = 1.5;        // incertitude plancher après un point réussi (km)
+export const NAVFIX_CLOUD_KM = 0.2;       // pénalité par % de couverture nuageuse (km)
+export const NAVFIX_SEA_KM = 1.5;         // pénalité par mètre de houle (km)
+export const NAVFIX_VIS_KM = 0.4;         // pénalité par km de visibilité sous la référence (km)
+export const NAVFIX_VIS_REF_KM = 10;      // visibilité de référence (km)
+export const NOTIF_MAX = 150;             // notifications conservées par navire
+export const PINS_MAX = 26;               // punaises manuelles
+export const SAIL_DEFAULT = 0.8;          // voilure par défaut (nouveau navire, états migrés)
+export const HORIZON_KM = 20;              // horizon géographique depuis le pont (km)
+export const SPAWN_SEP_KM = 0.5;          // anti-chevauchement des spawns au port (km)
+export const HULL_HIST_KM = 0.03;         // hystérésis collision : une demi-longueur de coque (~30 m)
 export function randomCode() {
   return String(Math.floor(Math.random() * CODE_POOL)).padStart(4, "0");
 }
@@ -546,7 +572,6 @@ export function spawnPosition(world, taken = []) {
 // Force d'un signal à la distance dKm pour une famille de décroissance donnée.
 export const strengthKm = (dKm, decayKm) => Math.max(0, Math.round(100 * (1 - dKm / decayKm)));
 export const longStrengthKm = (dKm) => strengthKm(dKm, LONG_DECAY_KM);
-export const shortStrengthKm = (dKm) => strengthKm(dKm, SHORT_DECAY_KM);
 export const dirSensitivity = (antBeam) => 1 + ((antBeam - 1) / 179) * 49;
 export function dirEffSensitivity(antBeam, diff, sens) {
   const ratio = clamp(diff / (antBeam / 2), 0, 1);
@@ -617,7 +642,7 @@ export function callPosition(st, code, world, noCost = false) {
   const cap = recvCapture(st, brg, respStrength);  // lire exige capter
   if (cap) {
     st.notifSeq = (st.notifSeq || 0) + 1;
-    if (st.pins.length < 26)
+    if (st.pins.length < PINS_MAX)
       st.pins.push({ label: code, x: target.x, y: target.y });
     st.notifications.unshift({
       id: st.notifSeq, t: st.t,
@@ -705,7 +730,7 @@ export function sonarPing(st, world, others = [], biologics = []) {
   if (st.location !== "underwater")
     return { ok: false, error: "Sonar actif disponible en plongée uniquement." };
   if (st.battery < SONAR_PING_BATTERY_COST)
-    return { ok: false, error: "Batteries insuffisantes (1 % par ping)." };
+    return { ok: false, error: `Batteries insuffisantes (${SONAR_PING_BATTERY_COST} % par ping).` };
   st.battery = Math.max(0, st.battery - SONAR_PING_BATTERY_COST);
   const echoes = [];
   const push = (kind, x, y) => {
@@ -1392,7 +1417,7 @@ export function newPlayerState(world, opts = {}) {
   const eastCoast = world.CONTINENT.x1 <= MAP / 2;
   return {
     t: 0, x: sp.x, y: sp.y, heading: eastCoast ? 90 : 270, headingOrder: eastCoast ? 90 : 270,
-    sail: 0.8, engine: 0.8,
+    sail: SAIL_DEFAULT, engine: 0.8,
     estX: sp.x, estY: sp.y, unc: 0,
     navFix: { active: false, startT: 0, doneNight: null, lastTryT: null },
     location: "surface", mast: false, engineOn: false, electricOn: false, periscope: false, vkmh: 0, light: false,
@@ -1417,7 +1442,7 @@ export function newPlayerState(world, opts = {}) {
 function notify(st, text, kind, cat) {
   st.notifSeq = (st.notifSeq || 0) + 1;
   st.notifications.unshift({ id: st.notifSeq, t: st.t, text, kind, cat: cat || "navire" });
-  if (st.notifications.length > 150) st.notifications.pop();
+  if (st.notifications.length > NOTIF_MAX) st.notifications.pop();
 }
 function ev(st, kind, text, cat) {
   st.ffEvents.push({ kind, text });
@@ -1459,12 +1484,12 @@ export function tick(st, dtMin, world) {
   const daylight = hour >= 6 && hour < 20;
 
   // Consommations
-  if (st.location === "surface" && st.engineOn) st.fuel = Math.max(0, st.fuel - 1.2 * st.engine * (dtMin / 60));
+  if (st.location === "surface" && st.engineOn) st.fuel = Math.max(0, st.fuel - FUEL_RATE_PCT_H * st.engine * (dtMin / 60));
   if (st.location === "underwater" && st.electricOn)
-    st.battery = Math.max(0, st.battery - (st.periscope ? 2.0 : 1.4) * st.engine * (dtMin / 60));
+    st.battery = Math.max(0, st.battery - (st.periscope ? BATT_PERISCOPE_PCT_H : BATT_SUB_PCT_H) * st.engine * (dtMin / 60));
   if (st.location === "surface" && daylight)
-    st.battery = Math.min(100, st.battery + 5 * (1 - w.clouds / 130) * (dtMin / 60));
-  st.food = Math.max(0, st.food - 0.22 * (dtMin / 60));
+    st.battery = Math.min(100, st.battery + SOLAR_PCT_H * (1 - w.clouds / 130) * (dtMin / 60));
+  st.food = Math.max(0, st.food - FOOD_PCT_H * (dtMin / 60));
 
   // Pilote automatique : la consigne est RECALCULÉE à chaque tick depuis
   // la position ESTIMÉE (même repère que la validation) — l'auto-correction
@@ -1490,8 +1515,8 @@ export function tick(st, dtMin, world) {
   const surface = st.location === "surface";
   {
     const order = st.headingOrder ?? st.heading; // migration des états anciens
-    const TURN_MAX = surface ? 270 : 90;              // °/min
-    const STEER_AT_REST = surface ? 0.25 : 0.15;
+    const TURN_MAX = surface ? TURN_MAX_SURF : TURN_MAX_SUB; // °/min
+    const STEER_AT_REST = surface ? STEER_AT_REST_SURF : STEER_AT_REST_SUB;
     const vRef = surface ? VMAX_KMH : SCOPE_SPD_KMH;
     const rate = TURN_MAX * (STEER_AT_REST + (1 - STEER_AT_REST) * clamp(st.vkmh / vRef, 0, 1));
     // SOUS-DÉCOUPAGE : à haut taux, un grand pas de rattrapage ne doit pas
@@ -1501,6 +1526,8 @@ export function tick(st, dtMin, world) {
     // collisions OBB fondées sur le cap réel en giration. En temps réel
     // (tick 1 s → 4,5°), ce mécanisme reste inactif.
     const integratePos = (minutes) => {
+      // Ancre : position figée — la giration sur place n'intègre rien
+      if (st.anchored) return;
       const rT = ((st.heading + st.compDev) * Math.PI) / 180;
       const cdr = (w.curDir * Math.PI) / 180;
       const rad = (st.heading * Math.PI) / 180; // cap affiché (estime)
@@ -1592,7 +1619,7 @@ export function tick(st, dtMin, world) {
     st.x = nx; st.y = ny; st.grounded = false;
     st.estX += Math.sin(rad) * through;
     st.estY += Math.cos(rad) * through;
-    st.unc += 0.025 * (st.vkmh * dtMin / 60) + 0.278 * (dtMin / 60) + drift * DEG_KM;
+    st.unc += UNC_PER_KM * (st.vkmh * dtMin / 60) + UNC_PER_H * (dtMin / 60) + drift * DEG_KM;
   }
 
   // Validation des points de passage (pilote auto) : au plus court sur la
@@ -1633,9 +1660,9 @@ export function tick(st, dtMin, world) {
   const nightIdx = (st.t % 1440) >= 20 * 60 ? dayIdx : dayIdx - 1;
   const navOk = st.location === "surface" && !w.storm && !w.fog && w.clouds <= 50;
   if (st.navFix.active) {
-    if (st.t - st.navFix.startT >= 120) {
+    if (st.t - st.navFix.startT >= NAVFIX_MIN) {
       if (navOk) {
-        const newUnc = Math.max(1.5, 1.5 + 0.2 * w.clouds + 1.5 * w.hs + 0.4 * Math.max(0, 10 - w.visibility));
+        const newUnc = Math.max(NAVFIX_BASE_KM, NAVFIX_BASE_KM + NAVFIX_CLOUD_KM * w.clouds + NAVFIX_SEA_KM * w.hs + NAVFIX_VIS_KM * Math.max(0, NAVFIX_VIS_REF_KM - w.visibility));
         if (newUnc < st.unc) {
           const fa = Math.random() * Math.PI * 2;
           const fr = Math.sqrt(Math.random()) * (newUnc / DEG_KM);
@@ -1653,7 +1680,7 @@ export function tick(st, dtMin, world) {
       }
     }
   } else if (night && navOk && st.navFix.doneNight !== nightIdx
-    && (st.navFix.lastTryT == null || st.t - st.navFix.lastTryT >= 120)) {
+    && (st.navFix.lastTryT == null || st.t - st.navFix.lastTryT >= NAVFIX_RETRY_MIN)) {
     st.navFix = { active: true, startT: st.t, doneNight: st.navFix.doneNight, lastTryT: st.navFix.lastTryT };
     notify(st, "🔭 Le navigateur commence un point aux étoiles (durée : 2 h).", "info", "nav");
   }
@@ -1753,13 +1780,6 @@ export function tick(st, dtMin, world) {
   }
 }
 
-// Avance rapide (debug serveur / sauts) : pas d'au plus 1 minute pour ne pas
-// manquer les pulsations radio.
-export function advance(st, minutes, world) {
-  const endT = st.t + minutes;
-  while (st.t < endT) tick(st, Math.min(1, endT - st.t), world);
-}
-
 // ---------- Vue du pont (calculée par le serveur, position vraie) ----------
 // Retourne uniquement ce que le joueur voit : objets détectés avec distance
 // et azimut (au-delà de l'horizon : indicateur de bord). Ne contient jamais
@@ -1773,7 +1793,7 @@ export function computeView(st, world, traces = []) {
   const night = hour < 6 || hour >= 20;
   const canSee = st.location === "surface" || st.periscope;
   const visKm = w.visibility;
-  const HORIZON = 20; // km, horizon géographique depuis le pont
+  const HORIZON = HORIZON_KM; // km, horizon géographique depuis le pont
   const azTo = (x, y) => Math.round((Math.atan2(x - st.x, y - st.y) * 180) / Math.PI + 360) % 360;
   const kmOf = (x, y) => distKm(st.x, st.y, x, y);
   const det = (kind) => (canSee ? detectKm(kind, visKm, night) : -1);

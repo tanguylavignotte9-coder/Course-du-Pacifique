@@ -5,6 +5,7 @@ import {
   MAP, DEG_KM, RARITY_STYLE,
   distKm, dirSensitivity, DOUGLAS_LABEL, LONG_DECAY_KM,
   DELIVERY_R_KM, OMNI_DETECT_PCT, MS_PER_MIN, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT,
+  HORIZON_KM, PINS_MAX, SAIL_DEFAULT,
   SONAR_RANGE_KM, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, SONAR_PING_BATTERY_COST,
 } from "../../shared/engine.js";
 
@@ -107,7 +108,7 @@ function TopView({ snap }) {
   const drag = useRef(null);
   const pinch = useRef(null);
 
-  const R = 20;                    // horizon km (le disque entier)
+  const R = HORIZON_KM;            // horizon km (le disque entier)
   const HALF = 100;                // demi-taille du viewBox (200x200)
   // échelle courante : px par km — à ×1, l'horizon remplit le disque (100 px)
   const P = (HALF / R) * zoom;
@@ -257,7 +258,7 @@ function TopView({ snap }) {
               <circle cx={p[0]} cy={p[1]} r={marker(night ? (s.light ? 3 : 2.2) : 3.5)}
                 fill={night ? (s.light ? "#fde68a" : "#94a3b8") : "#f1f5f9"}
                 stroke="#475569" strokeWidth={lw(0.6)} />
-              <text x={p[0]} y={p[1] - marker(6)} fontSize={font(6)} fill="#cbd5e1" textAnchor="middle">{s.id.slice(0, 4)} · {Math.round(s.km)} km</text>
+              <text x={p[0]} y={p[1] - marker(6)} fontSize={font(6)} fill="#cbd5e1" textAnchor="middle">{s.id} · {Math.round(s.km)} km</text>
             </g>
           );
         })}
@@ -508,7 +509,7 @@ function NavMap({ snap, sock }) {
           if (planMode) {
             sock.command({ waypoints: [...(player.waypoints || []), { x: xDeg, y: yDeg }] });
           } else if (tool === "pin") {
-            if (player.pins.length < 26) {
+            if (player.pins.length < PINS_MAX) {
               sock.command({ pins: [...player.pins, { label: String.fromCharCode(65 + player.pins.length), x: xDeg, y: yDeg }] });
             }
           } else if (tool === "measure") {
@@ -826,7 +827,6 @@ export default function App() {
     (distKm(player.estX, player.estY, snap.world.port.x, snap.world.port.y) < DELIVERY_R_KM ||
     snap.world.outposts.some((o) => distKm(player.estX, player.estY, o.x, o.y) < DELIVERY_R_KM));
   const radioOk = (player.location === "surface" || (player.location === "underwater" && player.periscope)) && player.battery > 0;
-  const antSens = Math.round(dirSensitivity(player.antBeam));
   const antHeading = (player.heading + player.antOrient + 720) % 360;
 
   return (
@@ -927,11 +927,11 @@ export default function App() {
           <div className="flex items-center gap-2">
             <span className="w-20 text-xs text-slate-400">Voile</span>
             <input
-              type="range" min={0} max={100} value={Math.round((player.sail ?? 0.8) * 100)}
+              type="range" min={0} max={100} value={Math.round((player.sail ?? SAIL_DEFAULT) * 100)}
               onChange={(e) => cmd({ sail: +e.target.value / 100 })}
               className="w-full accent-sky-400"
             />
-            <span className="w-12 text-right text-xs tabular-nums text-sky-300">{Math.round((player.sail ?? 0.8) * 100)}%</span>
+            <span className="w-12 text-right text-xs tabular-nums text-sky-300">{Math.round((player.sail ?? SAIL_DEFAULT) * 100)}%</span>
           </div>
           <p className="text-[11px] text-slate-500">
             Inclinaison auto — boom {Math.round(player.boom)}° · vent apparent {Math.round(player.awSpd)} km/h {player.awRel >= 0 ? "T" : "B"}
@@ -1057,6 +1057,7 @@ export default function App() {
                 onDial={setDial}
                 onAction={(kind, code) => cmd({ shipMsg: { kind, to: code } })}
                 radioOk={radioOk}
+                portee={Math.round(LONG_DECAY_KM * (1 - dirSensitivity(player.antBeam) / 100))}
               />
             ) : (
               <div className="space-y-2">

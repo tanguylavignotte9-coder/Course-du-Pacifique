@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildWorld, newPlayerState, tick, weatherAt, computeView,
+  buildWorld, newPlayerState, tick, weatherAt, computeView, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, HORIZON_KM,
   distKm, CAPTURE_R_KM, DELIVERY_R_KM, WP_R_KM, DEG_KM, LONG_DECAY_KM, VMAX_KMH, DIESEL_SPD_KMH,
   sailAutoDrive, apparentWind, SAIL_SPD_KMH, clamp, callPosition, RARITY_MIN, bearingTo, segDistKm,
   longStrengthKm, strengthKm, SHORT_DECAY_KM, recvCapture, detectBeacon, onProximityPing,
@@ -1167,6 +1167,23 @@ test("beastFlee : deux régimes possibles, cap opposé au patrouilleur", () => {
   const long = b.fleeLeftMin === 240 && b.fleeSpdKmh === 60;
   assert.ok(short || long, "régime court (50 km) ou long (4 h à 60 km/h)");
   assert.ok(b.fleeHeading >= 330 || b.fleeHeading <= 30, "elle fuit vers le nord (opposé au patrouilleur au sud) ± 30°");
+});
+
+test("ancre : position figée même avec une consigne de cap (giration sur place)", () => {
+  const w = buildWorld(42);
+  const st = newPlayerState(w);
+  st.anchored = true; st.vkmh = 0;
+  st.x = 40; st.y = 40; st.heading = 0; st.headingOrder = 90;
+  tick(st, 1, w); // 1 min : la giration passe par un sous-pas (rate à l'arrêt < 90°)
+  assert.equal(st.x, 40, "position X figée à l'ancre, même en giration");
+  assert.equal(st.y, 40, "position Y figée à l'ancre, même en giration");
+});
+
+test("constantes de tuning : caps et défauts centralisés (règle DRY du README)", () => {
+  assert.equal(NOTIF_MAX, 150);
+  assert.equal(PINS_MAX, 26);
+  assert.equal(SAIL_DEFAULT, 0.8);
+  assert.equal(HORIZON_KM, 20);
 });
 
 test("beastTick : en fuite, elle court en ligne droite et ne mange pas", () => {
