@@ -1,4 +1,5 @@
 import fsSync from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -40,7 +41,14 @@ function readAdminSecret() {
   try {
     return fsSync.readFileSync(path.join(ROOT, "data/admin-secret.txt"), "utf8").trim();
   } catch {
-    return null;
+    // Premier lancement : génération automatique du secret, écrit dans le
+    // dossier data/ (créé par le Store au démarrage, avant tout usage).
+    // Permission 0600 : lisible par le propriétaire uniquement. Le secret
+    // n'est JAMAIS affiché dans la console — seul le chemin est annoncé.
+    const s = crypto.randomBytes(12).toString("hex");
+    fsSync.writeFileSync(path.join(ROOT, "data/admin-secret.txt"), s + "\n", { mode: 0o600 });
+    console.log("🔑 Secret admin généré : data/admin-secret.txt — ouvrez ce fichier pour la page /admin.");
+    return s;
   }
 }
 
@@ -961,10 +969,10 @@ app.get("/api/wx", (req, res) => {
 });
 
 // ---------- API d'administration (interface /admin) ----------
-// Toutes les routes exigent le secret admin, défini via la variable
-// d'environnement ADMIN_SECRET ou lu dans data/admin-secret.txt s'il
-// existe déjà (installations antérieures). Jamais généré, jamais écrit
-// sur disque, jamais affiché dans la console.
+// Toutes les routes exigent le secret admin : variable d'environnement
+// ADMIN_SECRET si définie, sinon data/admin-secret.txt — GÉNÉRÉ au
+// premier lancement s'il n'existe pas (permission 0600). Le secret
+// n'est jamais affiché dans la console — seul le chemin est annoncé.
 function getAdminSecret() {
   return readAdminSecret();
 }
@@ -1042,6 +1050,7 @@ const server = app.listen(PORT, () => {
   console.log(`Pacific Chase — serveur prêt sur http://localhost:${PORT} (×${TIME_MULT})`);
   console.log(`Départ de la course : ${race.startedAt}`);
   console.log(`Interface d'administration : http://localhost:${PORT}/admin`);
+  getAdminSecret(); // génère data/admin-secret.txt au premier lancement
 });
 const wss = new WebSocketServer({ server });
 
