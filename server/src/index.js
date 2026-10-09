@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, coastStep, PATROL_BERTH_KM } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -516,7 +516,7 @@ function beastPass(now) {
   });
   for (const tr of expired) {
     if (!npcs) continue;
-    const used = new Set([...world.BEACONS.map((b) => b.code), ...[...states.values()].map((s) => s.code)]);
+    const used = new Set([world.PORT.code, ...world.OUTPOSTS.map((o) => o.code), ...world.BEACONS.map((b) => b.code), ...[...states.values()].map((s) => s.code)]);
     for (const f of npcs.fishermen) used.add(f.code);
     for (const c of npcs.cargos) used.add(c.code);
     let code;
@@ -556,11 +556,38 @@ function beastPass(now) {
 // course, attend à quai tant qu'il n'y a aucune estimation, puis rejoint
 // la zone estimée et la fouille. Navire RÉEL : moteur audible au sonar
 // passif, coque visible selon la météo, position publiée au NETWORK.
+// Poste de la frégate : POINT FIXE au large du port — PAS sur le point
+// d'accostage (le navire de guerre n'occupe pas le quai des joueurs, il
+// ne chevauche donc jamais un navire à quai). Balayage déterministe par
+// caps de 10° à PATROL_BERTH_KM : même monde ⇒ même poste (spawn initial
+// comme reset). La position retenue est en eau libre et à ≥ SPAWN_SEP_KM
+// de tout navire déjà posé (anti-chevauchement, comme le spawn joueur) ;
+// dernier recours : le point historique du port.
+function patrolBerth() {
+  const rd = PATROL_BERTH_KM / DEG_KM;
+  const clear = (x, y) =>
+    !world.isLand(x, y) && [...states.values()].every((s) => distKm(s.x, s.y, x, y) >= SPAWN_SEP_KM);
+  for (let a = 0; a < 360; a += 10) {
+    const rad = (a * Math.PI) / 180;
+    const x = world.PORT.x + Math.sin(rad) * rd;
+    const y = world.PORT.y + Math.cos(rad) * rd;
+    if (clear(x, y)) return { x, y };
+  }
+  for (let a = 0; a < 360; a += 1) { // quai encombré : balayage fin
+    const rad = (a * Math.PI) / 180;
+    const x = world.PORT.x + Math.sin(rad) * rd;
+    const y = world.PORT.y + Math.cos(rad) * rd;
+    if (clear(x, y)) return { x, y };
+  }
+  return { x: world.PORT.x, y: world.PORT.y }; // ne devrait jamais servir
+}
+
 function ensurePatrol() {
   if (!race.patrol) {
+    const berth = patrolBerth();
     race.patrol = {
-      x: world.PORT.x, y: world.PORT.y, heading: 0,
-      mode: "quai", tgtX: world.PORT.x, tgtY: world.PORT.y,
+      x: berth.x, y: berth.y, heading: 0,
+      mode: "quai", tgtX: berth.x, tgtY: berth.y,
       searchMin: 0, searchAcc: 0,
       engageLeftMin: 0, shotClock: 0, cooldownLeftMin: 0,
       pub: null, nextPubMin: gameMinutesNow(),
@@ -664,12 +691,16 @@ function ensureState(id) {
       store.save();
     }
     const spawnIdx = race.spawnOrder[id];
+    // Le poste de la frégate est réservé : jamais de spawn joueur dessus.
+    if (race.patrol && !takenSpawns.some((t) => t.x === race.patrol.x && t.y === race.patrol.y))
+      takenSpawns.push({ x: race.patrol.x, y: race.patrol.y });
     // Code radio du navire : unique, SANS collision avec les codes des
-    // balises — un code désigne exactement un système du monde.
+    // stations (balises, port, avant-postes) — un code désigne exactement
+    // un système du monde.
     let shipCode;
     do {
       shipCode = randomCode();
-    } while (world.BEACONS.some((b) => b.code === shipCode)
+    } while (findStation(world, shipCode)
       || [...states.values()].some((s) => s.code === shipCode)
       || npcCodes().has(shipCode));
     const st = newPlayerState(world, { weatherSeed: race.seed % 1000, shipCode, takenSpawns });
@@ -705,7 +736,11 @@ setInterval(() => {
     // Une balise CAPTURÉE (désactivée) émet aussi : l'autoguidage du joueur
     // (3 positions) décide seul si elle peut verrouiller son pilote.
     const nowMs = Date.now();
-    for (const b of world.BEACONS) {
+    // Stations émettrices : les 40 balises + le PORT + les 5 AVANT-POSTES
+    // (autoguidage d'approche « identique au balise » : le retour au port
+    // et les escales se verrouillent comme une balise — ancre auto à 50 m,
+    // donc à l'intérieur de la zone de livraison de 500 m).
+    for (const b of [world.PORT, ...world.OUTPOSTS, ...world.BEACONS]) {
       let dMin = Infinity;
       for (const st of states.values()) dMin = Math.min(dMin, distKm(st.x, st.y, b.x, b.y));
       if (!isFinite(dMin)) continue; // personne sur l'eau
@@ -881,9 +916,12 @@ function publicSnapshot(id) {
     },
     world: {
       continent: world.CONTINENT.verts,
-      port: world.PORT,
+      // Port/avant-postes : coordonnées seules — leurs codes radio
+      // (autoguidage) ne sont PAS exposés dans le snapshot (même politique
+      // que les codes de balises : un code s'apprend à la radio).
+      port: { x: world.PORT.x, y: world.PORT.y },
       islands: world.ISLANDS.map((i) => i.verts),
-      outposts: world.OUTPOSTS,
+      outposts: world.OUTPOSTS.map((o) => ({ x: o.x, y: o.y })),
       activeBeaconIds: world.BEACONS.filter((b) => b.active).map((b) => b.id),
       beaconCount: world.BEACONS.length,
     },
@@ -1094,7 +1132,15 @@ wss.on("connection", (ws, req) => {
       if (typeof c.periscope === "boolean") st.periscope = c.periscope;
       if (typeof c.light === "boolean") st.light = c.light;
       // Ancre : mécanique générale, activable / désactivable à la main.
-      if (typeof c.anchor === "boolean") st.anchored = c.anchor;
+      // Poser l'ancre COUPE le moteur et baisse le mât : refuge silencieux,
+      // aucun carburant brûlé au poste (redémarrage manuel ensuite).
+      if (typeof c.anchor === "boolean") {
+        st.anchored = c.anchor;
+        if (c.anchor) {
+          st.engineOn = false;
+          st.mast = false;
+        }
+      }
       // Capture de balise : action MANUELLE du joueur.
       if (c.capture === true) {
         const r = captureBeacon(st, world);
@@ -1338,10 +1384,10 @@ wss.on("connection", (ws, req) => {
         world.BEACONS = fresh.BEACONS; world.COAST = fresh.COAST;
         world.isLand = fresh.isLand;
         // Réattribution des slots d'amarrage (espacement 50 m) et de codes
-        // radio NEUFS, garantis sans collision avec les balises de la NOUVELLE
-        // graine ni entre navires.
+        // radio NEUFS, garantis sans collision avec les STATIONS (balises,
+        // port, avant-postes) de la NOUVELLE graine ni entre navires.
         let slotIdx = 0;
-        const usedCodes = new Set(world.BEACONS.map((b) => b.code));
+        const usedCodes = new Set([world.PORT.code, ...world.OUTPOSTS.map((o) => o.code), ...world.BEACONS.map((b) => b.code)]);
         for (const [pid] of states) {
           race.spawnOrder[pid] = slotIdx;
           let shipCode;

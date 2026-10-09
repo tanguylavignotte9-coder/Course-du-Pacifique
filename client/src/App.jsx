@@ -117,8 +117,9 @@ function TopView({ snap }) {
   // rayon visible du monde en km selon le zoom (au-delà : clampé au bord)
   const visRangeKm = R / zoom;
 
-  // Projection azimut/distance (depuis la position VRAIE côté serveur, mais
-  // dessinés autour de l'estimé : l'écart est couvert par l'incertitude).
+  // Projection azimut/distance : tout est calculé côté serveur DEPUIS LA
+  // POSITION VRAIE et dessiné autour d'elle — la vue du dessus ne triche
+  // pas (l'incertitude d'estime se lit sur la carte de navigation, pas ici).
   const proj = (az, km) => {
     const a = (az * Math.PI) / 180;
     const x = 100 + Math.sin(a) * km * P;
@@ -193,10 +194,12 @@ function TopView({ snap }) {
       </defs>
       <circle cx="100" cy="100" r="98" fill={!view.canSee ? "#010a14" : night ? "#03121f" : "#0b2a4a"} stroke="#38bdf8" strokeWidth="1.5" />
       <g clipPath="url(#localClip)">
-        {/* Côte du continent — échelle exacte, suivie par le zoom */}
+        {/* Côte du continent — échelle exacte, suivie par le zoom.
+            Sommets RELATIFS à la position VRAIE (calculés côté serveur) :
+            la côte se dessine là où elle est, sans passer par l'estime. */}
         {view.coast && view.continentVerts && (() => {
-          const kx = (x) => 100 + (x - snap.player.estX) * DEG_KM * P;
-          const ky = (y) => 100 - (y - snap.player.estY) * DEG_KM * P;
+          const kx = (x) => 100 + x * DEG_KM * P;
+          const ky = (y) => 100 - y * DEG_KM * P;
           return (
             <polygon
               points={view.continentVerts.map(([vx, vy]) => `${kx(vx).toFixed(1)},${ky(vy).toFixed(1)}`).join(" ")}

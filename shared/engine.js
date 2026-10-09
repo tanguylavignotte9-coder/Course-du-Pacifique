@@ -324,7 +324,18 @@ export function buildWorld(seed) {
     }
     return out;
   })();
-  assignCodes(BEACONS, rng);
+  // Stations d'autoguidage : le port et les 5 avant-postes reçoivent, comme
+  // les balises, un code radio unique tiré du MÊME pool (aucune collision
+  // possible) — leurs pings de proximité (famille courte) guident
+  // l'approche finale exactement comme une balise. Toujours `active` :
+  // jamais « capturables », l'autoguidage peut toujours s'y verrouiller.
+  const stationPick = assignCodes(BEACONS, rng);
+  PORT.code = stationPick();
+  PORT.active = true;
+  for (const o of OUTPOSTS) {
+    o.code = stationPick();
+    o.active = true;
+  }
 
   return { seed, CONTINENT, PORT, ISLANDS, OUTPOSTS, BEACONS, COAST, isLand };
 }
@@ -632,7 +643,7 @@ export function callPosition(st, code, world, noCost = false) {
   const radioOk = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
   if (!radioOk) return null;
   if (!noCost) st.battery = Math.max(0, st.battery - CALL_BATTERY_COST);
-  const target = world.BEACONS.find((b) => b.code === code); // capturée ou non : la station répond toujours
+  const target = findStation(world, code); // balise, port ou avant-poste : la station répond toujours
   if (!target) return null;
   const dKm = distKm(st.x, st.y, target.x, target.y);
   const brg = bearingTo(st.x, st.y, target.x, target.y);
@@ -1029,6 +1040,51 @@ export function beastSpawn(world) {
   return best || { x: MAP / 2, y: MAP / 2 }; // dernier recours (improbable)
 }
 
+// ---------- Rebond symétrique sur la côte (Bête, patrouilleur) ----------
+// Avant : la terre bloquait le pas et la créature re-visait sa cible au
+// sous-pas suivant → « grind » indéfini contre une côte quand la cible est
+// au-delà de la terre. Maintenant : le cap se réfléchit SYMÉTRIQUEMENT,
+// comme un rayon sur un miroir — la composante tangentielle à la côte est
+// conservée (la créature glisse le long de la côte), la composante vers
+// la terre s'inverse — et le pas est REJOUÉ dans cette direction : elle
+// poursuit dans la direction du rebond. La réflexion s'appuie sur la
+// normale « vers l'eau libre », estimée en sondant le pourtour du point
+// bloqué (16 caps à COAST_PROBE_KM). Si tout sonde la terre (anse
+// profonde), repli sur le demi-tour dispersé historique.
+export const COAST_PROBE_KM = 5;     // rayon de sonde de l'orientation de côte
+export const COAST_BOUNCE_TRIES = 3; // réflexions successives par pas, au maximum
+
+export function coastReflect(world, x, y, heading) {
+  const r = COAST_PROBE_KM / DEG_KM;
+  let vx = 0, vy = 0;
+  for (let k = 0; k < 16; k++) {
+    const a = (k * 22.5 * Math.PI) / 180;
+    if (!world.isLand(x + Math.sin(a) * r, y + Math.cos(a) * r)) { vx += Math.sin(a); vy += Math.cos(a); }
+  }
+  if (vx === 0 && vy === 0) // encerclé de terre : demi-tour dispersé
+    return (heading + 180 + (Math.random() * 2 - 1) * WHALE_BOUNCE_JITTER_DEG + 360) % 360;
+  const n = (Math.atan2(vx, vy) * 180) / Math.PI; // normale « vers l'eau libre » (azimut)
+  return (2 * n - heading + 540) % 360;           // réflexion symétrique du cap
+}
+
+// Un pas de déplacement au cap `heading` : eau libre → avance ; terre → le
+// cap se réfléchit et le pas est rejoué dans la direction du rebond
+// (jusqu'à COAST_BOUNCE_TRIES réflexions). `bounced` signale le rebond :
+// l'appelant CONSERVE le cap réfléchi (poursuite dans la direction du
+// rebond) — le re-visageage ne reprend qu'au tick suivant.
+export function coastStep(world, x, y, heading, stepDeg) {
+  let h = heading;
+  let bounced = false;
+  for (let k = 0; k < COAST_BOUNCE_TRIES; k++) {
+    const nx = x + Math.sin((h * Math.PI) / 180) * stepDeg;
+    const ny = y + Math.cos((h * Math.PI) / 180) * stepDeg;
+    if (!world.isLand(nx, ny)) return { x: nx, y: ny, heading: h, bounced };
+    h = coastReflect(world, nx, ny, h);
+    bounced = true;
+  }
+  return { x, y, heading: h, bounced }; // encoincement de côtes : pas perdu, cap réfléchi
+}
+
 // Tick de la Bête. `sources` : bruits AUDIBLES construits par le serveur —
 // { x, y } = position D'OÙ vient le bruit (un chant pointe vers le lieu
 // d'émission), { liveX, liveY } = position VIVANTE de la cible (décide du
@@ -1049,10 +1105,9 @@ export function beastTick(beast, dtMin, world, sources) {
     if (beast.fleeLeftMin > 0) {
       beast.fleeLeftMin = Math.max(0, beast.fleeLeftMin - step);
       const fStepDeg = (beast.fleeSpdKmh / 60 / DEG_KM) * step;
-      const fx = beast.x + Math.sin((beast.fleeHeading * Math.PI) / 180) * fStepDeg;
-      const fy = beast.y + Math.cos((beast.fleeHeading * Math.PI) / 180) * fStepDeg;
-      if (!world.isLand(fx, fy)) { beast.x = fx; beast.y = fy; }
-      else beast.fleeHeading = (beast.fleeHeading + 90 + Math.random() * 90 + 360) % 360;
+      const fr = coastStep(world, beast.x, beast.y, beast.fleeHeading, fStepDeg);
+      beast.x = fr.x; beast.y = fr.y;
+      beast.fleeHeading = Math.round(fr.heading); // rebond symétrique : la fuite poursuit dans la direction du rebond
       continue;
     }
     if (beast.hunger > 0) {
@@ -1072,13 +1127,18 @@ export function beastTick(beast, dtMin, world, sources) {
       break;
     }
     if (bestD <= BEAST_STRIKE_KM) { dead.add(best); continue; } // visité : rien
-    const brg = bearingTo(beast.x, beast.y, best.x, best.y);
-    beast.heading = Math.round(brg);
+    // Rebond : le cap réfléchi est conservé sur la créature (il survit aux
+    // passes serveur) — la Bête POURSUIT dans la direction du rebond au
+    // lieu de re-viser (et de s'user) contre la côte à chaque sous-pas.
+    // Il est abandonné dès qu'un pas d'eau libre l'a éloignée de la côte :
+    // la chasse reprend alors normalement.
+    const brg = beast.bounceHeading ?? bearingTo(beast.x, beast.y, best.x, best.y);
+    if (beast.bounceHeading == null) beast.heading = Math.round(brg);
     const stepDeg = (BEAST_SPD_KMH / 60 / DEG_KM) * step;
-    const nx = beast.x + Math.sin((brg * Math.PI) / 180) * stepDeg;
-    const ny = beast.y + Math.cos((brg * Math.PI) / 180) * stepDeg;
-    if (!world.isLand(nx, ny)) { beast.x = nx; beast.y = ny; }
-    else beast.heading = (beast.heading + 180 + (Math.random() * 2 - 1) * WHALE_BOUNCE_JITTER_DEG + 360) % 360;
+    const mv = coastStep(world, beast.x, beast.y, brg, stepDeg);
+    beast.x = mv.x; beast.y = mv.y;
+    beast.heading = Math.round(mv.heading);
+    beast.bounceHeading = mv.bounced ? mv.heading : null;
   }
   return eaten;
 }
@@ -1181,6 +1241,7 @@ export const PATROL_CANNON_EVERY_MIN = 2;        // cadence des coups de canon
 export const PATROL_DETECT_COOLDOWN_MIN = 240;   // après engagement : 4 h de répit
 export const PATROL_TICK_MAX_MIN = 120;          // garde-fou dt par passe serveur
 export const PATROL_SUBSTEP_MIN = 5;            // sous-pas de déplacement
+export const PATROL_BERTH_KM = 2;               // poste fixe de la frégate : 2 km au large du port
 export const BEAST_FLEE_LONG_KMH = 60;          // fuite longue : 60 km/h…
 export const BEAST_FLEE_LONG_MIN = 240;         // …pendant 4 h
 export const BEAST_FLEE_SHORT_KM = 50;          // fuite courte : 50 km d'un coup
@@ -1232,13 +1293,17 @@ export function patrolTick(patrol, dtMin, world, zone, beastPos) {
     patrol.tgtX = zone.x; patrol.tgtY = zone.y;
   };
   const moveToward = (tx, ty, step) => {
-    const brg = bearingTo(patrol.x, patrol.y, tx, ty);
-    patrol.heading = Math.round(brg);
+    // Rebond symétrique : après un contact avec la côte, la frégate poursuit
+    // dans la direction du rebond (le cap réfléchi survit aux passes
+    // serveur, il est abandonné dès qu'un pas d'eau libre l'a éloignée de
+    // la côte) — plus de « grind » immobile contre une côte.
+    const brg = patrol.bounceHeading ?? bearingTo(patrol.x, patrol.y, tx, ty);
+    if (patrol.bounceHeading == null) patrol.heading = Math.round(brg);
     const stepDeg = (PATROL_SPD_KMH / 60 / DEG_KM) * step;
-    const nx = patrol.x + Math.sin((brg * Math.PI) / 180) * stepDeg;
-    const ny = patrol.y + Math.cos((brg * Math.PI) / 180) * stepDeg;
-    if (!world.isLand(nx, ny)) { patrol.x = nx; patrol.y = ny; }
-    else patrol.heading = (patrol.heading + 180 + (Math.random() * 2 - 1) * 30 + 360) % 360;
+    const mv = coastStep(world, patrol.x, patrol.y, brg, stepDeg);
+    patrol.x = mv.x; patrol.y = mv.y;
+    patrol.heading = Math.round(mv.heading);
+    patrol.bounceHeading = mv.bounced ? mv.heading : null;
   };
   let remaining = Math.min(Math.max(0, dtMin), PATROL_TICK_MAX_MIN);
   while (remaining > 1e-9) {
@@ -1329,6 +1394,7 @@ export function onProximityPing(st, b, cap) {
   if (!st.beaconLock) {
     if (cap.strength < OMNI_DETECT_PCT) return; // signal faible : journal seul
     if (st.anchored) return; // ancre déployée : le guidage automatique ne s'engage pas (journal seul)
+    if (st.grounded) return; // échoué : le guidage ne s'engage pas — sinon il re-viserait la terre à chaque ping (journal seul)
     // AUTOGUIDAGE (3 positions) : filtre AU MOMENT DE L'ENGAGEMENT
     // uniquement — un verrou déjà engagé tient jusqu'au bout, même si
     // l'interrupteur change ou si la balise est capturée en cours de poursuite.
@@ -1349,13 +1415,23 @@ export function onProximityPing(st, b, cap) {
   }
 }
 
+// Station par code radio : balise, PORT ou AVANT-POSTE — un code désigne
+// exactement un système du monde. Le verrou d'autoguidage, la poursuite,
+// l'arrivée à l'ancre et l'appel « Position ? » résolvent tous par ici.
+export function findStation(world, code) {
+  const b = world.BEACONS.find((x) => x.code === code);
+  if (b) return b;
+  if (world.PORT.code === code) return world.PORT;
+  return world.OUTPOSTS.find((o) => o.code === code) || null;
+}
+
 // Poursuite CONTINUE : à chaque tick, l'ordinateur remet cap et antenne sur la
 // balise verrouillée (position VRAIE — exception assumée du scan du verrou,
 // jamais affichée). La poursuite ne dépend plus de la cadence des pings :
 // elle tient aussi pendant les sauts de temps (pings au rythme temps réel).
 export function beaconLockSteer(st, world) {
   if (!st.beaconLock) return;
-  const b = world.BEACONS.find((x) => x.code === st.beaconLock); // capturée ou non : le verrou tient
+  const b = findStation(world, st.beaconLock); // balise, port ou avant-poste : le verrou tient
   if (!b) { st.beaconLock = null; st.lockBrg = null; return; }
   st.lockBrg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
   st.antOrient = Math.round(((st.lockBrg - st.heading + 540) % 360) - 180); // antenne sur la source
@@ -1370,7 +1446,7 @@ export function beaconLockSteer(st, world) {
 // filer 3 km plus loin.
 export function beaconLockTick(st, world, prevX = st.x, prevY = st.y) {
   if (!st.beaconLock) return;
-  const b = world.BEACONS.find((x) => x.code === st.beaconLock); // capturée ou non : le verrou tient
+  const b = findStation(world, st.beaconLock); // balise, port ou avant-poste : le verrou tient
   if (!b) { st.beaconLock = null; st.lockBrg = null; return; }
   let dKm = distKm(st.x, st.y, b.x, b.y);
   if (dKm > ANCHOR_DROP_KM && segDistKm(b.x, b.y, prevX, prevY, st.x, st.y) <= ANCHOR_DROP_KM) {
@@ -1388,9 +1464,15 @@ export function beaconLockTick(st, world, prevX = st.x, prevY = st.y) {
     st.lockBrg = null;
     st.headingOrder = st.heading; // barre arrêtée
     st.anchored = true;            // ancre automatique : position figée
+    // L'ancre coupe toujours le moteur et le mât : refuge silencieux,
+    // aucun carburant brûlé au poste (redémarrage manuel ensuite).
+    st.engineOn = false;
+    st.mast = false;
+    const isDock = b === world.PORT || world.OUTPOSTS.includes(b);
+    const label = b === world.PORT ? "du port" : world.OUTPOSTS.includes(b) ? "de l'avant-poste" : "de la balise";
     st.notifSeq = (st.notifSeq || 0) + 1;
     st.notifications.unshift({ id: st.notifSeq, t: st.t, kind: "good", cat: "navire",
-      text: `⚓ Ancre jetée à ${Math.round(dKm * 1000)} m de la balise ${b.code} — pilote automatique coupé. Capture quand tu veux.` });
+      text: `⚓ Ancre jetée à ${Math.round(dKm * 1000)} m ${label} ${b.code} — pilote automatique coupé. ${isDock ? "Livraison quand tu veux." : "Capture quand tu veux."}` });
   }
 }
 
@@ -1827,7 +1909,12 @@ export function computeView(st, world, traces = []) {
   return {
     night, canSee, visKm, horizonKm: HORIZON,
     islands, outposts, beacons, port, coast, traces: traceViews,
-    continentVerts: coast ? world.CONTINENT.verts : null,
+    // Sommets RELATIFS à la position VRAIE (degrés) : le client dessine la
+    // côte centrée sur le navire SANS passer par l'estime — la vue du
+    // dessus est véridique, comme toutes les autres détections. (Faire le
+    // point en superposant la côte à la carte connue redevient possible :
+    // c'est le geste du navigateur, déjà permis par les détections d'îles.)
+    continentVerts: coast ? world.CONTINENT.verts.map(([vx, vy]) => [vx - st.x, vy - st.y]) : null,
     antHeading,
     windDir: w.windDir, windSpd: w.windSpd,
   };

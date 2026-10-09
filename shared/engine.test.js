@@ -22,7 +22,8 @@ import {
   ESTIMATE_HALF_LIFE_MIN, EXCLUSION_BULLETIN_MIN, BEACON_HEAR_KM,
   PATROL_SPD_KMH, PATROL_ENGAGE_MIN, PATROL_CANNON_EVERY_MIN,
   PATROL_DETECT_COOLDOWN_MIN, PATROL_DETECT_R_KM, PATROL_TICK_MAX_MIN,
-  CANNON_DECAY_KM,
+  CANNON_DECAY_KM, findStation, coastReflect, coastStep, COAST_PROBE_KM,
+  PATROL_BERTH_KM,
 } from "./engine.js";
 
 // Navire de test en pleine eau (loin du port et des terres), pleine vitesse.
@@ -1194,4 +1195,123 @@ test("beastTick : en fuite, elle court en ligne droite et ne mange pas", () => {
   assert.equal(eaten, null, "en fuite : pas de repas, même à portée de frappe");
   assert.ok(Math.abs(beast.y - 31) < 1e-6, "50 km vers le nord (1°)");
   assert.equal(beast.fleeLeftMin, 0, "la fuite est consommée");
+});
+
+// ---------- Autoguidage port & avant-postes + rebond symétrique + ancre ----------
+
+// Monde synthétique : côte verticale, terre pour x >= 10, eau pour x < 10.
+const wallWorld = { isLand: (x, y) => x >= 10, BEACONS: [], PORT: { x: 0, y: 0, code: "0000", active: true }, OUTPOSTS: [] };
+
+test("coastReflect : réflexion symétrique du cap sur une côte droite", () => {
+  // Plein est (perpendiculaire) → rebond plein ouest (retour exact).
+  assert.equal(coastReflect(wallWorld, 10.05, 20, 90), 270);
+  // Nord-est à 45° → nord-ouest à 315° (la composante tangentielle — le nord — est conservée).
+  assert.equal(coastReflect(wallWorld, 10.05, 20, 45), 315);
+  // Cap rasant la côte (plein nord) → inchangé (le rebond glisse le long).
+  assert.equal(coastReflect(wallWorld, 10.05, 20, 0), 0);
+});
+
+test("coastStep : pas bloqué rejoué dans la direction du rebond", () => {
+  const free = coastStep(wallWorld, 5, 20, 90, 0.1);
+  assert.equal(free.x, 5.1); assert.equal(free.y, 20);
+  assert.equal(free.bounced, false, "eau libre : pas de rebond");
+  const bounced = coastStep(wallWorld, 9.95, 20, 90, 0.1);
+  assert.equal(bounced.bounced, true, "terre au premier essai : rebond");
+  assert.equal(bounced.heading, 270, "cap réfléchi vers l'eau");
+  assert.ok(bounced.x < 9.95, "le pas est rejoué : la créature AVANCE au lieu de grinder");
+});
+
+test("beastTick : cible derrière la côte → rebond symétrique et progression", () => {
+  const beast = { x: 9.95, y: 20, heading: 90, hunger: 0, fleeLeftMin: 0 };
+  const src = { x: 11, y: 20, liveX: 11, liveY: 20, ref: { kind: "fisher" } };
+  beastTick(beast, 10, wallWorld, [src]); // 2 sous-pas de 5 min
+  assert.ok(beast.x < 9.95, "l'ancien code la laissait immobile contre la côte (grind) — elle progresse désormais");
+  assert.equal(beast.heading, 270, "elle poursuit dans la direction du rebond");
+});
+
+test("patrolTick : zone derrière la côte → la frégate rebondit et s'éloigne au lieu de grinder", () => {
+  const patrol = { x: 9.97, y: 20, heading: 0, mode: "transit", searchMin: 0, searchAcc: 0, engageLeftMin: 0, shotClock: 0, cooldownLeftMin: 0 };
+  patrolTick(patrol, 10, wallWorld, { x: 11, y: 20, rKm: 40 }, null);
+  assert.ok(patrol.x < 9.97, "l'ancien code la laissait immobile contre la côte (grind) — elle rebondit désormais");
+  assert.equal(patrol.heading, 270, "elle poursuit dans la direction du rebond (cap réfléchi conservé)");
+});
+
+test("stations : le port et les avant-postes ont un code radio unique du pool", () => {
+  const w = buildWorld(42);
+  const codes = [w.PORT.code, ...w.OUTPOSTS.map((o) => o.code), ...w.BEACONS.map((b) => b.code)];
+  assert.equal(codes.length, 46, "40 balises + 1 port + 5 avant-postes");
+  assert.equal(new Set(codes).size, 46, "aucune collision");
+  for (const c of codes) assert.match(c, /^[0-9]{4}$/, "format pool 4 chiffres");
+  assert.equal(w.PORT.active, true, "le port n'est pas capturable : toujours actif");
+  assert.ok(w.OUTPOSTS.every((o) => o.active), "les avant-postes sont toujours actifs");
+});
+
+test("findStation : un code désigne exactement une station (balise, port, avant-poste)", () => {
+  const w = buildWorld(42);
+  assert.equal(findStation(w, w.PORT.code), w.PORT);
+  assert.equal(findStation(w, w.OUTPOSTS[2].code), w.OUTPOSTS[2]);
+  assert.equal(findStation(w, w.BEACONS[7].code), w.BEACONS[7]);
+  const used = new Set([w.PORT.code, ...w.OUTPOSTS.map((o) => o.code), ...w.BEACONS.map((b) => b.code)]);
+  let absent = null;
+  for (let i = 0; i < 10000 && !absent; i++) {
+    const c = String(i).padStart(4, "0");
+    if (!used.has(c)) absent = c;
+  }
+  assert.equal(findStation(w, absent), null, "code inconnu : aucune station");
+});
+
+test("onProximityPing : le ping du port verrouille le pilote comme une balise", () => {
+  const w = buildWorld(42);
+  const st = newPlayerState(w);
+  st.anchored = false;
+  onProximityPing(st, w.PORT, { strength: 100, bearing: 90 });
+  assert.equal(st.beaconLock, w.PORT.code, "verrou sur le code du port");
+  assert.equal(st.autopilot, false, "le verrou coupe le pilote de route");
+  const st2 = newPlayerState(w);
+  st2.anchored = false;
+  st2.beaconLock = w.BEACONS[0].code; // anti-bascule : le premier verrou tient
+  onProximityPing(st2, w.PORT, { strength: 100, bearing: 90 });
+  assert.equal(st2.beaconLock, w.BEACONS[0].code, "le ping du port est journalisé mais ignoré par le verrou");
+});
+
+test("verrou + arrivée au port : poursuite d'azimut, ancre auto qui coupe moteur et mât", () => {
+  const w = buildWorld(42);
+  const st = newPlayerState(w);
+  st.anchored = false;
+  st.beaconLock = w.PORT.code;
+  st.x = w.PORT.x - 1; st.y = w.PORT.y;
+  beaconLockSteer(st, w);
+  assert.equal(st.headingOrder, 90, "cap vers le port (à l'est)");
+  // Arrivée : à 20 m du port, l'ancre tombe automatiquement.
+  st.engineOn = true; st.mast = true;
+  st.x = w.PORT.x; st.y = w.PORT.y + 0.02 / DEG_KM;
+  beaconLockTick(st, w);
+  assert.equal(st.anchored, true, "ancre automatique à ≤ 50 m du port");
+  assert.equal(st.beaconLock, null, "pilote coupé");
+  assert.equal(st.engineOn, false, "l'ancre coupe le moteur (refuge silencieux)");
+  assert.equal(st.mast, false, "l'ancre baisse le mât");
+  assert.ok(st.notifications[0].text.includes("du port"), "libellé : ancre du port");
+});
+
+test("computeView : la côte est dessinée depuis la position VRAIE (relative), pas l'estime", () => {
+  const w = buildWorld(42);
+  const st = newPlayerState(w);
+  st.x = w.PORT.x; st.y = w.PORT.y; // sur la côte : continent détecté
+  st.estX = st.x + 0.5; st.estY = st.y + 0.5; // estime volontairement fausse
+  const v = computeView(st, w);
+  assert.ok(v.coast, "côte à portée");
+  assert.ok(v.continentVerts, "sommets présents");
+  const [vx, vy] = w.CONTINENT.verts[0];
+  assert.ok(Math.abs(v.continentVerts[0][0] - (vx - st.x)) < 1e-9, "sommets relatifs à la position VRAIE");
+  assert.ok(Math.abs(v.continentVerts[0][1] - (vy - st.y)) < 1e-9, "pas à l'estime : l'erreur d'estime ne décale plus la côte");
+});
+
+test("onProximityPing : navire échoué — le guidage ne s'engage pas (journal seul)", () => {
+  const w = buildWorld(42);
+  const st = newPlayerState(w);
+  st.anchored = false;
+  st.grounded = true;
+  onProximityPing(st, w.PORT, { strength: 100, bearing: 90 });
+  assert.equal(st.beaconLock, null, "échoué : le verrou ne pointe pas vers la terre — le joueur se dégage à la main");
+  assert.ok(st.signals.length > 0, "le ping est quand même journalisé");
 });
