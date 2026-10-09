@@ -659,8 +659,8 @@ function SonarTile({ snap, cmd }) {
     const a = (az * Math.PI) / 180;
     return [100 + Math.sin(a) * r, 100 - Math.cos(a) * r];
   };
-  const ECHO_COLOR = { ile: "#2dd4bf", balise: "#facc15", navire: "#22d3ee", cote: "#94a3b8", biologique: "#c084fc" };
-  const ECHO_SHAPE = { ile: "triangle", balise: "diamond", navire: "round", cote: "arc", biologique: "wave" };
+  const ECHO_COLOR = { ile: "#2dd4bf", balise: "#facc15", navire: "#22d3ee", cote: "#94a3b8", biologique: "#34d399" };
+  const ECHO_SHAPE = { ile: "triangle", balise: "diamond", navire: "round", cote: "arc", biologique: "ring" };
   return (
     <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
       <h2 className="text-sm font-semibold text-sky-300">Sonar</h2>
@@ -680,14 +680,17 @@ function SonarTile({ snap, cmd }) {
           const [x, y] = pos(s.bearing, R - 9);
           return (
             <g key={`p${i}`} opacity={Math.max(0.25, s.strength / 100)}>
-              {s.kind === "moteur" ? (
+              {s.kind === "moteur" && (
                 <circle cx={x} cy={y} r="4" fill="none" stroke="#f97316" strokeWidth="1.4" />
-              ) : s.kind === "biologique" ? (
-                <path d={`M ${x - 4} ${y + 1.5} q 2 -3.5 4 0 q 2 -3.5 4 0`} fill="none" stroke="#c084fc" strokeWidth="1.5" />
-              ) : s.kind === "inconnu" ? (
-                <path d={`M ${x - 5} ${y + 1} l 2 -3 l 1.5 3 l 2 -4 l 1.5 4 l 2 -2`} fill="none" stroke="#f8fafc" strokeWidth="1.5" />
-              ) : (
+              )}
+              {s.kind === "ping" && (
                 <path d={`M ${x - 4} ${y - 4} L ${x + 4} ${y + 4} M ${x + 4} ${y - 4} L ${x - 4} ${y + 4}`} stroke="#a855f7" strokeWidth="1.6" />
+              )}
+              {s.kind === "biologique" && (
+                <path d={`M ${x - 4.5} ${y + 1.5} q 2.25 -4 4.5 0 q 2.25 4 4.5 0`} stroke="#34d399" strokeWidth="1.6" fill="none" />
+              )}
+              {s.kind === "inconnu" && (
+                <path d={`M ${x - 5} ${y + 1} l 2 -3 l 1.5 3 l 2 -4 l 1.5 4 l 2 -2`} fill="none" stroke="#f8fafc" strokeWidth="1.5" />
               )}
             </g>
           );
@@ -701,6 +704,7 @@ function SonarTile({ snap, cmd }) {
           return (
             <g key={`e${i}`} opacity={fade} fill={col} stroke={col}>
               {shape === "round" && <circle cx={x} cy={y} r="3.5" fill={col} />}
+              {shape === "ring" && <circle cx={x} cy={y} r="3.5" fill="none" strokeWidth="1.6" />}
               {shape === "diamond" && <rect x={x - 3.5} y={y - 3.5} width="7" height="7" transform={`rotate(45 ${x} ${y})`} fill={col} />}
               {shape === "triangle" && <path d={`M ${x} ${y - 4} L ${x + 3.8} ${y + 3} L ${x - 3.8} ${y + 3} Z`} fill={col} />}
               {shape === "arc" && (() => {
@@ -708,22 +712,26 @@ function SonarTile({ snap, cmd }) {
                 const [x1, y1] = pos(e.az + 12, R - 4);
                 return <path d={`M ${x0} ${y0} A ${R - 4} ${R - 4} 0 0 1 ${x1} ${y1}`} fill="none" strokeWidth="3" />;
               })()}
-              {shape === "wave" && <path d={`M ${x - 5} ${y + 1.5} q 2.5 -4.5 5 0 q 2.5 -4.5 5 0`} fill="none" strokeWidth="2" />}
+
             </g>
           );
         })}
         {/* Navire au centre */}
-        <circle cx="100" cy="100" r="2" fill={uw ? "#38bdf8" : "#94a3b8"} />
+        <path d="M 0 -7 L 5 6 L -5 6 Z" transform="translate(100 100)" fill="#38bdf8" stroke="#e0f2fe" strokeWidth="0.7" />
+        <text x="100" y="188" fontSize="6.5" fill="#475569" textAnchor="middle">
+          cercle = {SONAR_RANGE_KM} km · bruits {SOUND_DECAY_KM} km
+        </text>
       </svg>
       <div className="space-y-2">
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-400">
           <span><span className="text-orange-400">◯</span> moteur (passif)</span>
           <span><span className="text-purple-400">✕</span> ping d'un autre (passif)</span>
-          <span><span className="text-purple-300">∿</span> chant de baleine</span>
+          <span><span className="text-emerald-300">∿</span> chant de baleine (passif)</span>
           <span><span className="text-slate-100">⌇</span> son inconnu</span>
           <span><span className="text-teal-300">▲</span> île</span>
           <span><span className="text-yellow-300">◆</span> balise</span>
           <span><span className="text-cyan-300">●</span> navire</span>
+          <span><span className="text-emerald-300">◯</span> baleine</span>
           <span><span className="text-slate-400">◡</span> côte</span>
         </div>
         <button

@@ -269,6 +269,14 @@ if (!race.migrated) {
 // race.npcs → sérialisés à chaque store.save()). Régénérée au reset.
 // Les NPC sont exposés aux joueurs UNIQUEMENT par le sonar et la radio —
 // jamais dans le snapshot (pas de position vraie).
+function npcCodes() {
+  const s = new Set();
+  if (race.npcs) {
+    for (const f of race.npcs.fishermen) s.add(f.code);
+    for (const c of race.npcs.cargos) s.add(c.code);
+  }
+  return s;
+}
 function ensureNpcs() {
   if (!race.npcs) {
     const used = [...world.BEACONS.map((b) => b.code), ...[...states.values()].map((s) => s.code)];
@@ -499,7 +507,8 @@ function ensureState(id) {
     do {
       shipCode = randomCode();
     } while (world.BEACONS.some((b) => b.code === shipCode)
-      || [...states.values()].some((s) => s.code === shipCode));
+      || [...states.values()].some((s) => s.code === shipCode)
+      || npcCodes().has(shipCode));
     const st = newPlayerState(world, { weatherSeed: race.seed % 1000, shipCode, takenSpawns });
     st.t = gameMinutesNow();
     states.set(id, st);
@@ -1141,6 +1150,7 @@ wss.on("connection", (ws, req) => {
         race.displayEpoch = epoch.getTime();
         race.startedAt = new Date().toISOString();
         race.beacons = undefined;
+        race.npcs = undefined; // nouvelle population régénérée en fin de reset, sur le nouveau monde
         race.network = [];      // nouvelle course : journal global réinitialisé
         race.spawnOrder = {};   // réattribué ci-dessous, dans l'ordre actuel
         takenSpawns = [];       // nouvelle course : quai vidé
