@@ -51,8 +51,8 @@ export const WX_HORIZON_H = 48;           // horizon des prévisions météo (h)
 
 // Autoguidage balise-vigie : quelles balises peuvent ENGAGER le verrou du
 // pilote. Filtre à l'engagement uniquement — un verrou déjà engagé tient.
-export const AUTOGUIDE_MODES = ["disabled", "active", "all"];
-export const AUTOGUIDE_DEFAULT = "active"; // défaut : seules les balises non capturées verrouillent
+export const AUTOGUIDE_MODES = ["off", "active", "disabled", "all"];
+export const AUTOGUIDE_DEFAULT = "off"; // défaut : AUCUN verrou — l'autoguidage s'engage à la main (calme au port)
 
 // Navigation à l'estime — défauts d'instruments et courant (équilibrage validé)
 export const COMP_DEV_MIN_DEG = 0.15;  // déviation de compas min (°)
@@ -1411,10 +1411,11 @@ export function onProximityPing(st, b, cap) {
     if (cap.strength < OMNI_DETECT_PCT) return; // signal faible : journal seul
     if (st.anchored) return; // ancre déployée : le guidage automatique ne s'engage pas (journal seul)
     if (st.grounded) return; // échoué : le guidage ne s'engage pas — sinon il re-viserait la terre à chaque ping (journal seul)
-    // AUTOGUIDAGE (3 positions) : filtre AU MOMENT DE L'ENGAGEMENT
+    // AUTOGUIDAGE (4 positions) : filtre AU MOMENT DE L'ENGAGEMENT
     // uniquement — un verrou déjà engagé tient jusqu'au bout, même si
     // l'interrupteur change ou si la balise est capturée en cours de poursuite.
     const mode = st.autoguide || AUTOGUIDE_DEFAULT;
+    if (mode === "off") return; // interrupteur sur AUCUN : journal seul, jamais de verrou
     if (mode !== "all" && (mode === "active") !== b.active) return; // hors mode : journal seul
   }
   const brg = Math.round(bearingTo(st.x, st.y, b.x, b.y));

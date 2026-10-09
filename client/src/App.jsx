@@ -9,7 +9,7 @@ import {
   SONAR_RANGE_KM, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, SONAR_PING_BATTERY_COST,
 } from "../../shared/engine.js";
 
-const AUTOGUIDE_LABEL = { disabled: "Désactivées", active: "Actives", all: "Toutes" };
+const AUTOGUIDE_LABEL = { off: "Aucun", active: "Actives", disabled: "Déjà capturées", all: "Toutes" };
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const mixHex = (a, b, t) => {
@@ -1026,7 +1026,7 @@ export default function App() {
             <p className="text-[11px] text-slate-400">
               Code du navire : <b className="font-mono text-sm text-sky-300">{player.code}</b> — c'est votre numéro radio (donnez-le aux autres navires pour qu'ils vous appellent).
             </p>
-            {/* Autoguidage balise-vigie : 3 positions, filtre à l'engagement */}
+            {/* Autoguidage balise-vigie : 4 positions, Aucun par défaut, filtre à l'engagement */}
             <div className="space-y-1">
               <p className="text-[10px] uppercase tracking-wider text-slate-500">Autoguidage balise-vigie — verrouillage sur</p>
               <div className="flex gap-1.5">
@@ -1035,21 +1035,33 @@ export default function App() {
                 ))}
               </div>
               <p className="text-[11px] leading-snug text-slate-500">
-                Le verrou automatique s'engage uniquement sur les balises choisies — <b>Actives</b> (non capturées), <b>Désactivées</b> (déjà capturées) ou <b>Toutes</b>. Le journal des signaux reste complet ; une consigne de cap coupe toujours le verrou.
+                Par défaut <b>Aucun</b> : aucun verrouillage automatique. Sinon, le verrou s'engage uniquement sur les balises choisies — <b>Actives</b> (non capturées), <b>Déjà capturées</b> ou <b>Toutes</b>. Le journal des signaux reste complet ; une consigne de cap coupe toujours le verrou.
               </p>
             </div>
-            {(player.signals || []).length > 0 && (
-              <div className="rounded-lg border border-slate-700/60 bg-slate-900/60 p-2">
-                <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">Journal des signaux (10 derniers)</p>
-                <div className="space-y-0.5">
-                  {[...player.signals].reverse().map((sg, i) => (
-                    <p key={i} className={`text-[10px] leading-snug tabular-nums ${sg.kind === "prox" ? "text-purple-300" : "text-slate-400"}`}>
-                      {sg.kind === "prox" ? "⚡" : "📡"} {sg.beaconId}{sg.off ? " (balise désactivée)" : ""} — signal {sg.strength}%{sg.side ? `, zone ${sg.side}` : ""}
-                    </p>
-                  ))}
+            {(player.signals || []).length > 0 && (() => {
+              // Journal GROUPÉ PAR STATION : une ligne vivante par station
+              // (dernier signal + compteur), pas une ligne par ping — à quai
+              // la même balise pulse toutes les 10–14 s et le journal ne
+              // devait plus afficher QUE elle.
+              const by = new Map();
+              for (const sg of [...player.signals].reverse()) {
+                const cur = by.get(sg.beaconId);
+                if (cur) cur.n++;
+                else by.set(sg.beaconId, { sg, n: 1 });
+              }
+              return (
+                <div className="rounded-lg border border-slate-700/60 bg-slate-900/60 p-2">
+                  <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">Journal des signaux (par station)</p>
+                  <div className="space-y-0.5">
+                    {[...by.entries()].map(([code, e]) => (
+                      <p key={code} className={`text-[10px] leading-snug tabular-nums ${e.sg.kind === "prox" ? "text-purple-300" : "text-slate-400"}`}>
+                        {e.sg.kind === "prox" ? "⚡" : "📡"} {code}{e.sg.off ? " (balise désactivée)" : ""} — signal {e.sg.strength}%{e.sg.side ? `, zone ${e.sg.side}` : ""}{e.n > 1 ? ` · ×${e.n}` : ""}
+                      </p>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
             {/* Mode radio : privé (appels) ou diffusion (SOS) */}
             <div className="flex gap-1.5">
               <Btn active={radioMode === "prive"} onClick={() => setRadioMode("prive")}>🔒 Privé — appels</Btn>
