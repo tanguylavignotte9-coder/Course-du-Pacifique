@@ -647,8 +647,8 @@ function SonarTile({ snap, cmd }) {
     const a = (az * Math.PI) / 180;
     return [100 + Math.sin(a) * r, 100 - Math.cos(a) * r];
   };
-  const ECHO_COLOR = { ile: "#2dd4bf", balise: "#facc15", navire: "#22d3ee", cote: "#94a3b8" };
-  const ECHO_SHAPE = { ile: "triangle", balise: "diamond", navire: "round", cote: "arc" };
+  const ECHO_COLOR = { ile: "#2dd4bf", balise: "#facc15", navire: "#22d3ee", cote: "#94a3b8", biologique: "#c084fc" };
+  const ECHO_SHAPE = { ile: "triangle", balise: "diamond", navire: "round", cote: "arc", biologique: "wave" };
   return (
     <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
       <h2 className="text-sm font-semibold text-sky-300">Sonar</h2>
@@ -670,6 +670,8 @@ function SonarTile({ snap, cmd }) {
             <g key={`p${i}`} opacity={Math.max(0.25, s.strength / 100)}>
               {s.kind === "moteur" ? (
                 <circle cx={x} cy={y} r="4" fill="none" stroke="#f97316" strokeWidth="1.4" />
+              ) : s.kind === "biologique" ? (
+                <path d={`M ${x - 4} ${y + 1.5} q 2 -3.5 4 0 q 2 -3.5 4 0`} fill="none" stroke="#c084fc" strokeWidth="1.5" />
               ) : (
                 <path d={`M ${x - 4} ${y - 4} L ${x + 4} ${y + 4} M ${x + 4} ${y - 4} L ${x - 4} ${y + 4}`} stroke="#a855f7" strokeWidth="1.6" />
               )}
@@ -692,6 +694,7 @@ function SonarTile({ snap, cmd }) {
                 const [x1, y1] = pos(e.az + 12, R - 4);
                 return <path d={`M ${x0} ${y0} A ${R - 4} ${R - 4} 0 0 1 ${x1} ${y1}`} fill="none" strokeWidth="3" />;
               })()}
+              {shape === "wave" && <path d={`M ${x - 5} ${y + 1.5} q 2.5 -4.5 5 0 q 2.5 -4.5 5 0`} fill="none" strokeWidth="2" />}
             </g>
           );
         })}
@@ -702,6 +705,7 @@ function SonarTile({ snap, cmd }) {
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-400">
           <span><span className="text-orange-400">◯</span> moteur (passif)</span>
           <span><span className="text-purple-400">✕</span> ping d'un autre (passif)</span>
+          <span><span className="text-purple-300">∿</span> chant de baleine</span>
           <span><span className="text-teal-300">▲</span> île</span>
           <span><span className="text-yellow-300">◆</span> balise</span>
           <span><span className="text-cyan-300">●</span> navire</span>

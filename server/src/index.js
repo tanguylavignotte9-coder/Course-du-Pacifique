@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -17,6 +17,20 @@ const TICK_MS = 1000; // tick serveur : 1 s réelle
 const MAX_STEP_MIN = 5; // pas de simulation max 5 min de jeu (design)
 const PERSIST_MS = 60000;
 const SPAWN_SEP_KM = 0.5; // anti-chevauchement des spawns au port
+
+// Bafouillage des pêcheurs (diffusion) : petites phrases de la vie à bord.
+// JAMAIS de coordonnées dans le texte (règle : pas de position vraie dans
+// les messages NPC — la position ne se révèle que par le geste du joueur).
+const FISHER_CHAT_LINES = [
+  "Filets remontés, pas grand-chose dedans…",
+  "Banc de maquereaux au nord, ça donne espoir.",
+  "La mer est belle ce soir, ça sent la bonne journée.",
+  "…et encore un qui a filé avec l'appât, ces bestioles apprennent.",
+  "Moteur qui chauffe, on rentre doucement.",
+  "Du poisson, du poisson, du poisson !",
+  "Par ici la brume, on garde les yeux ouverts.",
+  "Ce soir, soupe de poisson pour tout le monde.",
+];
 const clamp01 = (v) => clamp(v, 0, 1);
 
 // ---------- Persistance & comptes ----------
@@ -98,6 +112,8 @@ const sonarPending = new Map();       // accountId -> [{ kind, az, distKm, arriv
 const sonarLive = new Map();          // accountId -> [{ kind, az, distKm, heardMs }] échos revenus (10 s)
 const sonarNoisePending = new Map();  // accountId -> [{ bearing, strength, arriveMin }] pings des autres en transit
 const sonarHeard = new Map();        // accountId -> [{ bearing, strength, heardMs }] pings entendus (10 s)
+const bioPending = new Map();   // accountId -> [{ bearing, strength, arriveMin }] chants en transit
+const bioHeard = new Map();     // accountId -> [{ bearing, strength, heardMs }] chants entendus (10 s)
 
 // Position retardée dans un historique : dernière entrée <= tMin.
 function posAtT(hist, tMin) {
@@ -129,8 +145,23 @@ function sonarPassiveFor(id) {
     const heard = sonarPassiveHear(me, p.x, p.y);
     if (heard) out.push({ kind: "moteur", bearing: heard.bearing, strength: heard.strength });
   }
+  // Bruits moteurs des NPC (hydrophone) : cargo en traversée, pêcheur en
+  // transit — position RETARDÉE du son (npcBackPos), gisement + force.
+  const npcs = race.npcs;
+  if (npcs) {
+    for (const n of [...npcs.cargos, ...npcs.fishermen]) {
+      if (!npcNoisy(n)) continue;
+      const d = distKm(me.x, me.y, n.x, n.y);
+      const p = npcBackPos(n, soundTravelMin(d));
+      const heard = sonarPassiveHear(me, p.x, p.y);
+      if (heard) out.push({ kind: "moteur", bearing: heard.bearing, strength: heard.strength });
+    }
+  }
   for (const ev of (sonarHeard.get(id) || [])) {
     out.push({ kind: "ping", bearing: ev.bearing, strength: ev.strength });
+  }
+  for (const ev of (bioHeard.get(id) || [])) {
+    out.push({ kind: "biologique", bearing: ev.bearing, strength: ev.strength });
   }
   return out;
 }
@@ -169,8 +200,21 @@ function sonarPass() {
         return true;
       }));
     }
+    const bPend = bioPending.get(id);
+    if (bPend && bPend.length) {
+      bioPending.set(id, bPend.filter((ev) => {
+        if (st.t >= ev.arriveMin) {
+          const heard = bioHeard.get(id) || [];
+          heard.push({ bearing: ev.bearing, strength: ev.strength, heardMs: nowMs });
+          bioHeard.set(id, heard);
+          return false;
+        }
+        return true;
+      }));
+    }
     if (sonarLive.has(id)) sonarLive.set(id, sonarLive.get(id).filter((e) => e.heardMs >= cut));
     if (sonarHeard.has(id)) sonarHeard.set(id, sonarHeard.get(id).filter((e) => e.heardMs >= cut));
+    if (bioHeard.has(id)) bioHeard.set(id, bioHeard.get(id).filter((e) => e.heardMs >= cut));
   }
 }
 // Positions de spawn déjà posées au port (anti-chevauchement, ordre d'arrivée)
@@ -219,6 +263,89 @@ if (!race.migrated) {
   }
   store.save();
 }
+
+// ---------- Vie du monde : population NPC (pêcheurs, cargos, baleines) ----------
+// Générée une fois, PERSISTÉE dans la course (positions + timers vivent dans
+// race.npcs → sérialisés à chaque store.save()). Régénérée au reset.
+// Les NPC sont exposés aux joueurs UNIQUEMENT par le sonar et la radio —
+// jamais dans le snapshot (pas de position vraie).
+function ensureNpcs() {
+  if (!race.npcs) {
+    const used = [...world.BEACONS.map((b) => b.code), ...[...states.values()].map((s) => s.code)];
+    race.npcs = generateNpcs(world, used, gameMinutesNow());
+    store.save();
+  }
+}
+ensureNpcs();
+let lastNpcT = gameMinutesNow();
+
+// Passe NPC (boucle 1 Hz) : déplacement simple + émissions. Le monde vit
+// même sans joueur connecté. dt borné par le garde-fou du moteur (les
+// sauts de temps super user font vivre les NPC de 120 min au plus).
+function npcPass(now) {
+  const npcs = race.npcs;
+  if (!npcs) return;
+  const prev = lastNpcT;
+  lastNpcT = now;
+  npcsTick(npcs, now - prev, world);
+  // Émission radio depuis un NPC vers tous les navires joueurs : LOI DE
+  // RÉCEPTION UNIQUE (omni ≥ 75 % / directionnel ≥ sens), famille longue.
+  const radioSend = (fromX, fromY, deliver) => {
+    for (const [oid, ost] of states) {
+      const radioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
+      if (!radioOk) continue;
+      const dKm = distKm(ost.x, ost.y, fromX, fromY);
+      const strength = longStrengthKm(dKm);
+      if (strength < RADIO_MIN_STRENGTH) continue;
+      const cap = recvCapture(ost, bearingTo(ost.x, ost.y, fromX, fromY), strength);
+      if (!cap) continue; // ne capte pas : silence
+      deliver(ost, cap);
+    }
+  };
+  // Bafouillage des pêcheurs : DIFFUSION lisible par tous à portée (avec
+  // code radio du pêcheur, aucune coordonnée).
+  for (const f of npcs.fishermen) {
+    if (now < f.nextChatMin) continue;
+    f.nextChatMin = nextNpcEventMin(now, FISHER_CHAT_MEAN_MIN);
+    const line = FISHER_CHAT_LINES[Math.floor(Math.random() * FISHER_CHAT_LINES.length)];
+    radioSend(f.x, f.y, (ost, cap) => {
+      ost.notifSeq = (ost.notifSeq || 0) + 1;
+      ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: `📻 Navire ${f.code} : « ${line} »`, kind: "info", cat: "radio" });
+    });
+  }
+  // Cargos : message PRIVÉ vers un autre cargo — les joueurs ne sont jamais
+  // destinataires : ils ne capent que du BROUILLÉ (scrambledIntercept).
+  for (const c of npcs.cargos) {
+    if (now < c.nextMsgMin) continue;
+    c.nextMsgMin = nextNpcEventMin(now, CARGO_MSG_MEAN_MIN);
+    radioSend(c.x, c.y, (ost, cap) => {
+      ost.notifSeq = (ost.notifSeq || 0) + 1;
+      const info = scrambledIntercept(Math.round(cap.strength), cap.source, cap.side);
+      ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: info.text, kind: "info", cat: info.cat });
+    });
+  }
+  // Chant de baleine : BRUIT SONAR PASSIF (kind « biologique ») avec le vrai
+  // retard de propagation — même mécanique que les bruits moteurs : la
+  // position d'émission est retardée, la force suit la décroissance son,
+  // et l'arrivée passe par la file d'attente dédiée (bioPending → bioHeard,
+  // affiché SONAR_ECHO_PERSIST_S secondes).
+  for (const wh of npcs.whales) {
+    if (now < wh.nextSongMin) continue;
+    wh.nextSongMin = nextNpcEventMin(now, WHALE_SONG_MEAN_MIN);
+    for (const [oid, ost] of states) {
+      const dKm = distKm(ost.x, ost.y, wh.x, wh.y);
+      const strength = strengthKm(dKm, SOUND_DECAY_KM);
+      if (strength <= 0) continue;
+      const q = bioPending.get(oid) || [];
+      q.push({
+        bearing: Math.round(bearingTo(ost.x, ost.y, wh.x, wh.y)),
+        strength,
+        arriveMin: ost.t + soundTravelMin(dKm),
+      });
+      bioPending.set(oid, q);
+    }
+  }
+}
 function persistPlayer(id) {
   race.players[id] = states.get(id);
   store.save();
@@ -261,6 +388,7 @@ setInterval(() => {
     }
   }
   multiplayerPass(now);
+  npcPass(now);
   sonarPass();
     // NETWORK : coupure automatique dès que le navire quitte la zone —
     // revenir = se RECONNECTER = nouvelle entrée dans le journal global.
@@ -673,7 +801,16 @@ wss.on("connection", (ws, req) => {
       // ping est un BRUIT : tous les autres navires l'entendent en passif
       // (gisement + force, décroissance son), avec le même retard.
       if (c.ping === true) {
-        const res = sonarPing(st, world, [...states.values()].filter((o) => o !== st));
+        // NPC de surface (cargos, pêcheurs) rebondissent comme « navire » ;
+        // les baleines comme « biologique ». Aucun n'a de position exposée.
+        const npcSurf = race.npcs
+          ? [...race.npcs.cargos, ...race.npcs.fishermen].map((n) => ({ x: n.x, y: n.y, location: "surface" }))
+          : [];
+        const res = sonarPing(
+          st, world,
+          [...states.values()].filter((o) => o !== st).concat(npcSurf),
+          (race.npcs || {}).whales || [],
+        );
         if (!res.ok) {
           st.notifSeq = (st.notifSeq || 0) + 1;
           st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⚠️ Sonar : ${res.error}`, kind: "warn", cat: "sonar" });
@@ -896,7 +1033,11 @@ wss.on("connection", (ws, req) => {
           slotIdx++;
         }
         // Sonar : l'état éphémère suit la remise à neuf
-        for (const m of [noiseHistory, sonarPending, sonarLive, sonarNoisePending, sonarHeard]) m.clear();
+        for (const m of [noiseHistory, sonarPending, sonarLive, sonarNoisePending, sonarHeard, bioPending, bioHeard]) m.clear();
+        // Population NPC : régénérée pour la NOUVELLE graine (codes uniques
+        // vs nouvelles balises + codes joueurs frais).
+        race.npcs = generateNpcs(world, usedCodes, gameMinutesNow());
+        lastNpcT = gameMinutesNow();
         store.save();
         st.notifSeq = (st.notifSeq || 0) + 1;
         st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🔄 Course réinitialisée : nouveau monde, nouvelles balises, navires à quai. Horloge re-synchronisée sur Paris.", kind: "good", cat: "navire" });

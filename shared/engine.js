@@ -696,11 +696,12 @@ export function sonarPassiveHear(listenerSt, srcX, srcY) {
 
 // Ping actif : plongée uniquement, coût SONAR_PING_BATTERY_COST.
 // Retourne { ok: false, error } ou { ok: true, echoes }. Chaque écho :
-// { kind: "ile"|"cote"|"balise"|"navire", x, y, dKm, az, arriveMin } —
+// { kind: "ile"|"cote"|"balise"|"navire"|"biologique", x, y, dKm, az, arriveMin } —
 // az/dKm FIGÉS au moment du ping ; arriveMin = retour de l'écho
 // (minutes de jeu : t + 2 × retard du son). Le serveur n'expose JAMAIS
-// x/y au client (azimut + distance seulement).
-export function sonarPing(st, world, others = []) {
+// x/y au client (azimut + distance seulement). `others` : navires (surface
+// uniquement) ; `biologics` : baleines — corps biologiques qui rebondissent.
+export function sonarPing(st, world, others = [], biologics = []) {
   if (st.location !== "underwater")
     return { ok: false, error: "Sonar actif disponible en plongée uniquement." };
   if (st.battery < SONAR_PING_BATTERY_COST)
@@ -724,7 +725,243 @@ export function sonarPing(st, world, others = []) {
     if (o.location !== "surface") continue; // navire immergé : invisible au sonar actif
     push("navire", o.x, o.y);
   }
+  for (const b of biologics) push("biologique", b.x, b.y); // baleines : elles rebondissent
   return { ok: true, echoes };
+}
+
+// ---------- Vie du monde (NPC v1) ----------
+// Pêcheurs, cargos, baleines : population décorative du monde, simulée en
+// SIMPLE (déplacements linéaires, rebonds — pas de physique fine) mais
+// PERSISTÉE dans la course (race.npcs côté serveur). Les NPC
+// n'interagissent avec les joueurs QUE PAR :
+// - le SONAR : bruit moteur en passif (pêcheurs en transit, cargos), chant
+//   de baleine en passif (kind "biologique"), échos au ping actif (NPC de
+//   surface = "navire", baleines = "biologique") ;
+// - la RADIO : bafouillage des pêcheurs en diffusion (lisible), messages
+//   privés des cargos (brouillés pour les joueurs — jamais destinataires).
+// Aucune collision, aucune capture, aucune détection visuelle en v1.
+export const NPC_FISHERMEN = 50;        // pêcheurs autour du continent et des îles
+export const NPC_CARGOS = 3;            // cargos simultanés, traversées bord à bord
+export const NPC_WHALES = 100;          // baleines réparties sur la carte
+export const FISHER_RANGE_KM = 100;     // rayon d'action max d'un pêcheur au large
+export const FISHER_MIN_OFF_KM = 3;     // distance min d'un spot de pêche à la côte
+export const FISHER_SPD_KMH = 15;       // transit d'un pêcheur
+export const CARGO_SPD_KMH = 30;        // traversée d'un cargo
+export const WHALE_SPD_KMH = 10;        // errance d'une baleine
+export const FISHER_SPOT_R_KM = 2;      // arrivée sur le spot de pêche
+export const FISHER_FISH_MIN = 30;      // durée d'une marée : min (minutes de jeu)
+export const FISHER_FISH_SPAN_MIN = 240; // durée d'une marée : étendue au-delà du min
+export const CARGO_ARRIVE_KM = 5;       // arrivée du cargo → nouvelle traversée
+export const CARGO_EDGE_MIN_DEG = 1;    // marge de départ/arrivée d'une traversée
+export const CARGO_EDGE_MAX_DEG = 3;
+export const CARGO_ROUTE_STEP_KM = 12.5; // résolution d'échantillonnage de la ligne
+export const WHALE_TURN_DEG = 20;       // jitter de cap d'une baleine (°/min)
+export const WHALE_BOUNCE_JITTER_DEG = 45; // dispersion du rebond terre/bord
+export const NPC_EDGE_DEG = 0.5;        // marge de bord de carte (baleines, cargos)
+export const NPC_TICK_MAX_MIN = 120;    // garde-fou : dt max par passe serveur
+export const NPC_SUBSTEP_MIN = 5;       // sous-pas (rebonds sans tunneling)
+export const FISHER_CHAT_MEAN_MIN = 90;  // cadence moyenne du bafouillage (diffusion)
+export const CARGO_MSG_MEAN_MIN = 240;   // cadence moyenne des messages privés
+export const WHALE_SONG_MEAN_MIN = 120;  // cadence moyenne du chant (sonar passif)
+
+// Prochaine émission d'un NPC : tirage uniforme 0,5×–1,5× la cadence moyenne.
+export function nextNpcEventMin(nowMin, meanMin) {
+  return nowMin + Math.round(meanMin * (0.5 + Math.random()));
+}
+
+// Position d'un NPC `delayMin` minutes dans le passé (retard du son) :
+// retour linéaire sur sa route. Les NPC avancent en ligne droite entre
+// deux décisions — l'approximation est exacte pour un pêcheur en pêche.
+export function npcBackPos(npc, delayMin) {
+  const r = ((npc.heading || 0) * Math.PI) / 180;
+  const d = ((npc.spd || 0) / 60 / DEG_KM) * delayMin;
+  return { x: npc.x - Math.sin(r) * d, y: npc.y - Math.cos(r) * d };
+}
+
+// Bruits moteurs (hydrophone des joueurs) : cargo en traversée (toujours),
+// pêcheur en transit uniquement — en pêche, filets tendus, moteur coupé.
+// Les baleines n'ont pas de moteur : leur chant est un événement à part.
+export function npcNoisy(npc) {
+  if (npc.kind === "cargo") return true;
+  if (npc.kind === "fisher") return npc.mode === "transit";
+  return false;
+}
+
+// Un spot de pêche : ancré aux côtes (polyligne du continent ou pourtour
+// d'une île), à la mer, entre FISHER_MIN_OFF_KM et FISHER_RANGE_KM au large.
+export function npcFishSpot(world) {
+  for (let tries = 0; tries < 200; tries++) {
+    let px, py;
+    const onContinent = world.ISLANDS.length === 0 || Math.random() < 0.5;
+    if (onContinent && world.COAST.length > 1) {
+      const k = Math.floor(Math.random() * (world.COAST.length - 1));
+      const [ax, ay] = world.COAST[k], [bx, by] = world.COAST[k + 1];
+      const t = Math.random();
+      px = ax + (bx - ax) * t; py = ay + (by - ay) * t;
+    } else if (world.ISLANDS.length > 0) {
+      const i = world.ISLANDS[Math.floor(Math.random() * world.ISLANDS.length)];
+      const brg = Math.random() * Math.PI * 2;
+      const r = isleRadAt(i, brg);
+      px = i.x + Math.sin(brg) * r; py = i.y + Math.cos(brg) * r;
+    } else {
+      return { x: MAP / 2, y: MAP / 2 }; // dernier recours (monde sans côtes)
+    }
+    const off = (FISHER_MIN_OFF_KM + Math.random() * (FISHER_RANGE_KM - FISHER_MIN_OFF_KM)) / DEG_KM;
+    const brg = Math.random() * Math.PI * 2;
+    const x = px + Math.sin(brg) * off, y = py + Math.cos(brg) * off;
+    if (!world.isLand(x, y)) return { x, y };
+  }
+  return { x: MAP / 2, y: MAP / 2 }; // dernier recours : pleine eau
+}
+
+// Une traversée de cargo : bord à bord en ligne droite, validée sans terre
+// (échantillonnage du segment ; re-tirage sinon, dernier recours rare).
+export function npcCargoRoute(world) {
+  const edgePoint = (side) => {
+    const u = CARGO_EDGE_MIN_DEG + Math.random() * (MAP - CARGO_EDGE_MIN_DEG - CARGO_EDGE_MAX_DEG);
+    const m = CARGO_EDGE_MIN_DEG + Math.random() * (CARGO_EDGE_MAX_DEG - CARGO_EDGE_MIN_DEG);
+    if (side === 0) return { x: u, y: MAP - m };      // bord nord
+    if (side === 1) return { x: MAP - m, y: u };      // bord est
+    if (side === 2) return { x: u, y: m };            // bord sud
+    return { x: m, y: u };                            // bord ouest
+  };
+  for (let tries = 0; tries < 200; tries++) {
+    const side = Math.floor(Math.random() * 4);
+    const a = edgePoint(side), b = edgePoint((side + 2) % 4);
+    const steps = Math.ceil(distKm(a.x, a.y, b.x, b.y) / CARGO_ROUTE_STEP_KM);
+    let clear = true;
+    for (let k = 0; k <= steps && clear; k++) {
+      const t = k / steps;
+      if (world.isLand(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)) clear = false;
+    }
+    if (clear) return { a, b };
+  }
+  return { a: { x: CARGO_EDGE_MAX_DEG, y: MAP / 2 }, b: { x: MAP - CARGO_EDGE_MAX_DEG, y: MAP / 2 } };
+}
+
+// Génération de la population initiale. `usedCodes` : codes déjà pris
+// (balises, navires joueurs) — les codes radio NPC sont uniques au monde.
+export function generateNpcs(world, usedCodes = [], nowMin = 0) {
+  const used = new Set(usedCodes);
+  const pickCode = () => {
+    let c;
+    do { c = randomCode(); } while (used.has(c));
+    used.add(c);
+    return c;
+  };
+  const fishermen = Array.from({ length: NPC_FISHERMEN }, (_, i) => {
+    const spot = npcFishSpot(world);
+    return {
+      kind: "fisher", id: `f${i}`, code: pickCode(),
+      x: spot.x, y: spot.y, heading: Math.floor(Math.random() * 360), spd: 0,
+      mode: "peche", fishMin: Math.round(FISHER_FISH_MIN + Math.random() * FISHER_FISH_SPAN_MIN),
+      spotX: spot.x, spotY: spot.y,
+      nextChatMin: nextNpcEventMin(nowMin, FISHER_CHAT_MEAN_MIN),
+    };
+  });
+  const cargos = Array.from({ length: NPC_CARGOS }, (_, i) => {
+    const r = npcCargoRoute(world);
+    return {
+      kind: "cargo", id: `c${i}`, code: pickCode(),
+      x: r.a.x, y: r.a.y, spotX: r.b.x, spotY: r.b.y,
+      heading: Math.round(bearingTo(r.a.x, r.a.y, r.b.x, r.b.y)), spd: CARGO_SPD_KMH,
+      nextMsgMin: nextNpcEventMin(nowMin, CARGO_MSG_MEAN_MIN),
+    };
+  });
+  const whales = Array.from({ length: NPC_WHALES }, (_, i) => {
+    let x = MAP / 2, y = MAP / 2;
+    for (let tries = 0; tries < 200; tries++) {
+      const tx = 2 + Math.random() * (MAP - 4), ty = 2 + Math.random() * (MAP - 4);
+      if (!world.isLand(tx, ty)) { x = tx; y = ty; break; }
+    }
+    return {
+      kind: "whale", id: `w${i}`,
+      x, y, heading: Math.floor(Math.random() * 360), spd: WHALE_SPD_KMH,
+      nextSongMin: nextNpcEventMin(nowMin, WHALE_SONG_MEAN_MIN),
+    };
+  });
+  return { fishermen, cargos, whales };
+}
+
+// Tick d'un pêcheur : en PÊCHE, filets tendus, moteur coupé — immobile et
+// silencieux ; marée finie → TRANSIT rectiligne vers un nouveau spot,
+// moteur allumé (bruyant). Si le pas entre sur terre : le pêcheur renonce
+// et re-tire un spot (pas de pathfinding en v1 — spots côtiers, cas rare
+// et purement décoratif).
+export function npcFishermanTick(f, dtMin, world) {
+  if (f.mode === "peche") {
+    f.spd = 0;
+    f.fishMin -= dtMin;
+    if (f.fishMin <= 0) {
+      const spot = npcFishSpot(world);
+      f.spotX = spot.x; f.spotY = spot.y;
+      f.heading = Math.round(bearingTo(f.x, f.y, spot.x, spot.y));
+      f.mode = "transit";
+    }
+    return;
+  }
+  f.spd = FISHER_SPD_KMH;
+  if (distKm(f.x, f.y, f.spotX, f.spotY) <= FISHER_SPOT_R_KM) {
+    f.mode = "peche";
+    f.spd = 0;
+    f.fishMin = Math.round(FISHER_FISH_MIN + Math.random() * FISHER_FISH_SPAN_MIN);
+    return;
+  }
+  const step = (f.spd / 60 / DEG_KM) * dtMin;
+  const nx = f.x + Math.sin((f.heading * Math.PI) / 180) * step;
+  const ny = f.y + Math.cos((f.heading * Math.PI) / 180) * step;
+  if (world.isLand(nx, ny)) {
+    const spot = npcFishSpot(world);
+    f.spotX = spot.x; f.spotY = spot.y;
+    f.heading = Math.round(bearingTo(f.x, f.y, spot.x, spot.y));
+    return;
+  }
+  f.x = nx; f.y = ny;
+}
+
+// Tick d'un cargo : traversée rectiligne bord à bord ; arrivé (ou bord
+// atteint) → respawn sur une nouvelle traversée.
+export function npcCargoTick(c, dtMin, world) {
+  c.spd = CARGO_SPD_KMH;
+  const step = (c.spd / 60 / DEG_KM) * dtMin;
+  c.x += Math.sin((c.heading * Math.PI) / 180) * step;
+  c.y += Math.cos((c.heading * Math.PI) / 180) * step;
+  if (distKm(c.x, c.y, c.spotX, c.spotY) <= CARGO_ARRIVE_KM
+    || c.x < NPC_EDGE_DEG || c.x > MAP - NPC_EDGE_DEG
+    || c.y < NPC_EDGE_DEG || c.y > MAP - NPC_EDGE_DEG) {
+    const r = npcCargoRoute(world);
+    c.x = r.a.x; c.y = r.a.y; c.spotX = r.b.x; c.spotY = r.b.y;
+    c.heading = Math.round(bearingTo(r.a.x, r.a.y, r.b.x, r.b.y));
+  }
+}
+
+// Tick d'une baleine : marche aléatoire lente (jitter de cap) ; terre ou
+// bord de carte → rebond demi-tour dispersé (le pas est annulé : une
+// baleine ne pose jamais nageoire sur la terre).
+export function npcWhaleTick(wh, dtMin, world) {
+  wh.heading = (wh.heading + (Math.random() * 2 - 1) * WHALE_TURN_DEG * dtMin + 720) % 360;
+  const step = (wh.spd / 60 / DEG_KM) * dtMin;
+  const nx = wh.x + Math.sin((wh.heading * Math.PI) / 180) * step;
+  const ny = wh.y + Math.cos((wh.heading * Math.PI) / 180) * step;
+  if (nx < NPC_EDGE_DEG || nx > MAP - NPC_EDGE_DEG
+    || ny < NPC_EDGE_DEG || ny > MAP - NPC_EDGE_DEG || world.isLand(nx, ny)) {
+    wh.heading = (wh.heading + 180 + (Math.random() * 2 - 1) * WHALE_BOUNCE_JITTER_DEG + 360) % 360;
+    return;
+  }
+  wh.x = nx; wh.y = ny;
+}
+
+// Tick de toute la population : dt borné (garde-fou des sauts de temps) et
+// sous-découpé (pas de tunneling des baleines à travers les îles).
+export function npcsTick(npcs, dtMin, world) {
+  let remaining = Math.min(Math.max(0, dtMin), NPC_TICK_MAX_MIN);
+  while (remaining > 1e-9) {
+    const step = Math.min(NPC_SUBSTEP_MIN, remaining);
+    remaining -= step;
+    for (const f of npcs.fishermen) npcFishermanTick(f, step, world);
+    for (const c of npcs.cargos) npcCargoTick(c, step, world);
+    for (const w of npcs.whales) npcWhaleTick(w, step, world);
+  }
 }
 
 // ---------- Balise-vigie : signal de proximité + verrou + ancre ----------

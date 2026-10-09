@@ -9,6 +9,11 @@ import {
   scrambledIntercept, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT,
   sonarPing, sonarPassiveHear, shipNoisy, nearestOnLine, soundTravelMin,
   SOUND_KMH, SOUND_DECAY_KM, SONAR_RANGE_KM, SONAR_PING_BATTERY_COST, SONAR_ECHO_PERSIST_S,
+  generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, npcFishermanTick,
+  NPC_FISHERMEN, NPC_CARGOS, NPC_WHALES, FISHER_RANGE_KM, FISHER_MIN_OFF_KM,
+  FISHER_SPOT_R_KM, FISHER_FISH_MIN, FISHER_FISH_SPAN_MIN, CARGO_SPD_KMH,
+  WHALE_SPD_KMH, NPC_TICK_MAX_MIN, NPC_SUBSTEP_MIN, FISHER_CHAT_MEAN_MIN,
+  CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN,
 } from "./engine.js";
 
 // Navire de test en pleine eau (loin du port et des terres), pleine vitesse.
@@ -828,4 +833,102 @@ test("shipNoisy : moteur diesel en surface seulement", () => {
 test("nearestOnLine : point le plus proche de la polyligne", () => {
   const p = nearestOnLine(21, 25, [[20, 30], [20, 20]]);
   assert.ok(Math.abs(p[0] - 20) < 1e-9 && Math.abs(p[1] - 25) < 1e-9);
+});
+
+// ---------- Vie du monde (NPC v1) ----------
+test("npcs : constantes (50 pêcheurs, 3 cargos, 100 baleines)", () => {
+  assert.equal(NPC_FISHERMEN, 50);
+  assert.equal(NPC_CARGOS, 3);
+  assert.equal(NPC_WHALES, 100);
+  assert.equal(FISHER_RANGE_KM, 100);
+  assert.equal(FISHER_MIN_OFF_KM, 3);
+  assert.equal(CARGO_SPD_KMH, 30);
+  assert.equal(WHALE_SPD_KMH, 10);
+});
+
+test("generateNpcs : population complète, codes uniques, spots en mer", () => {
+  const w = buildWorld(42);
+  const npcs = generateNpcs(w, [], 1000);
+  assert.equal(npcs.fishermen.length, NPC_FISHERMEN);
+  assert.equal(npcs.cargos.length, NPC_CARGOS);
+  assert.equal(npcs.whales.length, NPC_WHALES);
+  const codes = new Set([...npcs.fishermen, ...npcs.cargos].map((n) => n.code));
+  assert.equal(codes.size, NPC_FISHERMEN + NPC_CARGOS, "codes radio uniques");
+  for (const f of npcs.fishermen)
+    assert.ok(!w.isLand(f.x, f.y), "pêcheur en mer");
+  for (const wh of npcs.whales)
+    assert.ok(!w.isLand(wh.x, wh.y), "baleine en mer");
+  for (const f of npcs.fishermen)
+    assert.ok(f.nextChatMin > 1000, "timer de bafouillage dans le futur");
+});
+
+test("npcNoisy : cargo toujours, pêcheur en transit seulement, baleine jamais", () => {
+  assert.equal(npcNoisy({ kind: "cargo" }), true);
+  assert.equal(npcNoisy({ kind: "fisher", mode: "transit" }), true);
+  assert.equal(npcNoisy({ kind: "fisher", mode: "peche" }), false);
+  assert.equal(npcNoisy({ kind: "whale" }), false);
+});
+
+test("npcBackPos : retour linéaire sur la route (retard du son)", () => {
+  const npc = { x: 30, y: 30, heading: 90, spd: 30 }; // cap est, 30 km/h
+  const p = npcBackPos(npc, 60); // 60 min en arrière : 30 km vers l'ouest
+  assert.ok(Math.abs(p.x - (30 - 30 / DEG_KM)) < 1e-9);
+  assert.ok(Math.abs(p.y - 30) < 1e-9);
+  const immobile = npcBackPos({ x: 10, y: 10, heading: 45, spd: 0 }, 120);
+  assert.equal(immobile.x, 10); // immobile : la position passée = présente
+});
+
+test("nextNpcEventMin : tirage uniforme 0,5×–1,5× la cadence moyenne", () => {
+  for (let k = 0; k < 50; k++) {
+    const at = nextNpcEventMin(100, WHALE_SONG_MEAN_MIN);
+    assert.ok(at >= 100 + Math.round(0.5 * WHALE_SONG_MEAN_MIN) - 1 && at <= 100 + Math.round(1.5 * WHALE_SONG_MEAN_MIN) + 1);
+  }
+});
+
+test("npcsTick : les NPC avancent, personne ne pose nageoire sur la terre", () => {
+  const w = buildWorld(42);
+  const npcs = generateNpcs(w, [], 0);
+  // force tous les pêcheurs en transit et les baleines proches des terres :
+  // le garde-fou doit tenir sur un gros dt.
+  for (const f of npcs.fishermen) { f.mode = "transit"; f.fishMin = 0; }
+  npcsTick(npcs, NPC_TICK_MAX_MIN, w);
+  for (const f of npcs.fishermen)
+    assert.ok(!w.isLand(f.x, f.y), `pêcheur ${f.id} en mer`);
+  for (const c of npcs.cargos)
+    assert.ok(!w.isLand(c.x, c.y), `cargo ${c.id} en mer`);
+  for (const wh of npcs.whales)
+    assert.ok(!w.isLand(wh.x, wh.y), `baleine ${wh.id} en mer`);
+  // sous-pas : un dt borné est consommé entièrement
+  const before = npcs.cargos[0].x + npcs.cargos[0].y;
+  npcsTick(npcs, NPC_SUBSTEP_MIN, w);
+  assert.ok(Math.abs((npcs.cargos[0].x + npcs.cargos[0].y) - before) > 0, "le cargo avance");
+});
+
+test("npcFishermanTick : marée finie → transit, arrivé → pêche", () => {
+  const w = buildWorld(42);
+  const f = { kind: "fisher", id: "ft", code: "FT1", x: 30, y: 30, heading: 0, spd: 0,
+    mode: "peche", fishMin: FISHER_FISH_MIN, spotX: 30, spotY: 30, nextChatMin: 0 };
+  npcFishermanTick(f, FISHER_FISH_MIN, w);
+  assert.equal(f.mode, "transit", "marée finie → transit");
+  npcFishermanTick(f, 1, w); // le pas de transit allume le moteur
+  assert.equal(f.spd > 0, true, "moteur allumé en transit");
+  assert.equal(npcNoisy(f), true, "transit : bruyant");
+  // on le pose pile sur son spot : arrivée → pêche, silencieux
+  f.x = f.spotX; f.y = f.spotY;
+  npcFishermanTick(f, 1, w);
+  assert.equal(f.mode, "peche", "arrivé → pêche");
+  assert.equal(f.spd, 0, "moteur coupé en pêche");
+  assert.equal(npcNoisy(f), false, "pêche : silencieux");
+  assert.ok(f.fishMin >= FISHER_FISH_MIN && f.fishMin <= FISHER_FISH_MIN + FISHER_FISH_SPAN_MIN);
+});
+
+test("npcsTick : baleine jamais hors carte après un gros pas", () => {
+  const w = buildWorld(42);
+  const npcs = generateNpcs(w, [], 0);
+  for (const wh of npcs.whales) { wh.x = 1; wh.y = 1; wh.heading = 315; } // cap nord-ouest : vers le bord
+  npcsTick(npcs, NPC_TICK_MAX_MIN, w);
+  for (const wh of npcs.whales) {
+    assert.ok(wh.x >= 0 && wh.x <= 60 && wh.y >= 0 && wh.y <= 60, "baleine dans la carte");
+    assert.ok(!w.isLand(wh.x, wh.y), "baleine en mer");
+  }
 });
