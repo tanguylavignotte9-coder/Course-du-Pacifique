@@ -1019,6 +1019,17 @@ export function beastTick(beast, dtMin, world, sources) {
   while (remaining > 1e-9 && !eaten) {
     const step = Math.min(BEAST_SUBSTEP_MIN, remaining);
     remaining -= step;
+    // En fuite après un engagement : ligne droite rapide (rebond terre),
+    // ni chasse ni repas — la jauge de faim est gelée (elle panique).
+    if (beast.fleeLeftMin > 0) {
+      beast.fleeLeftMin = Math.max(0, beast.fleeLeftMin - step);
+      const fStepDeg = (beast.fleeSpdKmh / 60 / DEG_KM) * step;
+      const fx = beast.x + Math.sin((beast.fleeHeading * Math.PI) / 180) * fStepDeg;
+      const fy = beast.y + Math.cos((beast.fleeHeading * Math.PI) / 180) * fStepDeg;
+      if (!world.isLand(fx, fy)) { beast.x = fx; beast.y = fy; }
+      else beast.fleeHeading = (beast.fleeHeading + 90 + Math.random() * 90 + 360) % 360;
+      continue;
+    }
     if (beast.hunger > 0) {
       beast.hunger = Math.max(0, beast.hunger - step / BEAST_HUNGER_MIN);
       continue; // rassasiée : immobile
@@ -1045,6 +1056,217 @@ export function beastTick(beast, dtMin, world, sources) {
     else beast.heading = (beast.heading + 180 + (Math.random() * 2 - 1) * WHALE_BOUNCE_JITTER_DEG + 360) % 360;
   }
   return eaten;
+}
+
+// ---------- Estimation : la carte de la compagnie (télémesure) ----------
+// La compagnie ne voit JAMAIS la créature : elle agrège des RELEVÉS —
+// gisements de sons inconnus (lignes de relèvement depuis des auditeurs à
+// position connue : joueurs-télémetres, balises hydrophones, patrouilleur)
+// et points directs (traces découvertes, positions déclarées dans les SOS,
+// contacts du patrouilleur). Plus les relevés sont frais, croisés et
+// concordants, plus la zone estimée est PETITE — la qualité de
+// l'estimation vient de la flotte, pas du moteur.
+export const ESTIMATE_HALF_LIFE_MIN = 360;  // poids d'un relevé ÷2 toutes les 6 h
+export const ESTIMATE_MIN_WEIGHT = 0.02;    // en dessous : le relevé est mort
+export const ESTIMATE_CROSS_MIN_DEG = 30;   // croisement minimal pour trianguler
+export const ESTIMATE_MIN_R_KM = 40;        // rayon plancher : jamais chirurgical
+export const ESTIMATE_MAX_R_KM = 800;       // rayon plafond
+export const ESTIMATE_GROWTH_KMH = 2;       // la zone regonfle avec l'âge des données
+export const ESTIMATE_SPREAD_FACTOR = 2;    // dispersion des relevés → rayon
+export const BEACON_HEAR_KM = 200;          // balises hydrophones : portée d'écoute
+export const EXCLUSION_BULLETIN_MIN = 360;  // bulletin officiel : toutes les 6 h
+export const EVIDENCE_MAX_AGE_MIN = 4320;   // purge : relevés de plus de 3 jours
+export const TELEMETRY_MAX = 200;           // tampon local du télémetre d'un navire
+
+// Croisement de deux lignes de relèvement (origine + gisement en degrés).
+// Retourne { x, y, deg } si l'angle de croisement dépasse ESTIMATE_CROSS_MIN_DEG,
+// null sinon (parallèles ou quasi : pas de triangulation possible).
+export function bearingCross(l1, l2) {
+  const rad = (d) => (d * Math.PI) / 180;
+  const v1 = { x: Math.sin(rad(l1.brg)), y: Math.cos(rad(l1.brg)) };
+  const v2 = { x: Math.sin(rad(l2.brg)), y: Math.cos(rad(l2.brg)) };
+  const det = v1.x * v2.y - v1.y * v2.x;
+  const deg = Math.abs((Math.atan2(det, v1.x * v2.x + v1.y * v2.y) * 180) / Math.PI);
+  if (deg < ESTIMATE_CROSS_MIN_DEG) return null;
+  const dx = l2.x - l1.x, dy = l2.y - l1.y;
+  const t = (dx * v2.y - v2.x * dy) / det;
+  return { x: l1.x + v1.x * t, y: l1.y + v1.y * t, deg };
+}
+
+// Zone estimée à partir des relevés. Formats d'entrée :
+//   { k: "cry", x, y, brg, str, t }       gisement d'un son inconnu (x, y =
+//                                         position VRAIE de l'auditeur)
+//   { k: "trace" "sos"|"seen", x, y, t }  point direct (position en degrés)
+// Poids = fraîcheur (demi-vie) ; les POINTS pèsent leur poids seul, les
+// CROISEMENTS de deux gisements pèsent le PRODUIT des deux (il faut deux
+// ouïes vivantes et écartées pour trianguler). Rayon = plancher +
+// dispersion pondérée + regonflement avec l'âge du relevé le plus frais.
+// Retour null : aucune donnée vivante (aucune zone publiée).
+export function estimateZone(evidence, nowMin) {
+  const live = [];
+  for (const e of evidence) {
+    const w = Math.pow(0.5, (nowMin - e.t) / ESTIMATE_HALF_LIFE_MIN);
+    if (w < ESTIMATE_MIN_WEIGHT) continue;
+    live.push({ ...e, w });
+  }
+  const pts = []; // { x, y, w }
+  for (const e of live) if (e.k !== "cry") pts.push({ x: e.x, y: e.y, w: e.w });
+  const cries = live.filter((e) => e.k === "cry");
+  for (let i = 0; i < cries.length; i++) {
+    for (let j = i + 1; j < cries.length; j++) {
+      const c = bearingCross(cries[i], cries[j]);
+      if (c) pts.push({ x: c.x, y: c.y, w: cries[i].w * cries[j].w });
+    }
+  }
+  if (pts.length === 0) return null;
+  const W = pts.reduce((s, p) => s + p.w, 0);
+  const x = pts.reduce((s, p) => s + p.x * p.w, 0) / W;
+  const y = pts.reduce((s, p) => s + p.y * p.w, 0) / W;
+  const spreadKm = Math.sqrt(
+    pts.reduce((s, p) => s + p.w * distKm(x, y, p.x, p.y) ** 2, 0) / W,
+  );
+  const latest = Math.max(...live.map((e) => e.t));
+  const rKm = clamp(
+    ESTIMATE_MIN_R_KM + ESTIMATE_SPREAD_FACTOR * spreadKm
+      + ESTIMATE_GROWTH_KMH * ((nowMin - latest) / 60),
+    ESTIMATE_MIN_R_KM, ESTIMATE_MAX_R_KM,
+  );
+  return { x, y, rKm, latestT: latest };
+}
+
+// ---------- Le Patrouilleur officiel (frégate de la compagnie) ----------
+// Navire RÉEL et PUBLIC : cent mètres de coque, marque MaxMedia, rôle
+// officiel de « patrouille de sécurité de la course ». Officiellement il
+// encadre la flotte ; en vrai il traque — il vit sur la même carte
+// d'estimation que les bulletins (la flotte est son réseau de capteurs
+// malgré elle). Il n'écoute jamais la radio des joueurs et n'agit
+// JAMAIS sur eux.
+export const PATROL_SPD_KMH = 40;                // frégate : vitesse
+export const PATROL_HEAR_KM = 300;               // hydrophone : cris inconnus
+export const PATROL_PUBLISH_MIN = 60;            // publication NETWORK : horaire
+export const PATROL_VIS_KM = 25;                 // coque visible de jour (selon météo)
+export const PATROL_VIS_NUIT_KM = 5;             // … de nuit (feux de navigation)
+export const PATROL_ARRIVE_KM = 2;               // rayon d'arrivée sur un point
+export const PATROL_DETECT_R_KM = 30;            // balayage : proximité de détection
+export const PATROL_DETECT_BASE_PER_MIN = 0.005; // effort de base : 0,5 %/min
+export const PATROL_DETECT_GAIN_PER_MIN2 = 0.0001; // +0,01 %/min par minute de fouille
+export const PATROL_DETECT_MAX_PER_MIN = 0.10;   // plafond : 10 %/min
+export const PATROL_ENGAGE_MIN = 10;             // durée d'engagement (tirs)
+export const PATROL_CANNON_EVERY_MIN = 2;        // cadence des coups de canon
+export const PATROL_DETECT_COOLDOWN_MIN = 240;   // après engagement : 4 h de répit
+export const PATROL_TICK_MAX_MIN = 120;          // garde-fou dt par passe serveur
+export const PATROL_SUBSTEP_MIN = 5;            // sous-pas de déplacement
+export const BEAST_FLEE_LONG_KMH = 60;          // fuite longue : 60 km/h…
+export const BEAST_FLEE_LONG_MIN = 240;         // …pendant 4 h
+export const BEAST_FLEE_SHORT_KM = 50;          // fuite courte : 50 km d'un coup
+export const BEAST_FLEE_SILENCE_MIN = 240;      // plus un cri après un engagement
+export const CANNON_DECAY_KM = 1000;             // le canon s'entend de très loin
+
+// Effort de détection par minute de fouille : MONTANT avec le temps passé
+// à chercher. La créature ne bouge pas hors chasse (immobile, immergée) —
+// la patience du patrouilleur paie, le silence est sa seule protection.
+export function patrolDetectPerMin(searchMin) {
+  return Math.min(PATROL_DETECT_BASE_PER_MIN + PATROL_DETECT_GAIN_PER_MIN2 * searchMin, PATROL_DETECT_MAX_PER_MIN);
+}
+
+// Fuite de la créature après un engagement : deux régimes tirés au sort —
+// partir LOIN (vite et longtemps) ou repli court hors de portée. Elle
+// s'éloigne du patrouilleur (cap inverse + dispersion).
+export function beastFlee(beast, fromX, fromY) {
+  const away = (bearingTo(fromX, fromY, beast.x, beast.y) + (Math.random() * 2 - 1) * 30 + 360) % 360;
+  if (Math.random() < 0.5) {
+    beast.fleeSpdKmh = BEAST_SPD_KMH;
+    beast.fleeLeftMin = (BEAST_FLEE_SHORT_KM / BEAST_SPD_KMH) * 60;
+  } else {
+    beast.fleeSpdKmh = BEAST_FLEE_LONG_KMH;
+    beast.fleeLeftMin = BEAST_FLEE_LONG_MIN;
+  }
+  beast.fleeHeading = Math.round(away);
+}
+
+// Tick du Patrouilleur. `zone` : estimation FRAÎCHE { x, y, rKm } ou null
+// (null → à quai : rien à chercher). `beastPos` : position VRAIE de la
+// créature ou null. Retourne des événements :
+//   { k: "detect", x, y }  contact : la créature est vue (et fuit)
+//   { k: "shot", x, y }    un coup de canon parti du patrouilleur
+// Modes : quai → transit (vers le centre estimé) → recherche (balayage
+// aléatoire de la zone) → engage (tirs sur le dernier point de contact)
+// puis retour à la recherche avec un répit (cooldown). La détection est
+// un EFFORT cumulé : chaque minute passée à ≤ PATROL_DETECT_R_KM de la
+// créature ajoute patrolDetectPerMin(searchMin) à l'accumulateur ; à 1,
+// c'est le contact. Fouiller paie ; le hasard ne décide que du secteur.
+export function patrolTick(patrol, dtMin, world, zone, beastPos) {
+  const events = [];
+  const pickTarget = () => {
+    for (let k = 0; k < 5; k++) {
+      const a = Math.random() * Math.PI * 2;
+      const rr = Math.sqrt(Math.random()) * ((zone.rKm * 0.8) / DEG_KM); // en degrés
+      const tx = zone.x + Math.cos(a) * rr, ty = zone.y + Math.sin(a) * rr;
+      if (!world.isLand(tx, ty)) { patrol.tgtX = tx; patrol.tgtY = ty; return; }
+    }
+    patrol.tgtX = zone.x; patrol.tgtY = zone.y;
+  };
+  const moveToward = (tx, ty, step) => {
+    const brg = bearingTo(patrol.x, patrol.y, tx, ty);
+    patrol.heading = Math.round(brg);
+    const stepDeg = (PATROL_SPD_KMH / 60 / DEG_KM) * step;
+    const nx = patrol.x + Math.sin((brg * Math.PI) / 180) * stepDeg;
+    const ny = patrol.y + Math.cos((brg * Math.PI) / 180) * stepDeg;
+    if (!world.isLand(nx, ny)) { patrol.x = nx; patrol.y = ny; }
+    else patrol.heading = (patrol.heading + 180 + (Math.random() * 2 - 1) * 30 + 360) % 360;
+  };
+  let remaining = Math.min(Math.max(0, dtMin), PATROL_TICK_MAX_MIN);
+  while (remaining > 1e-9) {
+    const step = Math.min(PATROL_SUBSTEP_MIN, remaining);
+    remaining -= step;
+    if (patrol.cooldownLeftMin > 0) patrol.cooldownLeftMin = Math.max(0, patrol.cooldownLeftMin - step);
+    // Engagement : la frégate tient sa position et tire sur le dernier
+    // point de contact (la créature, elle, fuit déjà).
+    if (patrol.mode === "engage") {
+      patrol.engageLeftMin -= step;
+      patrol.shotClock = (patrol.shotClock || 0) + step;
+      while (patrol.shotClock >= PATROL_CANNON_EVERY_MIN) {
+        patrol.shotClock -= PATROL_CANNON_EVERY_MIN;
+        events.push({ k: "shot", x: patrol.x, y: patrol.y });
+      }
+      if (patrol.engageLeftMin <= 0) {
+        patrol.mode = zone ? "recherche" : "quai";
+        patrol.cooldownLeftMin = PATROL_DETECT_COOLDOWN_MIN; // répit : la zone regonfle
+        patrol.searchAcc = 0;
+      }
+      continue;
+    }
+    if (!zone) { patrol.mode = "quai"; continue; } // aucune estimation : à quai
+    if (patrol.mode === "quai") patrol.mode = "transit";
+    if (patrol.mode === "transit") {
+      if (distKm(patrol.x, patrol.y, zone.x, zone.y) <= PATROL_ARRIVE_KM) {
+        patrol.mode = "recherche";
+        pickTarget();
+        continue;
+      }
+      moveToward(zone.x, zone.y, step);
+      continue;
+    }
+    // Recherche : balayage de la zone + effort de détection
+    patrol.searchMin = (patrol.searchMin || 0) + step;
+    const hasTgt = patrol.tgtX != null && patrol.tgtY != null;
+    if (!hasTgt
+ || distKm(patrol.x, patrol.y, patrol.tgtX, patrol.tgtY) <= PATROL_ARRIVE_KM
+ || distKm(patrol.tgtX, patrol.tgtY, zone.x, zone.y) > zone.rKm * 0.8) pickTarget();
+    else moveToward(patrol.tgtX, patrol.tgtY, step);
+    if (beastPos && patrol.cooldownLeftMin <= 0
+      && distKm(patrol.x, patrol.y, beastPos.x, beastPos.y) <= PATROL_DETECT_R_KM) {
+      patrol.searchAcc = (patrol.searchAcc || 0) + patrolDetectPerMin(patrol.searchMin) * step;
+      if (patrol.searchAcc >= 1) {
+        patrol.searchAcc = 0;
+        patrol.mode = "engage";
+        patrol.engageLeftMin = PATROL_ENGAGE_MIN;
+        patrol.shotClock = PATROL_CANNON_EVERY_MIN; // premier coup immédiat
+        events.push({ k: "detect", x: beastPos.x, y: beastPos.y });
+      }
+    }
+  }
+  return events;
 }
 
 // ---------- Balise-vigie : signal de proximité + verrou + ancre ----------

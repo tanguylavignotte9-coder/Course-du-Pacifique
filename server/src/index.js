@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -80,6 +80,12 @@ const { race, world } = loadOrCreateRace();
 // entrée par connexion ({ t, who, code, place }) — base de la future
 // newsletter quotidienne.
 if (!Array.isArray(race.network)) race.network = [];
+
+// Relevés agrégés de la compagnie (télémesure exfiltrée aux connexions
+// NETWORK + gisements des balises hydrophones et du patrouilleur).
+// JAMAIS exposés en détail — seule la zone d'exclusion (le RÉSULTAT
+// lissé) est publique.
+if (!Array.isArray(race.evidence)) race.evidence = [];
 
 // Zone NETWORK (calculée serveur, jamais déductible côté client : le client
 // ne connaît ni sa position vraie ni celle des balises) : port, avant-poste
@@ -157,6 +163,12 @@ function sonarPassiveFor(id) {
       if (heard) out.push({ kind: "moteur", bearing: heard.bearing, strength: heard.strength });
     }
   }
+  // Le patrouilleur officiel : moteur allumé en permanence — c'est une
+  // vraie coque de cent mètres, on l'entend venir (et on la VOIT de jour).
+  if (race.patrol) {
+    const heard = sonarPassiveHear(me, race.patrol.x, race.patrol.y);
+    if (heard) out.push({ kind: "moteur", bearing: heard.bearing, strength: heard.strength });
+  }
   for (const ev of (sonarHeard.get(id) || [])) {
     out.push({ kind: "ping", bearing: ev.bearing, strength: ev.strength });
   }
@@ -207,6 +219,12 @@ function sonarPass() {
           const heard = bioHeard.get(id) || [];
           heard.push({ kind: ev.kind || "biologique", bearing: ev.bearing, strength: ev.strength, heardMs: nowMs });
           bioHeard.set(id, heard);
+          // Télémetre caché : un son INCONNU entendu est consigné (gisement +
+          // force, depuis la position vraie — l'instrument sait, pas le
+          // joueur). Remonté en cachette à la prochaine connexion NETWORK.
+          if ((ev.kind || "biologique") === "inconnu") {
+            telemeter(st, { k: "cry", x: st.x, y: st.y, brg: ev.bearing, str: ev.strength, t: st.t });
+          }
           return false;
         }
         return true;
@@ -303,6 +321,16 @@ const radioSend = (fromX, fromY, deliver) => {
   }
 };
 
+// Télémetre caché de l'ordinateur de bord : consigne, À L'INSU du joueur,
+// ce que ses instruments entendent (sons inconnus au sonar) et découvrent
+// (traces, SOS reçus). JAMAIS dans le snapshot — le joueur n'en voit rien.
+// Le tampon est exfiltré vers race.evidence à chaque connexion NETWORK.
+function telemeter(st, entry) {
+  if (!Array.isArray(st.telemetry)) st.telemetry = [];
+  st.telemetry.push(entry);
+  while (st.telemetry.length > TELEMETRY_MAX) st.telemetry.shift();
+}
+
 // ---------- La Bête v1 : état persisté (race.beast) ----------
 // Une seule Bête, invisible, persistée dans la course. Elle entend les
 // bruits moteurs des NPC et les chants de baleines récents ; les joueurs
@@ -326,12 +354,17 @@ ensureBeast();
 let lastBeastT = gameMinutesNow();
 
 // Bruit sonar passif pour tous les joueurs (retard de propagation réel) :
-// chants de baleines (kind « biologique ») et cris de la Bête (kind
-// « inconnu »). Passe par la même file que les chants : bioPending.
-function emitSoundToAll(x, y, kind) {
+// chants de baleines (kind « biologique »), cris de la Bête (kind
+// « inconnu ») et tirs de canon du patrouilleur (kind « canon », décroissance
+// propre). Passe par la même file que les chants : bioPending.
+// Les BALISES-STATIONS et le PATROUILLEUR ont un hydrophone : tout son
+// INCONNU à portée d'écoute alimente directement la carte de la compagnie
+// — un gisement depuis une position connue (triangulation gratuite,
+// réseau dense : la baseline officielle de l'estimation).
+function emitSoundToAll(x, y, kind, nowMin, decayKm = SOUND_DECAY_KM) {
   for (const [oid, ost] of states) {
     const dKm = distKm(ost.x, ost.y, x, y);
-    const strength = strengthKm(dKm, SOUND_DECAY_KM);
+    const strength = strengthKm(dKm, decayKm);
     if (strength <= 0) continue;
     const q = bioPending.get(oid) || [];
     q.push({
@@ -341,6 +374,25 @@ function emitSoundToAll(x, y, kind) {
       arriveMin: ost.t + soundTravelMin(dKm),
     });
     bioPending.set(oid, q);
+  }
+  if (kind === "inconnu") {
+    for (const b of world.BEACONS) {
+      const dKm = distKm(b.x, b.y, x, y);
+      if (dKm > BEACON_HEAR_KM) continue;
+      race.evidence.push({
+        k: "cry", x: b.x, y: b.y,
+        brg: Math.round(bearingTo(b.x, b.y, x, y)),
+        str: strengthKm(dKm, SOUND_DECAY_KM), t: nowMin,
+      });
+    }
+    const patrol = race.patrol;
+    if (patrol && distKm(patrol.x, patrol.y, x, y) <= PATROL_HEAR_KM) {
+      race.evidence.push({
+        k: "cry", x: patrol.x, y: patrol.y,
+        brg: Math.round(bearingTo(patrol.x, patrol.y, x, y)),
+        str: strengthKm(distKm(patrol.x, patrol.y, x, y), SOUND_DECAY_KM), t: nowMin,
+      });
+    }
   }
 }
 
@@ -381,7 +433,7 @@ function npcPass(now) {
     if (now < wh.nextSongMin) continue;
     wh.nextSongMin = nextNpcEventMin(now, WHALE_SONG_MEAN_MIN);
     recentSongs.push({ x: wh.x, y: wh.y, t: now, ref: wh });
-    emitSoundToAll(wh.x, wh.y, "biologique");
+    emitSoundToAll(wh.x, wh.y, "biologique", now);
   }
 }
 
@@ -429,7 +481,7 @@ function beastPass(now) {
       kind: eaten.kind === "whale" ? "carcasse" : "epave",
       src: eaten.kind, x: eaten.x, y: eaten.y, t: now,
     });
-    emitSoundToAll(beast.x, beast.y, "inconnu"); // le cri de l'attaque
+    emitSoundToAll(beast.x, beast.y, "inconnu", now); // le cri de l'attaque
     if (eaten.kind !== "whale") {
       // SOS du bateau en perdition : diffusion lisible (loi de réception),
       // position déclarée — un vrai SOS, il sert à retrouver l'épave.
@@ -437,13 +489,16 @@ function beastPass(now) {
       radioSend(eaten.x, eaten.y, (ost, cap) => {
         ost.notifSeq = (ost.notifSeq || 0) + 1;
         ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: sosText, kind: "bad", cat: "radio" });
+        // Télémetre caché : le SOS (position déclarée) est consigné — la
+        // compagnie lit aussi les ondes de sa propre flotte.
+        telemeter(ost, { k: "sos", x: eaten.x, y: eaten.y, t: ost.t });
       });
     }
   }
   // Cris périodiques (en chasse comme rassasiée — on ne sait jamais où elle est)
   if (now >= beast.nextCryMin) {
     beast.nextCryMin = nextNpcEventMin(now, BEAST_CRY_MEAN_MIN);
-    emitSoundToAll(beast.x, beast.y, "inconnu");
+    emitSoundToAll(beast.x, beast.y, "inconnu", now);
   }
   // Traces : expiration (12 h) puis respawn du NPC mangé — population constante
   const expired = [];
@@ -476,6 +531,9 @@ function beastPass(now) {
       if (!Array.isArray(st.sawTraceIds)) st.sawTraceIds = [];
       st.sawTraceIds.push(tr.id);
       if (st.sawTraceIds.length > 60) st.sawTraceIds.shift();
+      // Télémetre caché : une trace découverte est un POINT QUASI EXACT
+      // pour la carte de la compagnie — la preuve la plus forte qui soit.
+      telemeter(st, { k: "trace", x: tr.x, y: tr.y, t: st.t });
       st.notifSeq = (st.notifSeq || 0) + 1;
       st.notifications.unshift({
         id: st.notifSeq, t: st.t, kind: "info", cat: "vision",
@@ -486,6 +544,104 @@ function beastPass(now) {
     }
   }
 }
+// ---------- Le Patrouilleur : état persisté (race.patrol) ----------
+// Frégate officielle de la compagnie : part du port au début de la
+// course, attend à quai tant qu'il n'y a aucune estimation, puis rejoint
+// la zone estimée et la fouille. Navire RÉEL : moteur audible au sonar
+// passif, coque visible selon la météo, position publiée au NETWORK.
+function ensurePatrol() {
+  if (!race.patrol) {
+    race.patrol = {
+      x: world.PORT.x, y: world.PORT.y, heading: 0,
+      mode: "quai", tgtX: world.PORT.x, tgtY: world.PORT.y,
+      searchMin: 0, searchAcc: 0,
+      engageLeftMin: 0, shotClock: 0, cooldownLeftMin: 0,
+      pub: null, nextPubMin: gameMinutesNow(),
+    };
+    store.save();
+  }
+}
+ensurePatrol();
+let lastPatrolT = gameMinutesNow();
+
+// Passe Patrouilleur (boucle 1 Hz) : la frégate vit sur l'estimation
+// FRAÎCHE (recalculée à chaque passe — pas seulement la zone publiée),
+// fouille, tire au canon au contact (la créature fuit, jamais tuée), et
+// publie sa position au NETWORK à cadence horaire.
+function patrolPass(now) {
+  ensurePatrol();
+  const patrol = race.patrol;
+  const prev = lastPatrolT;
+  lastPatrolT = now;
+  const est = estimateZone(race.evidence, now);
+  const beast = race.beast;
+  const events = patrolTick(patrol, now - prev, world, est, beast ? { x: beast.x, y: beast.y } : null);
+  // Publication NETWORK : position officielle horaire (toujours en retard
+  // d'une heure au plus — la donnée publique est un service, pas une vue).
+  if (now >= (patrol.nextPubMin || 0)) {
+    patrol.pub = { x: patrol.x, y: patrol.y, t: now };
+    patrol.nextPubMin = now + PATROL_PUBLISH_MIN;
+  }
+  for (const ev of events) {
+    if (ev.k === "detect") {
+      // Contact : la preuve la plus forte — un point quasi exact.
+      race.evidence.push({ k: "seen", x: ev.x, y: ev.y, t: now });
+      // La créature s'enfuit — JAMAIS tuée. Deux régimes (loin / pas loin).
+      if (beast) {
+        beastFlee(beast, patrol.x, patrol.y);
+        beast.nextCryMin = now + BEAST_FLEE_SILENCE_MIN; // silence : la zone regonfle
+      }
+      emitSoundToAll(patrol.x, patrol.y, "canon", now, CANNON_DECAY_KM);
+      store.save();
+    } else if (ev.k === "shot") {
+      emitSoundToAll(ev.x, ev.y, "canon", now, CANNON_DECAY_KM);
+    }
+  }
+  // Visibilité physique de la frégate : météo du jour (PATROL_VIS_KM) ou
+  // de nuit (feux, PATROL_VIS_NUIT_KM). Notification à la 1re détection —
+  // navire OFFICIEL : il porte son nom, tout le monde sait ce que c'est.
+  for (const [, st] of states) {
+    const canSee = st.location === "surface" || st.periscope;
+    if (!canSee) { st.sawPatrol = false; continue; }
+    const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
+    const hour = (st.t / 60) % 24;
+    const night = hour < 6 || hour >= 20;
+    const det = Math.min(w.visibility, night ? PATROL_VIS_NUIT_KM : PATROL_VIS_KM);
+    const visible = distKm(st.x, st.y, patrol.x, patrol.y) <= det;
+    if (visible && !st.sawPatrol) {
+      st.notifSeq = (st.notifSeq || 0) + 1;
+      st.notifications.unshift({
+        id: st.notifSeq, t: st.t, kind: "info", cat: "vision",
+        text: `🚢 Frégate de la Patrouille repérée : ~${Math.round(distKm(st.x, st.y, patrol.x, patrol.y))} km — grande coque grise, marque MaxMedia.`,
+      });
+    }
+    st.sawPatrol = visible;
+  }
+}
+
+// ---------- Zone d'exclusion officielle (bulletins périodiques) ----------
+// La compagnie publie, à cadence fixe, la zone estimée en AVIS OFFICIEL à
+// TOUS (advisory : entrer = à ses risques, aucune sanction). Le prétexte
+// est INVÉRIFIABLE (« opérations hydrographiques ») : la compagnie ne
+// ment que sur le sens, jamais sur les faits. Le retard de la zone EST
+// le gameplay : croyance, jamais clôture — elle est toujours en retard.
+let nextBulletinMin = gameMinutesNow();
+function exclusionPass(now) {
+  if (now < nextBulletinMin) return;
+  nextBulletinMin = now + EXCLUSION_BULLETIN_MIN;
+  // purge : les relevés de plus de EVIDENCE_MAX_AGE_MIN sont morts
+  race.evidence = race.evidence.filter((e) => now - e.t < EVIDENCE_MAX_AGE_MIN);
+  const est = estimateZone(race.evidence, now);
+  if (!est) return; // aucune donnée vivante : aucune zone publiée
+  race.exclusion = { x: est.x, y: est.y, rKm: est.rKm, t: now };
+  store.save();
+  const text = `⚠️ AVIS OFFICIEL — zone d'exclusion ${est.y.toFixed(1)}°N ${est.x.toFixed(1)}°E, rayon ${Math.round(est.rKm)} km (opérations hydrographiques en cours). Navigation dans le secteur à vos risques et périls.`;
+  for (const [, st] of states) {
+    st.notifSeq = (st.notifSeq || 0) + 1;
+    st.notifications.unshift({ id: st.notifSeq, t: st.t, text, kind: "warn", cat: "radio" });
+  }
+}
+
 function persistPlayer(id) {
   race.players[id] = states.get(id);
   store.save();
@@ -531,6 +687,8 @@ setInterval(() => {
   multiplayerPass(now);
   npcPass(now);
   beastPass(now);
+  patrolPass(now);
+  exclusionPass(now);
   sonarPass();
     // NETWORK : coupure automatique dès que le navire quitte la zone —
     // revenir = se RECONNECTER = nouvelle entrée dans le journal global.
@@ -733,6 +891,14 @@ function publicSnapshot(id) {
     // UNIQUEMENT aux joueurs connectés ET encore en zone.
     networkZone: netZone(st),
     networkLog: st.networked && netZone(st) ? race.network : null,
+    // Zone d'exclusion officielle : donnée PUBLIQUE de la compagnie (comme
+    // la météo) — coordonnées absolues, dessinables sur la carte papier.
+    // C'est le résultat lissé de l'estimation, toujours en retard sur le
+    // réel. Le tampon du télémetre, lui, n'est JAMAIS exposé.
+    exclusion: race.exclusion || null,
+    // Position PUBLIÉE du patrouilleur : réservée aux abonnés connectés en
+    // zone (service NETWORK) — « qui est allé où, quand » inclut la flotte.
+    patrolPub: st.networked && netZone(st) && race.patrol ? race.patrol.pub : null,
     // Navires détectés : azimut et distance uniquement (jamais la position
     // absolue — le client dessine depuis son estimé, comme pour les îles).
     ships: (st.sawShips || []).map((tid) => {
@@ -740,7 +906,12 @@ function publicSnapshot(id) {
       const km = distKm(st.x, st.y, ts.x, ts.y);
       const az = Math.round((Math.atan2(ts.x - st.x, ts.y - st.y) * 180) / Math.PI + 360) % 360;
       return { id: ts.code, km: Math.round(km * 10) / 10, az, light: !!ts.light };
-    }),
+    }).concat(st.sawPatrol && race.patrol ? [{
+      id: "PATROUILLE",
+      km: Math.round(distKm(st.x, st.y, race.patrol.x, race.patrol.y) * 10) / 10,
+      az: Math.round((Math.atan2(race.patrol.x - st.x, race.patrol.y - st.y) * 180) / Math.PI + 360) % 360,
+      light: true,
+    }] : []),
     sonar: {
       passive: sonarPassiveFor(id),
       echoes: (sonarLive.get(id) || []).map((e) => ({
@@ -952,12 +1123,13 @@ wss.on("connection", (ws, req) => {
         const npcSurf = race.npcs
           ? [...race.npcs.cargos, ...race.npcs.fishermen].map((n) => ({ x: n.x, y: n.y, location: "surface" }))
           : [];
+        const patrolSurf = race.patrol ? [{ x: race.patrol.x, y: race.patrol.y, location: "surface" }] : [];
         const traces = (race.beast && race.beast.traces) || [];
         const epaves = traces.filter((tr) => tr.kind === "epave").map((tr) => ({ x: tr.x, y: tr.y, location: "surface" }));
         const carcasses = traces.filter((tr) => tr.kind === "carcasse").map((tr) => ({ x: tr.x, y: tr.y }));
         const res = sonarPing(
           st, world,
-          [...states.values()].filter((o) => o !== st).concat(npcSurf).concat(epaves),
+          [...states.values()].filter((o) => o !== st).concat(npcSurf).concat(patrolSurf).concat(epaves),
           ((race.npcs || {}).whales || []).concat(carcasses),
         );
         if (!res.ok) {
@@ -1018,6 +1190,13 @@ wss.on("connection", (ws, req) => {
             }
           }
           race.network.push({ t: st.t, who: id, code: st.code, place });
+          // Exfiltration silencieuse : la connexion remonte le tampon du
+          // télémetre vers la carte de la compagnie, puis le purge. Aucun
+          // texte ne l'annonce — le joueur croit consulter, il transmet.
+          if (Array.isArray(st.telemetry) && st.telemetry.length) {
+            race.evidence.push(...st.telemetry);
+            st.telemetry = [];
+          }
           store.save();
           st.notifSeq = (st.notifSeq || 0) + 1;
           st.notifications.unshift({ id: st.notifSeq, t: st.t, kind: "good", cat: "radio",
@@ -1188,12 +1367,20 @@ wss.on("connection", (ws, req) => {
         // vs nouvelles balises + codes joueurs frais).
         race.npcs = generateNpcs(world, usedCodes, gameMinutesNow());
         lastNpcT = gameMinutesNow();
-        // La Bête : nouveau spawn (≥ 1000 km du port du nouveau monde),
-        // ouïe réinitialisée, traces effacées.
+        // Correctif Bête : le reset ne régénérait PAS la créature — elle
+        // survivait au reset avec des coordonnées de l'ANCIEN monde.
         race.beast = undefined;
         ensureBeast();
-        recentSongs.length = 0;
         lastBeastT = gameMinutesNow();
+        recentSongs.length = 0;
+        // Patrouilleur : nouvelle course, frégate neuve au port.
+        race.patrol = undefined;
+        ensurePatrol();
+        lastPatrolT = gameMinutesNow();
+        // Relevés et zone d'exclusion : la nouvelle course repart à vide.
+        race.evidence = [];
+        race.exclusion = null;
+        nextBulletinMin = gameMinutesNow();
         store.save();
         st.notifSeq = (st.notifSeq || 0) + 1;
         st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🔄 Course réinitialisée : nouveau monde, nouvelles balises, navires à quai. Horloge re-synchronisée sur Paris.", kind: "good", cat: "navire" });

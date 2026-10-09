@@ -542,6 +542,21 @@ function NavMap({ snap, sock }) {
             <text x={px(o.x) + 7} y={py(o.y) + 3} fontSize="9" fill="#3d2f14">Poste</text>
           </g>
         ))}
+        {/* Zone d'exclusion officielle (avis de la compagnie) : cercle
+            pointillé — centre + rayon PUBLIÉS, données absolues comme la
+            météo. Le joueur la porte sur sa carte ; à lui de croire ou pas. */}
+        {snap.exclusion && (() => {
+          const z = snap.exclusion;
+          const r = (z.rKm / DEG_KM) * S;
+          return (
+            <g>
+              <circle cx={px(z.x)} cy={py(z.y)} r={r} fill="rgba(180,83,9,0.10)" stroke="#b45309" strokeWidth="1.6" strokeDasharray="8 5" />
+              <line x1={px(z.x) - 6} y1={py(z.y)} x2={px(z.x) + 6} y2={py(z.y)} stroke="#b45309" strokeWidth="1.2" />
+              <line x1={px(z.x)} y1={py(z.y) - 6} x2={px(z.x)} y2={py(z.y) + 6} stroke="#b45309" strokeWidth="1.2" />
+              <text x={px(z.x)} y={py(z.y) - r - 4} fontSize="9" fontWeight="bold" fill="#7c2d12" textAnchor="middle" stroke="#fde68a" strokeWidth="2" paintOrder="stroke">Zone d'exclusion</text>
+            </g>
+          );
+        })()}
         {/* Mesures : segments pointillés + distance */}
         {player.measures.map((m, idx) => {
           const km = Math.round(kmOf(m.a, m.b));
@@ -628,6 +643,7 @@ function NavMap({ snap, sock }) {
       </svg>
       <p className="text-[11px] leading-snug text-slate-500">
         Terres et avant-postes connus · 🔴 position estimée — cercle = incertitude, échelle exacte · trait rouge = cap · molette/pincement : zoom (×1–×8) · glisser : déplacer
+        {snap.exclusion && " · ⚠️ zone d'exclusion officielle (advisory)"}
         {player.pins.length > 0 && ` · 📌 ${player.pins.map((p) => `${p.label} ${p.y.toFixed(1)}°N ${p.x.toFixed(1)}°E`).join(" · ")}`}
       </p>
     </div>
@@ -689,6 +705,9 @@ function SonarTile({ snap, cmd }) {
               {s.kind === "biologique" && (
                 <path d={`M ${x - 4.5} ${y + 1.5} q 2.25 -4 4.5 0 q 2.25 4 4.5 0`} stroke="#34d399" strokeWidth="1.6" fill="none" />
               )}
+              {s.kind === "canon" && (
+                <path d={`M ${x - 4} ${y} L ${x + 4} ${y} M ${x} ${y - 4} L ${x} ${y + 4} M ${x - 3} ${y - 3} L ${x + 3} ${y + 3} M ${x + 3} ${y - 3} L ${x - 3} ${y + 3}`} stroke="#fb923c" strokeWidth="1.5" />
+              )}
               {s.kind === "inconnu" && (
                 <path d={`M ${x - 5} ${y + 1} l 2 -3 l 1.5 3 l 2 -4 l 1.5 4 l 2 -2`} fill="none" stroke="#f8fafc" strokeWidth="1.5" />
               )}
@@ -728,6 +747,7 @@ function SonarTile({ snap, cmd }) {
           <span><span className="text-purple-400">✕</span> ping d'un autre (passif)</span>
           <span><span className="text-emerald-300">∿</span> chant de baleine (passif)</span>
           <span><span className="text-slate-100">⌇</span> son inconnu</span>
+          <span><span className="text-orange-300">✳</span> canon (tirs lointains)</span>
           <span><span className="text-teal-300">▲</span> île</span>
           <span><span className="text-yellow-300">◆</span> balise</span>
           <span><span className="text-cyan-300">●</span> navire</span>
@@ -1124,6 +1144,14 @@ export default function App() {
                     </p>
                   ))}
                 </div>
+              </div>
+            )}
+            {snap.patrolPub && (
+              <div className="rounded-lg border border-slate-700/60 bg-slate-900/60 p-2">
+                <p className="mb-1 text-[10px] uppercase tracking-wider text-slate-500">Patrouille de sécurité — position officielle</p>
+                <p className="text-[11px] leading-snug tabular-nums text-slate-300">
+                  🚢 Frégate MaxMedia — {snap.patrolPub.y.toFixed(1)}°N {snap.patrolPub.x.toFixed(1)}°E (publiée il y a {Math.max(0, Math.round(snap.t - snap.patrolPub.t))} min)
+                </p>
               </div>
             )}
             <Btn onClick={() => setNetOpen(false)}>Reprendre la navigation</Btn>

@@ -17,6 +17,12 @@ import {
   beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale,
   BEAST_SPAWN_MIN_PORT_KM, BEAST_SPD_KMH, BEAST_HUNGER_MIN, BEAST_STRIKE_KM,
   BEAST_TICK_MAX_MIN, BEAST_TRACE_PERSIST_MIN, detectKm,
+  estimateZone, bearingCross, patrolTick, beastFlee, patrolDetectPerMin,
+  ESTIMATE_MIN_R_KM, ESTIMATE_MAX_R_KM, ESTIMATE_GROWTH_KMH,
+  ESTIMATE_HALF_LIFE_MIN, EXCLUSION_BULLETIN_MIN, BEACON_HEAR_KM,
+  PATROL_SPD_KMH, PATROL_ENGAGE_MIN, PATROL_CANNON_EVERY_MIN,
+  PATROL_DETECT_COOLDOWN_MIN, PATROL_DETECT_R_KM, PATROL_TICK_MAX_MIN,
+  CANNON_DECAY_KM,
 } from "./engine.js";
 
 // Navire de test en pleine eau (loin du port et des terres), pleine vitesse.
@@ -1025,4 +1031,150 @@ test("fabriques NPC : mêmes champs que generateNpcs (respawn à population cons
   assert.ok(!w.isLand(f.x, f.y), "pêcheur en mer");
   assert.ok(!w.isLand(c.x, c.y), "cargo en mer");
   assert.ok(!w.isLand(wh.x, wh.y), "baleine en mer");
+});
+
+// ---------- Estimation : la carte de la compagnie ----------
+test("estimation : constantes (bulletin 6 h, balises 200 km, plancher 40, plafond 800)", () => {
+  assert.equal(EXCLUSION_BULLETIN_MIN, 360);
+  assert.equal(BEACON_HEAR_KM, 200);
+  assert.equal(ESTIMATE_MIN_R_KM, 40);
+  assert.equal(ESTIMATE_MAX_R_KM, 800);
+  assert.equal(ESTIMATE_GROWTH_KMH, 2);
+});
+
+test("bearingCross : croisement à 90° exact, parallèles rejetées", () => {
+  // source à (20, 30) : plein nord de A (20,10), plein est de B (5,30)
+  const c = bearingCross({ x: 20, y: 10, brg: 0 }, { x: 5, y: 30, brg: 90 });
+  assert.ok(c, "croisement à 90°");
+  assert.ok(Math.abs(c.x - 20) < 1e-9 && Math.abs(c.y - 30) < 1e-9, "intersection au point source");
+  assert.equal(bearingCross({ x: 0, y: 0, brg: 0 }, { x: 5, y: 5, brg: 5 }), null, "quasi-parallèles : pas de triangulation");
+});
+
+test("estimateZone : aucune donnée vivante → null", () => {
+  assert.equal(estimateZone([], 0), null);
+  assert.equal(estimateZone([{ k: "cry", x: 10, y: 10, brg: 45, t: 0 }], 0), null, "un gisement seul ne triangule pas");
+  assert.equal(estimateZone([{ k: "cry", x: 10, y: 10, brg: 45, t: 0 }, { k: "cry", x: 20, y: 20, brg: 50, t: 0 }], 0), null, "deux gisements quasi parallèles : null");
+});
+
+test("estimateZone : une trace fraîche → zone centrée dessus, rayon plancher", () => {
+  const z = estimateZone([{ k: "trace", x: 20, y: 20, t: 0 }], 0);
+  assert.ok(Math.abs(z.x - 20) < 1e-9 && Math.abs(z.y - 20) < 1e-9, "centrée sur le point");
+  assert.equal(z.rKm, ESTIMATE_MIN_R_KM, "rayon plancher");
+});
+
+test("estimateZone : deux gisements croisés → zone près de la source", () => {
+  const z = estimateZone([
+    { k: "cry", x: 20, y: 10, brg: 0, t: 0 },
+    { k: "cry", x: 5, y: 30, brg: 90, t: 0 },
+  ], 0);
+  assert.ok(Math.abs(z.x - 20) < 1e-6 && Math.abs(z.y - 30) < 1e-6, "triangulation serrée");
+  assert.equal(z.rKm, ESTIMATE_MIN_R_KM, "données fraîches et concordantes : plancher");
+});
+
+test("estimateZone : la zone regonfle avec l'âge des relevés", () => {
+  const z = estimateZone([{ k: "trace", x: 20, y: 20, t: 0 }], 360); // 6 h plus tard
+  assert.ok(Math.abs(z.rKm - (ESTIMATE_MIN_R_KM + 6 * ESTIMATE_GROWTH_KMH)) < 1e-6, "+2 km/h depuis le relevé le plus frais");
+});
+
+test("estimateZone : relevés trop vieux sont morts → null", () => {
+  const old = 10 * ESTIMATE_HALF_LIFE_MIN;
+  assert.equal(estimateZone([{ k: "trace", x: 20, y: 20, t: -old }], 0), null);
+});
+
+test("estimateZone : relevés dispersés → rayon plafonné", () => {
+  const z = estimateZone([
+    { k: "trace", x: 10, y: 10, t: 0 },
+    { k: "trace", x: 40, y: 40, t: 0 },
+  ], 0);
+  assert.equal(z.rKm, ESTIMATE_MAX_R_KM, "dispersion énorme : plafond atteint");
+});
+
+// ---------- Le Patrouilleur + fuite de la créature ----------
+test("patrouilleur : constantes (40 km/h, canon 2 min, engagement 10 min, répit 4 h)", () => {
+  assert.equal(PATROL_SPD_KMH, 40);
+  assert.equal(PATROL_CANNON_EVERY_MIN, 2);
+  assert.equal(PATROL_ENGAGE_MIN, 10);
+  assert.equal(PATROL_DETECT_COOLDOWN_MIN, 240);
+  assert.equal(PATROL_DETECT_R_KM, 30);
+  assert.equal(PATROL_TICK_MAX_MIN, 120);
+  assert.equal(CANNON_DECAY_KM, 1000);
+});
+
+test("patrolDetectPerMin : effort montant avec la fouille, plafonné", () => {
+  assert.equal(patrolDetectPerMin(0), 0.005);
+  assert.ok(patrolDetectPerMin(600) > patrolDetectPerMin(0), "ça grimpe à force de fouiller");
+  assert.equal(patrolDetectPerMin(1000), 0.1, "plafond 10 %/min");
+});
+
+test("patrolTick : sans zone, la frégate reste à quai", () => {
+  const w = buildWorld(42);
+  const p = { x: 30, y: 30, mode: "quai", searchMin: 0, searchAcc: 0 };
+  const ev = patrolTick(p, 120, w, null, { x: 30, y: 30 });
+  assert.deepEqual(ev, [], "aucun événement");
+  assert.equal(p.mode, "quai");
+  assert.equal(p.x, 30, "immobile");
+});
+
+test("patrolTick : zone → transit vers le centre à 40 km/h", () => {
+  const w = buildWorld(42);
+  const p = { x: 30, y: 30, mode: "quai", searchMin: 0, searchAcc: 0 };
+  patrolTick(p, 60, w, { x: 32, y: 30, rKm: 100 }, null);
+  assert.equal(p.mode, "transit", "encore en transit (zone à 100 km)");
+  const d = distKm(30, 30, p.x, p.y);
+  assert.ok(Math.abs(d - 40) < 1, "60 minutes à 40 km/h : 40 km parcourus");
+});
+
+test("patrolTick : détection par effort cumulé quand la créature est à portée", () => {
+  const w = buildWorld(42);
+  const p = { x: 30, y: 30, mode: "recherche", tgtX: 31, tgtY: 30, searchMin: 5000, searchAcc: 0, cooldownLeftMin: 0 };
+  const ev = patrolTick(p, 10, w, { x: 30.5, y: 30, rKm: 100 }, { x: 30.3, y: 30 });
+  assert.equal(ev.length, 1, "un contact");
+  assert.equal(ev[0].k, "detect", "l'événement est un contact");
+  assert.ok(Math.abs(ev[0].x - 30.3) < 1e-9 && Math.abs(ev[0].y - 30) < 1e-9, "position vue incluse");
+  assert.equal(p.mode, "engage", "la frégate engage");
+});
+
+test("patrolTick : créature hors du rayon de balayage → jamais de contact", () => {
+  const w = buildWorld(42);
+  const p = { x: 30, y: 30, mode: "recherche", tgtX: 31, tgtY: 30, searchMin: 5000, searchAcc: 0, cooldownLeftMin: 0 };
+  const ev = patrolTick(p, 120, w, { x: 30.5, y: 30, rKm: 100 }, { x: 33, y: 30 });
+  assert.deepEqual(ev, [], "aucun contact à 150 km");
+  assert.notEqual(p.mode, "engage");
+});
+
+test("patrolTick : engagement = coups de canon cadencés, puis répit de 4 h", () => {
+  const w = buildWorld(42);
+  const p = { x: 30, y: 30, mode: "engage", engageLeftMin: PATROL_ENGAGE_MIN, shotClock: 0, cooldownLeftMin: 0, searchAcc: 0, searchMin: 0 };
+  const ev = patrolTick(p, 10, w, { x: 30, y: 30, rKm: 100 }, null);
+  assert.equal(ev.length, Math.round(PATROL_ENGAGE_MIN / PATROL_CANNON_EVERY_MIN), "un coup de canon par tranche de 2 min");
+  assert.ok(ev.every((e) => e.k === "shot"), "que des tirs");
+  assert.equal(p.mode, "recherche", "retour en recherche après l'engagement");
+  assert.equal(p.cooldownLeftMin, PATROL_DETECT_COOLDOWN_MIN, "répit : la zone regonfle");
+});
+
+test("patrolTick : pendant le répit, aucune détection même à portée", () => {
+  const w = buildWorld(42);
+  const p = { x: 30, y: 30, mode: "recherche", tgtX: 31, tgtY: 30, searchMin: 5000, searchAcc: 0, cooldownLeftMin: PATROL_DETECT_COOLDOWN_MIN };
+  const ev = patrolTick(p, 120, w, { x: 30.5, y: 30, rKm: 100 }, { x: 30.3, y: 30 });
+  assert.deepEqual(ev, [], "pas de contact pendant le répit");
+  assert.equal(p.cooldownLeftMin, PATROL_DETECT_COOLDOWN_MIN - 120, "le répit s'épuise avec le temps");
+});
+
+test("beastFlee : deux régimes possibles, cap opposé au patrouilleur", () => {
+  const b = { x: 30, y: 35 };
+  beastFlee(b, 30, 30);
+  const short = b.fleeLeftMin === (50 / BEAST_SPD_KMH) * 60 && b.fleeSpdKmh === BEAST_SPD_KMH;
+  const long = b.fleeLeftMin === 240 && b.fleeSpdKmh === 60;
+  assert.ok(short || long, "régime court (50 km) ou long (4 h à 60 km/h)");
+  assert.ok(b.fleeHeading >= 330 || b.fleeHeading <= 30, "elle fuit vers le nord (opposé au patrouilleur au sud) ± 30°");
+});
+
+test("beastTick : en fuite, elle court en ligne droite et ne mange pas", () => {
+  const w = buildWorld(42);
+  const target = { kind: "fisher", x: 30.05, y: 30 };
+  const beast = { x: 30, y: 30, heading: 0, hunger: 0, fleeLeftMin: 60, fleeSpdKmh: BEAST_SPD_KMH, fleeHeading: 0 };
+  const eaten = beastTick(beast, 60, w, [{ x: 30.05, y: 30, liveX: target.x, liveY: target.y, ref: target }]);
+  assert.equal(eaten, null, "en fuite : pas de repas, même à portée de frappe");
+  assert.ok(Math.abs(beast.y - 31) < 1e-6, "50 km vers le nord (1°)");
+  assert.equal(beast.fleeLeftMin, 0, "la fuite est consommée");
 });
