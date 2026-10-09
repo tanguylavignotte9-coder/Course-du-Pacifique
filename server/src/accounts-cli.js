@@ -53,8 +53,10 @@ const ask = (question, hidden = false) =>
     }
   });
 
+const SECRET_FILE = path.join(ROOT, "data/admin-secret.txt");
 function ensureSecret() {
   if (process.env.ADMIN_SECRET) return process.env.ADMIN_SECRET;
+  if (fs.existsSync(SECRET_FILE)) return fs.readFileSync(SECRET_FILE, "utf8").trim();
   console.log(`Aucun secret admin défini : définissez la variable d'environnement ADMIN_SECRET.`);
   return null;
 }
@@ -152,7 +154,7 @@ async function main() {
     }
     case "secret": {
       const s = ensureSecret();
-      console.log(s ? "Secret admin défini via ADMIN_SECRET." : "Aucun secret admin défini : définissez la variable d'environnement ADMIN_SECRET.");
+      console.log(s ? "Secret admin défini (ADMIN_SECRET ou data/admin-secret.txt)." : "Aucun secret admin défini : définissez la variable d'environnement ADMIN_SECRET.");
       return;
     }
     case undefined:

@@ -36,7 +36,12 @@ const store = new Store(path.join(ROOT, "data"));
 const auth = new Auth(store);
 
 function readAdminSecret() {
-  return process.env.ADMIN_SECRET || null;
+  if (process.env.ADMIN_SECRET) return process.env.ADMIN_SECRET;
+  try {
+    return fsSync.readFileSync(path.join(ROOT, "data/admin-secret.txt"), "utf8").trim();
+  } catch {
+    return null;
+  }
 }
 
 // ---------- Course ----------
@@ -956,11 +961,12 @@ app.get("/api/wx", (req, res) => {
 });
 
 // ---------- API d'administration (interface /admin) ----------
-// Toutes les routes exigent le secret admin, défini UNIQUEMENT via la
-// variable d'environnement ADMIN_SECRET (jamais généré, jamais écrit sur
-// disque, jamais affiché dans la console).
+// Toutes les routes exigent le secret admin, défini via la variable
+// d'environnement ADMIN_SECRET ou lu dans data/admin-secret.txt s'il
+// existe déjà (installations antérieures). Jamais généré, jamais écrit
+// sur disque, jamais affiché dans la console.
 function getAdminSecret() {
-  return process.env.ADMIN_SECRET || null;
+  return readAdminSecret();
 }
 function adminGuard(req, res) {
   const secret = getAdminSecret();

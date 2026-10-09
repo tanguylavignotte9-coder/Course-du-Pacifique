@@ -83,7 +83,7 @@ npm run dev --workspace client   # vite sur :5173 (proxy /api et /ws vers :8080)
 
 Les comptes sont créés par l'administrateur (pas d'inscription publique).
 
-**Interface web (recommandée)** : définissez la variable d'environnement `ADMIN_SECRET` avant de démarrer le serveur (le secret n'est plus généré automatiquement, ni affiché, ni écrit sur disque), puis ouvrez **http://localhost:8080/admin**. Entrez ce secret et gérez les comptes avec des boutons : créer, changer mot de passe, supprimer.
+**Interface web (recommandée)** : définissez la variable d'environnement `ADMIN_SECRET` avant de démarrer le serveur, puis ouvrez **http://localhost:8080/admin**. Entrez ce secret et gérez les comptes avec des boutons : créer, changer mot de passe, supprimer. Le secret n'est jamais généré automatiquement ni affiché dans la console. Si votre installation contient déjà un `data/admin-secret.txt` (versions antérieures), il reste lu tel quel — sinon `ADMIN_SECRET` est le seul moyen de le définir.
 
 **En ligne de commande** (alternative) :
 
