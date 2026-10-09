@@ -729,13 +729,13 @@ function SonarTile({ snap, cmd }) {
         <button
           disabled={!uw || p.battery < SONAR_PING_BATTERY_COST}
           onClick={() => cmd({ ping: true })}
-          className={`w-full rounded-lg py-2 text-sm font-bold transition-colors ${uw && p.battery >= SONAR_PING_BATTERY_COST ? "bg-sky-600 text-white hover:bg-sky-500" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
+          className={`w-full rounded-lg py-2 text-sm font-bold transition-colors ${uw && p.battery >= SONAR_PING_BATTERY_COST ? "bg-cyan-500 text-slate-950 hover:bg-cyan-400" : "bg-slate-800 text-slate-600 cursor-not-allowed"}`}
         >
-          🔊 Ping ({SONAR_PING_BATTERY_COST} % batterie)</button>
-        {!uw && <p className="text-[10px] text-slate-500">Passif : écoute continue (surface et plongée). Ping actif : plongée uniquement.</p>}
-        {!uw && null}
-        {uw && p.battery < SONAR_PING_BATTERY_COST && <p className="text-[10px] text-amber-400/80">Batteries insuffisantes.</p>}
-        <p className="text-[10px] text-slate-500">Échos et bruits : gisement {uw ? "+ distance (ping) " : "" }uniquement — jamais de position. Portée {SONAR_RANGE_KM} km, affichage {SONAR_ECHO_PERSIST_S} s.</p>
+          🔊 PING — {SONAR_PING_BATTERY_COST} % de batterie</button>
+        <p className="text-[11px] leading-snug text-slate-500">
+          Écoute passive continue : gisement des bruits uniquement, aucune distance. Le ping révèle gisement + distance de tout ce qui traîne — sauf un navire immergé. Vos pings sont audibles par les autres jusqu'à {SOUND_DECAY_KM} km.
+          {!uw && " Sonar actif disponible en plongée uniquement."}
+        </p>
       </div>
     </div>
   );
@@ -948,8 +948,6 @@ export default function App() {
         {/* Carte de navigation : côte à côte avec le navire (PC) */}
         <NavMap snap={snap} sock={sock} />
 
-        {/* Sonar : hydrophone passif continu + ping actif au clic */}
-        <SonarTile snap={snap} cmd={cmd} />
       </div>
 
       {/* Météo + radio + journal : en dessous, pleine largeur */}
@@ -1065,6 +1063,7 @@ export default function App() {
                 { id: "tout", label: "📋 Tout" }, { id: "navire", label: "⚙️ Navire" },
                 { id: "nav", label: "🔭 Nav" }, { id: "meteo", label: "🌦️ Météo" },
                 { id: "vision", label: "👁️ Vision" }, { id: "radio", label: "📡 Radio" },
+                { id: "sonar", label: "🔊 Sonar" },
                 { id: "balises", label: "📦 Balises" }, { id: "alertes", label: "⚠️ Alertes" },
               ].map((c) => (
                 <button
@@ -1084,6 +1083,8 @@ export default function App() {
             </div>
           </div>
         </div>
+        {/* Sonar : hydrophone passif continu + ping actif au clic — deuxième colonne */}
+        <SonarTile snap={snap} cmd={cmd} />
       </div>
 
       {/* NETWORK (port / avant-poste / balise) : connexion, météo 48 h, journal global */}
