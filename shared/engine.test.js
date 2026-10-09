@@ -14,6 +14,9 @@ import {
   FISHER_SPOT_R_KM, FISHER_FISH_MIN, FISHER_FISH_SPAN_MIN, CARGO_SPD_KMH,
   WHALE_SPD_KMH, NPC_TICK_MAX_MIN, NPC_SUBSTEP_MIN, FISHER_CHAT_MEAN_MIN,
   CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN,
+  beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale,
+  BEAST_SPAWN_MIN_PORT_KM, BEAST_SPD_KMH, BEAST_HUNGER_MIN, BEAST_STRIKE_KM,
+  BEAST_TICK_MAX_MIN, BEAST_TRACE_PERSIST_MIN, detectKm,
 } from "./engine.js";
 
 // Navire de test en pleine eau (loin du port et des terres), pleine vitesse.
@@ -931,4 +934,84 @@ test("npcsTick : baleine jamais hors carte après un gros pas", () => {
     assert.ok(wh.x >= 0 && wh.x <= 60 && wh.y >= 0 && wh.y <= 60, "baleine dans la carte");
     assert.ok(!w.isLand(wh.x, wh.y), "baleine en mer");
   }
+});
+
+// ---------- La Bête v1 ----------
+test("bête : constantes (spawn ≥ 1000 km du port, 50 km/h, faim 12 h, frappe 2 km)", () => {
+  assert.equal(BEAST_SPAWN_MIN_PORT_KM, 1000);
+  assert.equal(BEAST_SPD_KMH, 50);
+  assert.equal(BEAST_HUNGER_MIN, 720);
+  assert.equal(BEAST_STRIKE_KM, 2);
+  assert.equal(BEAST_TRACE_PERSIST_MIN, 720);
+});
+
+test("beastSpawn : pleine eau, à ≥ 1000 km du port", () => {
+  const w = buildWorld(42);
+  for (let k = 0; k < 10; k++) {
+    const p = beastSpawn(w);
+    assert.ok(!w.isLand(p.x, p.y), "spawn en mer");
+    assert.ok(distKm(p.x, p.y, w.PORT.x, w.PORT.y) >= BEAST_SPAWN_MIN_PORT_KM, "≥ 1000 km du port");
+  }
+});
+
+test("beastTick : rassasiée, immobile ; affamée, elle chasse et mange", () => {
+  const w = buildWorld(42);
+  const beast = { x: 30, y: 30, heading: 0, hunger: 1 };
+  const src = { x: 30.05, y: 30, liveX: 30.05, liveY: 30, ref: { kind: "fisher" } };
+  assert.equal(beastTick(beast, 60, w, [src]), null, "rassasiée : aucun repas");
+  assert.ok(Math.abs(beast.hunger - (1 - 60 / BEAST_HUNGER_MIN)) < 1e-9, "jauge décroît");
+  beast.hunger = 0;
+  const target = { kind: "fisher", x: 30.05, y: 30 };
+  const eaten = beastTick(beast, BEAST_TICK_MAX_MIN, w, [{ x: 30.05, y: 30, liveX: target.x, liveY: target.y, ref: target }]);
+  assert.equal(eaten, target, "la cible est mangée");
+  assert.equal(beast.hunger, 1, "repue après le repas");
+});
+
+test("beastTick : un point d'émission visité sans cible vivante est mort", () => {
+  const w = buildWorld(42);
+  const beast = { x: 30, y: 30, heading: 0, hunger: 0 };
+  // le chant pointe vers un lieu d'émission à 5 km… la baleine a fui loin
+  const ghost = { x: 30.1, y: 30, liveX: 35, liveY: 35, ref: { kind: "whale", x: 35, y: 35 } };
+  const eaten = beastTick(beast, 30, w, [ghost]);
+  assert.equal(eaten, null, "visité sans cible vivante : pas de repas");
+  // elle avance d'un sous-pas vers le lieu du chant, puis la source (à
+  // portée de frappe mais sans cible vivante) est morte pour ce tick.
+  const expectX = 30 + (BEAST_SPD_KMH / 60 / DEG_KM) * 5; // un sous-pas de 5 min
+  assert.ok(Math.abs(beast.x - expectX) < 1e-9 && Math.abs(beast.y - 30) < 1e-9, "elle a visité le lieu du chant puis s'arrête");
+});
+
+test("fabriques NPC : respawn d'un pêcheur / cargo / baleine", () => {
+  const w = buildWorld(42);
+  const f = makeFisherman(w, "1234", 100, "fx");
+  assert.equal(f.kind, "fisher");
+  assert.equal(f.code, "1234");
+  assert.ok(!w.isLand(f.x, f.y));
+  const c = makeCargo(w, "5678", 100, "cx");
+  assert.equal(c.kind, "cargo");
+  assert.equal(c.spd > 0, true);
+  const wh = makeWhale(w, 100, "wx");
+  assert.equal(wh.kind, "whale");
+  assert.ok(!w.isLand(wh.x, wh.y));
+});
+
+test("computeView : les traces se détectent (azimut + distance, jamais de position)", () => {
+  const w = buildWorld(42);
+  const st = newPlayerState(w);
+  st.x = 30; st.y = 30; st.estX = 30; st.estY = 30;
+  st.location = "surface";
+  const wx = weatherAt(st.x, st.y, st.t, st.weatherSeed);
+  const dKm = Math.min(10, wx.visibility - 0.1); // sous la visibilité courante
+  const traces = [{ kind: "epave", x: 30, y: 30 + dKm / DEG_KM }, { kind: "carcasse", x: 30 + dKm / DEG_KM, y: 30 }];
+  const v = computeView(st, w, traces);
+  const close = v.traces.find((t) => t.kind === "epave");
+  assert.ok(close, "épave : détectée sous la visibilité");
+  assert.ok(Math.abs(close.km - dKm) < 0.05 && close.az === 0, "distance + azimut");
+  assert.equal("x" in close, false, "aucune coordonnée absolue dans la vue");
+  assert.ok(v.traces.some((t) => t.kind === "carcasse" && t.az === 90), "carcasse : détectée à l'est");
+});
+
+test("detectKm : catégorie trace (15 km le jour, 5 km la nuit)", () => {
+  assert.equal(detectKm("trace", 50, false), 15);
+  assert.equal(detectKm("trace", 3, false), 3); // bornée par la visibilité
+  assert.equal(detectKm("trace", 50, true), 5);
 });

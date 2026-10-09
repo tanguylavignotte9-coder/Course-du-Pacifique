@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, angDiff, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -161,7 +161,7 @@ function sonarPassiveFor(id) {
     out.push({ kind: "ping", bearing: ev.bearing, strength: ev.strength });
   }
   for (const ev of (bioHeard.get(id) || [])) {
-    out.push({ kind: "biologique", bearing: ev.bearing, strength: ev.strength });
+    out.push({ kind: ev.kind || "biologique", bearing: ev.bearing, strength: ev.strength });
   }
   return out;
 }
@@ -205,7 +205,7 @@ function sonarPass() {
       bioPending.set(id, bPend.filter((ev) => {
         if (st.t >= ev.arriveMin) {
           const heard = bioHeard.get(id) || [];
-          heard.push({ bearing: ev.bearing, strength: ev.strength, heardMs: nowMs });
+          heard.push({ kind: ev.kind || "biologique", bearing: ev.bearing, strength: ev.strength, heardMs: nowMs });
           bioHeard.set(id, heard);
           return false;
         }
@@ -279,6 +279,63 @@ function ensureNpcs() {
 ensureNpcs();
 let lastNpcT = gameMinutesNow();
 
+// Émission radio depuis un NPC vers tous les navires joueurs : LOI DE
+// RÉCEPTION UNIQUE (omni ≥ 75 % / directionnel ≥ sens), famille longue.
+// Sert au bafouillage, aux messages cargos et au SOS d'un bateau attaqué.
+const radioSend = (fromX, fromY, deliver) => {
+  for (const [oid, ost] of states) {
+    const radioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
+    if (!radioOk) continue;
+    const dKm = distKm(ost.x, ost.y, fromX, fromY);
+    const strength = longStrengthKm(dKm);
+    if (strength < RADIO_MIN_STRENGTH) continue;
+    const cap = recvCapture(ost, bearingTo(ost.x, ost.y, fromX, fromY), strength);
+    if (!cap) continue; // ne capte pas : silence
+    deliver(ost, cap);
+  }
+};
+
+// ---------- La Bête v1 : état persisté (race.beast) ----------
+// Une seule Bête, invisible, persistée dans la course. Elle entend les
+// bruits moteurs des NPC et les chants de baleines récents ; les joueurs
+// sont ignorés en v1. Ses cris (kind « inconnu ») sont des bruits sonar
+// passifs ; ses traces (épaves, mers de sang) sont visibles de près et
+// rebondissent ANONYMEMENT au ping (épave = « navire », carcasse =
+// « biologique » — rien de nouveau à étiqueter côté joueur).
+const recentSongs = []; // [{ x, y, t, ref }] chants récents — ouïe de la Bête (éphémère : perdus au redémarrage)
+function ensureBeast() {
+  if (!race.beast) {
+    const p = beastSpawn(world);
+    race.beast = {
+      x: p.x, y: p.y, heading: Math.floor(Math.random() * 360),
+      hunger: 1, nextCryMin: nextNpcEventMin(gameMinutesNow(), BEAST_CRY_MEAN_MIN),
+      traces: [], traceSeq: 0,
+    };
+    store.save();
+  }
+}
+ensureBeast();
+let lastBeastT = gameMinutesNow();
+
+// Bruit sonar passif pour tous les joueurs (retard de propagation réel) :
+// chants de baleines (kind « biologique ») et cris de la Bête (kind
+// « inconnu »). Passe par la même file que les chants : bioPending.
+function emitSoundToAll(x, y, kind) {
+  for (const [oid, ost] of states) {
+    const dKm = distKm(ost.x, ost.y, x, y);
+    const strength = strengthKm(dKm, SOUND_DECAY_KM);
+    if (strength <= 0) continue;
+    const q = bioPending.get(oid) || [];
+    q.push({
+      kind,
+      bearing: Math.round(bearingTo(ost.x, ost.y, x, y)),
+      strength,
+      arriveMin: ost.t + soundTravelMin(dKm),
+    });
+    bioPending.set(oid, q);
+  }
+}
+
 // Passe NPC (boucle 1 Hz) : déplacement simple + émissions. Le monde vit
 // même sans joueur connecté. dt borné par le garde-fou du moteur (les
 // sauts de temps super user font vivre les NPC de 120 min au plus).
@@ -288,20 +345,6 @@ function npcPass(now) {
   const prev = lastNpcT;
   lastNpcT = now;
   npcsTick(npcs, now - prev, world);
-  // Émission radio depuis un NPC vers tous les navires joueurs : LOI DE
-  // RÉCEPTION UNIQUE (omni ≥ 75 % / directionnel ≥ sens), famille longue.
-  const radioSend = (fromX, fromY, deliver) => {
-    for (const [oid, ost] of states) {
-      const radioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
-      if (!radioOk) continue;
-      const dKm = distKm(ost.x, ost.y, fromX, fromY);
-      const strength = longStrengthKm(dKm);
-      if (strength < RADIO_MIN_STRENGTH) continue;
-      const cap = recvCapture(ost, bearingTo(ost.x, ost.y, fromX, fromY), strength);
-      if (!cap) continue; // ne capte pas : silence
-      deliver(ost, cap);
-    }
-  };
   // Bafouillage des pêcheurs : DIFFUSION lisible par tous à portée (avec
   // code radio du pêcheur, aucune coordonnée).
   for (const f of npcs.fishermen) {
@@ -324,25 +367,114 @@ function npcPass(now) {
       ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: info.text, kind: "info", cat: info.cat });
     });
   }
-  // Chant de baleine : BRUIT SONAR PASSIF (kind « biologique ») avec le vrai
-  // retard de propagation — même mécanique que les bruits moteurs : la
-  // position d'émission est retardée, la force suit la décroissance son,
-  // et l'arrivée passe par la file d'attente dédiée (bioPending → bioHeard,
-  // affiché SONAR_ECHO_PERSIST_S secondes).
+  // Chant de baleine : bruit sonar passif (kind « biologique », retard réel)
+  // + OUÏE DE LA BÊTE : un chant est un bruit — chanter révèle la baleine.
   for (const wh of npcs.whales) {
     if (now < wh.nextSongMin) continue;
     wh.nextSongMin = nextNpcEventMin(now, WHALE_SONG_MEAN_MIN);
-    for (const [oid, ost] of states) {
-      const dKm = distKm(ost.x, ost.y, wh.x, wh.y);
-      const strength = strengthKm(dKm, SOUND_DECAY_KM);
-      if (strength <= 0) continue;
-      const q = bioPending.get(oid) || [];
-      q.push({
-        bearing: Math.round(bearingTo(ost.x, ost.y, wh.x, wh.y)),
-        strength,
-        arriveMin: ost.t + soundTravelMin(dKm),
+    recentSongs.push({ x: wh.x, y: wh.y, t: now, ref: wh });
+    emitSoundToAll(wh.x, wh.y, "biologique");
+  }
+}
+
+// Passe Bête (boucle 1 Hz) : ouïe → chasse → repas (trace + cri + SOS) →
+// cris périodiques → expiration des traces + respawn → vue des traces.
+// Le monde vit même sans joueur connecté.
+function beastPass(now) {
+  ensureBeast();
+  const beast = race.beast;
+  const npcs = race.npcs;
+  // ouïe : bruits moteurs NPC dans les 500 km + chants récents (mémoire)
+  for (let i = recentSongs.length - 1; i >= 0; i--) {
+    if (now - recentSongs[i].t > BEAST_SONG_MEMORY_MIN) recentSongs.splice(i, 1);
+  }
+  const sources = [];
+  if (npcs) {
+    for (const f of npcs.fishermen) {
+      if (!npcNoisy(f) || distKm(beast.x, beast.y, f.x, f.y) >= SOUND_DECAY_KM) continue;
+      sources.push({ x: f.x, y: f.y, liveX: f.x, liveY: f.y, ref: f });
+    }
+    for (const c of npcs.cargos) {
+      if (!npcNoisy(c) || distKm(beast.x, beast.y, c.x, c.y) >= SOUND_DECAY_KM) continue;
+      sources.push({ x: c.x, y: c.y, liveX: c.x, liveY: c.y, ref: c });
+    }
+    for (const s of recentSongs) {
+      if (distKm(beast.x, beast.y, s.x, s.y) >= SOUND_DECAY_KM) continue;
+      sources.push({ x: s.x, y: s.y, liveX: s.ref.x, liveY: s.ref.y, ref: s.ref });
+    }
+  }
+  const prev = lastBeastT;
+  lastBeastT = now;
+  const eaten = beastTick(beast, now - prev, world, sources);
+  // Repas : la cible disparaît, une trace naît, un cri part — et un SOS si
+  // c'est un bateau (une baleine n'a pas de radio).
+  if (eaten && npcs) {
+    const list = eaten.kind === "whale" ? npcs.whales : eaten.kind === "cargo" ? npcs.cargos : npcs.fishermen;
+    const idx = list.indexOf(eaten);
+    if (idx >= 0) list.splice(idx, 1);
+    for (let i = recentSongs.length - 1; i >= 0; i--) {
+      if (recentSongs[i].ref === eaten) recentSongs.splice(i, 1); // plus jamais une cible fantôme
+    }
+    beast.traceSeq = (beast.traceSeq || 0) + 1;
+    beast.traces.push({
+      id: `t${beast.traceSeq}`,
+      kind: eaten.kind === "whale" ? "carcasse" : "epave",
+      src: eaten.kind, x: eaten.x, y: eaten.y, t: now,
+    });
+    emitSoundToAll(beast.x, beast.y, "inconnu"); // le cri de l'attaque
+    if (eaten.kind !== "whale") {
+      // SOS du bateau en perdition : diffusion lisible (loi de réception),
+      // position déclarée — un vrai SOS, il sert à retrouver l'épave.
+      const sosText = `🆘 SOS du navire ${eaten.code} — position déclarée : ${eaten.y.toFixed(2)}°N ${eaten.x.toFixed(2)}°E — quelque chose nous percute, on coule !`;
+      radioSend(eaten.x, eaten.y, (ost, cap) => {
+        ost.notifSeq = (ost.notifSeq || 0) + 1;
+        ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: sosText, kind: "bad", cat: "radio" });
       });
-      bioPending.set(oid, q);
+    }
+  }
+  // Cris périodiques (en chasse comme rassasiée — on ne sait jamais où elle est)
+  if (now >= beast.nextCryMin) {
+    beast.nextCryMin = nextNpcEventMin(now, BEAST_CRY_MEAN_MIN);
+    emitSoundToAll(beast.x, beast.y, "inconnu");
+  }
+  // Traces : expiration (12 h) puis respawn du NPC mangé — population constante
+  const expired = [];
+  beast.traces = (beast.traces || []).filter((tr) => {
+    if (now - tr.t < BEAST_TRACE_PERSIST_MIN) return true;
+    expired.push(tr);
+    return false;
+  });
+  for (const tr of expired) {
+    if (!npcs) continue;
+    const used = new Set([...world.BEACONS.map((b) => b.code), ...[...states.values()].map((s) => s.code)]);
+    for (const f of npcs.fishermen) used.add(f.code);
+    for (const c of npcs.cargos) used.add(c.code);
+    let code;
+    do { code = randomCode(); } while (used.has(code));
+    if (tr.src === "fisher") npcs.fishermen.push(makeFisherman(world, code, now, `f${npcs.fishermen.length}`));
+    else if (tr.src === "cargo") npcs.cargos.push(makeCargo(world, code, now, `c${npcs.cargos.length}`));
+    else npcs.whales.push(makeWhale(world, now, `w${npcs.whales.length}`));
+  }
+  // Vue des traces : première détection visuelle → notification
+  for (const [id, st] of states) {
+    const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
+    const hour = (st.t / 60) % 24;
+    const night = hour < 6 || hour >= 20;
+    const canSee = st.location === "surface" || st.periscope;
+    const det = canSee ? detectKm("trace", w.visibility, night) : -1;
+    for (const tr of (beast.traces || [])) {
+      if ((st.sawTraceIds || []).includes(tr.id)) continue;
+      if (distKm(st.x, st.y, tr.x, tr.y) > det) continue;
+      if (!Array.isArray(st.sawTraceIds)) st.sawTraceIds = [];
+      st.sawTraceIds.push(tr.id);
+      if (st.sawTraceIds.length > 60) st.sawTraceIds.shift();
+      st.notifSeq = (st.notifSeq || 0) + 1;
+      st.notifications.unshift({
+        id: st.notifSeq, t: st.t, kind: "info", cat: "vision",
+        text: tr.kind === "epave"
+          ? "🚢 Une épave dérive — coque déchiquetée, aucun survivant en vue."
+          : "🩸 La mer est rouge de sang sur des centaines de mètres — une carcasse tourne lentement.",
+      });
     }
   }
 }
@@ -389,6 +521,7 @@ setInterval(() => {
   }
   multiplayerPass(now);
   npcPass(now);
+  beastPass(now);
   sonarPass();
     // NETWORK : coupure automatique dès que le navire quitte la zone —
     // revenir = se RECONNECTER = nouvelle entrée dans le journal global.
@@ -586,7 +719,7 @@ function publicSnapshot(id) {
       beaconCount: world.BEACONS.length,
     },
     weather: w,
-    view: computeView(st, world),
+    view: computeView(st, world, (race.beast && race.beast.traces) || []),
     // NETWORK : zone serveur (bouton + connexion) et journal global, exposé
     // UNIQUEMENT aux joueurs connectés ET encore en zone.
     networkZone: netZone(st),
@@ -802,14 +935,21 @@ wss.on("connection", (ws, req) => {
       // (gisement + force, décroissance son), avec le même retard.
       if (c.ping === true) {
         // NPC de surface (cargos, pêcheurs) rebondissent comme « navire » ;
-        // les baleines comme « biologique ». Aucun n'a de position exposée.
+        // les baleines comme « biologique ». Les TRACES de la Bête aussi —
+        // ANONYMEMENT : épave = « navire » (corps de surface), carcasse =
+        // « biologique » (elle passe par la file biologics). La Bête elle-
+        // même est immergée : invisible au ping, comme tout corps immergé.
+        // Aucune position n'est exposée au client.
         const npcSurf = race.npcs
           ? [...race.npcs.cargos, ...race.npcs.fishermen].map((n) => ({ x: n.x, y: n.y, location: "surface" }))
           : [];
+        const traces = (race.beast && race.beast.traces) || [];
+        const epaves = traces.filter((tr) => tr.kind === "epave").map((tr) => ({ x: tr.x, y: tr.y, location: "surface" }));
+        const carcasses = traces.filter((tr) => tr.kind === "carcasse").map((tr) => ({ x: tr.x, y: tr.y }));
         const res = sonarPing(
           st, world,
-          [...states.values()].filter((o) => o !== st).concat(npcSurf),
-          (race.npcs || {}).whales || [],
+          [...states.values()].filter((o) => o !== st).concat(npcSurf).concat(epaves),
+          ((race.npcs || {}).whales || []).concat(carcasses),
         );
         if (!res.ok) {
           st.notifSeq = (st.notifSeq || 0) + 1;

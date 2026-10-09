@@ -236,6 +236,19 @@ function TopView({ snap }) {
             ? <circle key={e.id} cx={p[0]} cy={p[1]} r={marker(2.5)} fill="#f8fafc" />
             : <circle key={e.id} cx={p[0]} cy={p[1]} r={marker(4)} fill={e.off ? "#64748b" : RARITY_STYLE[e.rarity].color} />;
         })}
+        {/* Traces détectées : épave dérivante / mer de sang — jamais nommées */}
+        {(view.traces || []).map((t, i) => {
+          if (t.beyond) return null;
+          const p = proj(t.az, t.km);
+          return (
+            <g key={`tr${i}`}>
+              {t.kind === "epave"
+                ? <rect x={p[0] - marker(4.5)} y={p[1] - marker(2)} width={marker(9)} height={marker(4)}
+                    fill="#475569" stroke="#94a3b8" strokeWidth={lw(0.5)} />
+                : <circle cx={p[0]} cy={p[1]} r={marker(5)} fill="rgba(153,27,27,0.45)" stroke="rgba(185,28,28,0.7)" strokeWidth={lw(0.5)} />}
+            </g>
+          );
+        })}
         {/* Navires détectés : marqueur + nom + distance, feu si phare la nuit */}
         {(snap.ships || []).filter((s) => s.km <= visRangeKm + 30).map((s) => {
           const p = proj(s.az, s.km);
@@ -672,6 +685,8 @@ function SonarTile({ snap, cmd }) {
                 <circle cx={x} cy={y} r="4" fill="none" stroke="#f97316" strokeWidth="1.4" />
               ) : s.kind === "biologique" ? (
                 <path d={`M ${x - 4} ${y + 1.5} q 2 -3.5 4 0 q 2 -3.5 4 0`} fill="none" stroke="#c084fc" strokeWidth="1.5" />
+              ) : s.kind === "inconnu" ? (
+                <path d={`M ${x - 4} ${y - 4} L ${x - 1.5} ${y + 4} L ${x + 1} ${y - 2.5} L ${x + 4} ${y + 4}`} fill="none" stroke="#f43f5e" strokeWidth="1.6" />
               ) : (
                 <path d={`M ${x - 4} ${y - 4} L ${x + 4} ${y + 4} M ${x + 4} ${y - 4} L ${x - 4} ${y + 4}`} stroke="#a855f7" strokeWidth="1.6" />
               )}
@@ -706,6 +721,7 @@ function SonarTile({ snap, cmd }) {
           <span><span className="text-orange-400">◯</span> moteur (passif)</span>
           <span><span className="text-purple-400">✕</span> ping d'un autre (passif)</span>
           <span><span className="text-purple-300">∿</span> chant de baleine</span>
+          <span><span className="text-rose-500">⍨</span> inconnu</span>
           <span><span className="text-teal-300">▲</span> île</span>
           <span><span className="text-yellow-300">◆</span> balise</span>
           <span><span className="text-cyan-300">●</span> navire</span>

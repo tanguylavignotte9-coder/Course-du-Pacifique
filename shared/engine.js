@@ -374,8 +374,8 @@ export function weatherAt(x, y, tMin, seed) {
 }
 
 // ---------- Vision ----------
-export const VIS_BASE = { ile: 40, continent: 30, port: 20, poste: 15, balise: 9 };
-export const VIS_NUIT = { ile: 3, continent: 3, port: 15, poste: 10, balise: 11 };
+export const VIS_BASE = { ile: 40, continent: 30, port: 20, poste: 15, balise: 9, trace: 15 };
+export const VIS_NUIT = { ile: 3, continent: 3, port: 15, poste: 10, balise: 11, trace: 5 };
 export const detectKm = (kind, visKm, night) => Math.min(visKm, night ? VIS_NUIT[kind] : VIS_BASE[kind]);
 
 // ---------- Voile (inclinaison automatique) ----------
@@ -839,8 +839,43 @@ export function npcCargoRoute(world) {
   return { a: { x: CARGO_EDGE_MAX_DEG, y: MAP / 2 }, b: { x: MAP - CARGO_EDGE_MAX_DEG, y: MAP / 2 } };
 }
 
-// Génération de la population initiale. `usedCodes` : codes déjà pris
-// (balises, navires joueurs) — les codes radio NPC sont uniques au monde.
+// Fabriques NPC — utilisées par generateNpcs ET par le respawn serveur
+// (une trace de la Bête expirée = un nouveau NPC du même type ailleurs :
+// population constante, la mer ne se vide pas).
+export function makeFisherman(world, code, nowMin, id = "f?") {
+  const spot = npcFishSpot(world);
+  return {
+    kind: "fisher", id, code,
+    x: spot.x, y: spot.y, heading: Math.floor(Math.random() * 360), spd: 0,
+    mode: "peche", fishMin: Math.round(FISHER_FISH_MIN + Math.random() * FISHER_FISH_SPAN_MIN),
+    spotX: spot.x, spotY: spot.y,
+    nextChatMin: nextNpcEventMin(nowMin, FISHER_CHAT_MEAN_MIN),
+  };
+}
+export function makeCargo(world, code, nowMin, id = "c?") {
+  const r = npcCargoRoute(world);
+  return {
+    kind: "cargo", id, code,
+    x: r.a.x, y: r.a.y, spotX: r.b.x, spotY: r.b.y,
+    heading: Math.round(bearingTo(r.a.x, r.a.y, r.b.x, r.b.y)),
+    spd: CARGO_SPD_KMH,
+    nextMsgMin: nextNpcEventMin(nowMin, CARGO_MSG_MEAN_MIN),
+  };
+}
+export function makeWhale(world, nowMin, id = "w?") {
+  let x = MAP / 2, y = MAP / 2;
+  for (let tries = 0; tries < 200; tries++) {
+    const tx = 2 + Math.random() * (MAP - 4), ty = 2 + Math.random() * (MAP - 4);
+    if (!world.isLand(tx, ty)) { x = tx; y = ty; break; }
+  }
+  return {
+    kind: "whale", id,
+    x, y, heading: Math.floor(Math.random() * 360), spd: WHALE_SPD_KMH,
+    nextSongMin: nextNpcEventMin(nowMin, WHALE_SONG_MEAN_MIN),
+  };
+}
+
+// Génération de la population initiale : fabriques + codes radio uniques.
 export function generateNpcs(world, usedCodes = [], nowMin = 0) {
   const used = new Set(usedCodes);
   const pickCode = () => {
@@ -849,37 +884,9 @@ export function generateNpcs(world, usedCodes = [], nowMin = 0) {
     used.add(c);
     return c;
   };
-  const fishermen = Array.from({ length: NPC_FISHERMEN }, (_, i) => {
-    const spot = npcFishSpot(world);
-    return {
-      kind: "fisher", id: `f${i}`, code: pickCode(),
-      x: spot.x, y: spot.y, heading: Math.floor(Math.random() * 360), spd: 0,
-      mode: "peche", fishMin: Math.round(FISHER_FISH_MIN + Math.random() * FISHER_FISH_SPAN_MIN),
-      spotX: spot.x, spotY: spot.y,
-      nextChatMin: nextNpcEventMin(nowMin, FISHER_CHAT_MEAN_MIN),
-    };
-  });
-  const cargos = Array.from({ length: NPC_CARGOS }, (_, i) => {
-    const r = npcCargoRoute(world);
-    return {
-      kind: "cargo", id: `c${i}`, code: pickCode(),
-      x: r.a.x, y: r.a.y, spotX: r.b.x, spotY: r.b.y,
-      heading: Math.round(bearingTo(r.a.x, r.a.y, r.b.x, r.b.y)), spd: CARGO_SPD_KMH,
-      nextMsgMin: nextNpcEventMin(nowMin, CARGO_MSG_MEAN_MIN),
-    };
-  });
-  const whales = Array.from({ length: NPC_WHALES }, (_, i) => {
-    let x = MAP / 2, y = MAP / 2;
-    for (let tries = 0; tries < 200; tries++) {
-      const tx = 2 + Math.random() * (MAP - 4), ty = 2 + Math.random() * (MAP - 4);
-      if (!world.isLand(tx, ty)) { x = tx; y = ty; break; }
-    }
-    return {
-      kind: "whale", id: `w${i}`,
-      x, y, heading: Math.floor(Math.random() * 360), spd: WHALE_SPD_KMH,
-      nextSongMin: nextNpcEventMin(nowMin, WHALE_SONG_MEAN_MIN),
-    };
-  });
+  const fishermen = Array.from({ length: NPC_FISHERMEN }, (_, i) => makeFisherman(world, pickCode(), nowMin, `f${i}`));
+  const cargos = Array.from({ length: NPC_CARGOS }, (_, i) => makeCargo(world, pickCode(), nowMin, `c${i}`));
+  const whales = Array.from({ length: NPC_WHALES }, (_, i) => makeWhale(world, nowMin, `w${i}`));
   return { fishermen, cargos, whales };
 }
 
@@ -962,6 +969,82 @@ export function npcsTick(npcs, dtMin, world) {
     for (const c of npcs.cargos) npcCargoTick(c, step, world);
     for (const w of npcs.whales) npcWhaleTick(w, step, world);
   }
+}
+
+// ---------- La Bête v1 ----------
+// Créature INVISIBLE : aucun rendu, aucune position exposée au client. Elle
+// n'existe pour les joueurs que par ses CRIS (bruit sonar passif, kind
+// « inconnu » : un son qui ne ressemble à rien de connu) et par ses TRACES
+// (épave d'un bateau détruit, carcasse de baleine dans une mer de sang).
+// Sens unique : l'OUÏE — les bruits moteurs des NPC et les chants de
+// baleines récents. Pas de vision, pas de radio, pas de sonar actif. Les
+// navires JOUEURS sont ignorés en v1 (le danger joueur viendra plus tard).
+// Elle ne bouge QUE pour manger ; rassasiée, immobile et silencieuse.
+export const BEAST_SPAWN_MIN_PORT_KM = 1000;  // spawn : distance min au port principal
+export const BEAST_SPD_KMH = 50;             // vitesse de chasse
+export const BEAST_HUNGER_MIN = 720;         // satiété : jauge 1 → 0 (minutes de jeu)
+export const BEAST_STRIKE_KM = 2;             // portée du repas
+export const BEAST_CRY_MEAN_MIN = 90;        // cadence moyenne des cris
+export const BEAST_SONG_MEMORY_MIN = 30;     // mémoire d'un chant entendu (cible potentielle)
+export const BEAST_TRACE_PERSIST_MIN = 720;  // traces : 12 h de jeu
+export const BEAST_TICK_MAX_MIN = 120;      // garde-fou : dt max par passe serveur
+export const BEAST_SUBSTEP_MIN = 5;         // sous-pas de déplacement
+
+// Spawn : pleine eau, à au moins BEAST_SPAWN_MIN_PORT_KM du port principal.
+export function beastSpawn(world) {
+  let best = null, bestD = -1;
+  for (let tries = 0; tries < 500; tries++) {
+    const x = 2 + Math.random() * (MAP - 4);
+    const y = 2 + Math.random() * (MAP - 4);
+    if (world.isLand(x, y)) continue;
+    const d = distKm(x, y, world.PORT.x, world.PORT.y);
+    if (d >= BEAST_SPAWN_MIN_PORT_KM) return { x, y };
+    if (d > bestD) { bestD = d; best = { x, y }; }
+  }
+  return best || { x: MAP / 2, y: MAP / 2 }; // dernier recours (improbable)
+}
+
+// Tick de la Bête. `sources` : bruits AUDIBLES construits par le serveur —
+// { x, y } = position D'OÙ vient le bruit (un chant pointe vers le lieu
+// d'émission), { liveX, liveY } = position VIVANTE de la cible (décide du
+// repas), `ref` = la cible elle-même (renvoyée lorsqu'elle est mangée).
+// Rassasiée : jauge décroît, immobile. Affamée : cap sur la source la plus
+// proche, ligne droite à BEAST_SPD_KMH, rebond sur terre (demi-tour dispersé).
+// Arrivée à portée de frappe → repas, jauge pleine. Un point d'émission
+// visité sans cible vivante est mort pour ce tick : le silence protège.
+export function beastTick(beast, dtMin, world, sources) {
+  let eaten = null;
+  const dead = new Set(); // sources visitées sans repas
+  let remaining = Math.min(Math.max(0, dtMin), BEAST_TICK_MAX_MIN);
+  while (remaining > 1e-9 && !eaten) {
+    const step = Math.min(BEAST_SUBSTEP_MIN, remaining);
+    remaining -= step;
+    if (beast.hunger > 0) {
+      beast.hunger = Math.max(0, beast.hunger - step / BEAST_HUNGER_MIN);
+      continue; // rassasiée : immobile
+    }
+    let best = null, bestD = Infinity;
+    for (const s of sources) {
+      if (dead.has(s)) continue;
+      const d = distKm(beast.x, beast.y, s.x, s.y);
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    if (!best) continue; // rien d'audible : à l'écoute, immobile
+    if (distKm(beast.x, beast.y, best.liveX, best.liveY) <= BEAST_STRIKE_KM) {
+      beast.hunger = 1; // repue
+      eaten = best.ref;
+      break;
+    }
+    if (bestD <= BEAST_STRIKE_KM) { dead.add(best); continue; } // visité : rien
+    const brg = bearingTo(beast.x, beast.y, best.x, best.y);
+    beast.heading = Math.round(brg);
+    const stepDeg = (BEAST_SPD_KMH / 60 / DEG_KM) * step;
+    const nx = beast.x + Math.sin((brg * Math.PI) / 180) * stepDeg;
+    const ny = beast.y + Math.cos((brg * Math.PI) / 180) * stepDeg;
+    if (!world.isLand(nx, ny)) { beast.x = nx; beast.y = ny; }
+    else beast.heading = (beast.heading + 180 + (Math.random() * 2 - 1) * WHALE_BOUNCE_JITTER_DEG + 360) % 360;
+  }
+  return eaten;
 }
 
 // ---------- Balise-vigie : signal de proximité + verrou + ancre ----------
@@ -1459,7 +1542,10 @@ export function advance(st, minutes, world) {
 // Retourne uniquement ce que le joueur voit : objets détectés avec distance
 // et azimut (au-delà de l'horizon : indicateur de bord). Ne contient jamais
 // la position vraie du navire — le client dessine autour de son estimé.
-export function computeView(st, world) {
+// `traces` : épaves et carcasses (Bête) — servies par le serveur depuis
+// race.beast. Elles se détectent comme tout objet physique : distance et
+// azimut depuis la position VRAIE (jamais de coordonnées absolues).
+export function computeView(st, world, traces = []) {
   const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
   const hour = (st.t / 60) % 24;
   const night = hour < 6 || hour >= 20;
@@ -1489,11 +1575,16 @@ export function computeView(st, world) {
   const port = portKm <= det("port") ? { km: portKm, az: azTo(world.PORT.x, world.PORT.y), beyond: portKm > HORIZON } : null;
   const contKm = distToLine(st.x, st.y, world.COAST) * DEG_KM;
   const coast = contKm <= det("continent");
+  const traceViews = [];
+  traces.forEach((t) => {
+    const km = kmOf(t.x, t.y);
+    if (km <= det("trace")) traceViews.push({ kind: t.kind, km, az: azTo(t.x, t.y), beyond: km > HORIZON });
+  });
 
   const antHeading = (st.heading + st.antOrient + 720) % 360;
   return {
     night, canSee, visKm, horizonKm: HORIZON,
-    islands, outposts, beacons, port, coast,
+    islands, outposts, beacons, port, coast, traces: traceViews,
     continentVerts: coast ? world.CONTINENT.verts : null,
     antHeading,
     windDir: w.windDir, windSpd: w.windSpd,
