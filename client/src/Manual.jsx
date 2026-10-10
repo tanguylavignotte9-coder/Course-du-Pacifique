@@ -471,7 +471,27 @@ export default function Manual({ onClose }) {
 
           </Sec>
 
-          <Sec t="13 · Annexe technique — équilibrage">
+                    <Sec t="13 · Poste de barre">
+            <P>
+              L'interface est le poste de barre du navire : vitres panoramiques orientables,
+              console de barre, table à cartes, poste radio, sonar, journal de bord. Tout y est
+              un objet physique cliquable ou glissable.
+            </P>
+            <Kv rows={[
+              ["Vitres panoramiques", "habillage PUR — aucune détection n'y est calculée : seules les détections du serveur (vue, navires) y sont dessinées, à leur gisement vrai"],
+              ["Source unique des observations visuelles", "le périscope — surface OU (plongée + périscope sorti) ; périscope rentré en plongée = volets anti-pression baissés, aucune vue extérieure"],
+              ["Moteur d'orientation de la cabine", "2 boutons cuivre (maintenir pour pivoter), verrou « sur le cap » : le regard suit le cap réel ; la rose de gisement, le triangle de cap et la ligne de foi restent solidaires du pont"],
+              ["Œilleton du périscope", "masque radial + lunette laiton + réticule croix + teinte cyan — le panorama de surface complet avec les détections du serveur"],
+              ["Volets anti-pression", "en plongée périscope rentré, lamelles cuivre ; la colonne d'eau et les bulles restent visibles à ~50 % entre les lames"],
+              ["Drisse", "haler la poignée vers le BAS hisse la voile (sens physique) — proportionnel, poignée en haut = 0 %"],
+              ["Levier d'immersion", "BINAIRE, sans crans : SURFACE = faire surface, PLONGÉE = plonger"],
+              ["Consignes continues", "roue, manettes, drisse, antennes : envoi throttlé à 10 Hz pendant le glissement + envoi final au relâchement"],
+              ["Compas de route", "repère rouge = cap réel, ambre = consigne, cyan à pointe creuse = regard de la cabine"],
+              ["Portées visuelles", `jour : ile ${fmt(VIS_BASE.ile)} km · nuit : ile ${fmt(VIS_NUIT.ile)} km (le client n'applique que la taille apparente ∝ 1/distance et la silhouette le jour / feu la nuit)`],
+              ["Phare la nuit", `feu visible à ${fmt(SHIP_VIS_LIGHT)} km`],
+            ]} />
+          </Sec>
+          <Sec t="14 · Annexe technique — équilibrage">
             <P>
               Toutes les valeurs de ce manuel proviennent des constantes du moteur, importées
               directement : elles reflètent l'équilibrage exact de la version en cours, sans copie
