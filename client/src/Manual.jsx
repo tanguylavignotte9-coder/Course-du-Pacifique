@@ -334,8 +334,9 @@ export default function Manual({ onClose }) {
             <P>
               Deux familles de signaux. Famille longue — pulsations des balises, réponses des
               stations, appels, messages et SOS de navires : force de 100 % à 0 % sur
-              {" "}{fmt(LONG_DECAY_KM)} km. Famille courte — signal de proximité des balises :
-              force de 100 % à 0 % sur {fmt(SHORT_DECAY_KM)} km. Formule unique :
+              {" "}{fmt(LONG_DECAY_KM)} km. Famille courte — signal de proximité des balises et
+              bafouillage VHF des pêcheurs : force de 100 % à 0 % sur {fmt(SHORT_DECAY_KM)} km.
+              Formule unique :
               force = 100 × (1 − distance/portée), arrondie.
             </P>
             <P>

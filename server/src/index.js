@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, coastStep, PATROL_BERTH_KM } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, coastStep, PATROL_BERTH_KM } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -20,6 +20,9 @@ const PERSIST_MS = MS_PER_MIN; // persistance disque : 1 min réelle
 // Bafouillage des pêcheurs (diffusion) : petites phrases de la vie à bord.
 // JAMAIS de coordonnées dans le texte (règle : pas de position vraie dans
 // les messages NPC — la position ne se révèle que par le geste du joueur).
+// Mélange de tons : classiques, humour et petits ennuis de bord (matériel,
+// mer, fatigue) — JAMAIS l'attaque de la Bête : ça, c'est le SOS, un
+// message long en famille longue, émis au moment de l'attaque.
 const FISHER_CHAT_LINES = [
   "Filets remontés, pas grand-chose dedans…",
   "Banc de maquereaux au nord, ça donne espoir.",
@@ -29,6 +32,16 @@ const FISHER_CHAT_LINES = [
   "Du poisson, du poisson, du poisson !",
   "Par ici la brume, on garde les yeux ouverts.",
   "Ce soir, soupe de poisson pour tout le monde.",
+  "Remontée des filets dans un quart d'heure, silence radio après.",
+  "Bonne pêche à toutes les unités de la zone.",
+  "Patience et malice — la pêche, c'est tout un art.",
+  "La mouette a piqué mon casse-croûte, la journée commence bien.",
+  "Ma femme dit que je parle plus aux poissons qu'à elle. Elle n'a pas tort.",
+  "Question du jour : le café d'hier, ça se boit encore ?",
+  "Le filet s'est déchiré sur un haut-fond, journée fichue.",
+  "Le treuil grippe encore — bricolage ce soir.",
+  "Une lame nous a emporté deux caisses, la mer ne rend rien.",
+  "La pompe de cale fatigue, on écope à la main.",
 ];
 const clamp01 = (v) => clamp(v, 0, 1);
 
@@ -330,14 +343,15 @@ ensureNpcs();
 let lastNpcT = gameMinutesNow();
 
 // Émission radio depuis un NPC vers tous les navires joueurs : LOI DE
-// RÉCEPTION UNIQUE (omni ≥ 75 % / directionnel ≥ sens), famille longue.
-// Sert au bafouillage, aux messages cargos et au SOS d'un bateau attaqué.
-const radioSend = (fromX, fromY, deliver) => {
+// RÉCEPTION UNIQUE (omni ≥ 75 % / directionnel ≥ sens), famille donnée
+// (défaut : longue). Sert au bafouillage (famille COURTE), aux messages
+// cargos et au SOS d'un bateau attaqué (famille longue — un SOS porte loin).
+const radioSend = (fromX, fromY, deliver, decayKm = LONG_DECAY_KM) => {
   for (const [oid, ost] of states) {
     const radioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
     if (!radioOk) continue;
     const dKm = distKm(ost.x, ost.y, fromX, fromY);
-    const strength = longStrengthKm(dKm);
+    const strength = strengthKm(dKm, decayKm);
     if (strength < RADIO_MIN_STRENGTH) continue;
     const cap = recvCapture(ost, bearingTo(ost.x, ost.y, fromX, fromY), strength);
     if (!cap) continue; // ne capte pas : silence
@@ -432,7 +446,8 @@ function npcPass(now) {
   lastNpcT = now;
   npcsTick(npcs, now - prev, world);
   // Bafouillage des pêcheurs : DIFFUSION lisible par tous à portée (avec
-  // code radio du pêcheur, aucune coordonnée).
+  // code radio du pêcheur, aucune coordonnée). Famille COURTE (500 km) :
+  // des blablas de VHF, ça ne porte pas loin — contrairement au SOS.
   for (const f of npcs.fishermen) {
     if (now < f.nextChatMin) continue;
     f.nextChatMin = nextNpcEventMin(now, FISHER_CHAT_MEAN_MIN);
@@ -440,7 +455,7 @@ function npcPass(now) {
     radioSend(f.x, f.y, (ost, cap) => {
       ost.notifSeq = (ost.notifSeq || 0) + 1;
       ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: `📻 Navire ${f.code} : « ${line} »`, kind: "info", cat: "radio" });
-    });
+    }, SHORT_DECAY_KM);
   }
   // Cargos : message PRIVÉ vers un autre cargo — les joueurs ne sont jamais
   // destinataires : ils ne capent que du BROUILLÉ (scrambledIntercept).

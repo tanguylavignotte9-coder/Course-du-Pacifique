@@ -377,6 +377,8 @@ function VhfKeypad({ dialed, onDial, onAction, radioOk, portee }) {
 // Reprise fidèle du proto : zoom molette/pincement centré curseur, pan par
 // glissement, outils punaise (1 clic) et mesure (2 clics) avec conversion
 // letterbox exacte, suppression, indicateur du 1er point.
+const TRACE_STEP_KM = 0.5; // trace de route : écart mini entre deux points (km, position estimée)
+const TRACE_MAX_PTS = 600; // trace de route : plafond mémoire (points, FIFO au-delà)
 function NavMap({ snap, sock }) {
   const S = 10;
   const MAP_PX = MAP * S;
@@ -391,6 +393,7 @@ function NavMap({ snap, sock }) {
   const [measurePend, setMeasurePend] = useState(null);
   const [planMode, setPlanMode] = useState(false);
   const [hoverPt, setHoverPt] = useState(null); // position curseur (degres) pour la previsualisation
+  const [trace, setTrace] = useState([]); // route parcourue (positions estimées, mémoire locale)
 
   const clampVB = (v) => ({ ...v, x: clamp(v.x, 0, MAP_PX - v.w), y: clamp(v.y, 0, MAP_PX - v.w) });
   // Zoom d'un facteur autour d'un point (coordonnées viewBox)
@@ -423,6 +426,18 @@ function NavMap({ snap, sock }) {
     return () => el.removeEventListener("wheel", onW);
   }, []);
 
+  // Route parcourue : un point de trace par tranche de distance parcourue
+  // (position ESTIMÉE), plafonné — mémoire locale au client, effaçable.
+  useEffect(() => {
+    const p = snap.player;
+    setTrace((tr) => {
+      const last = tr[tr.length - 1];
+      if (last && distKm(last[0], last[1], p.estX, p.estY) < TRACE_STEP_KM) return tr;
+      const pts = [...tr, [p.estX, p.estY]];
+      return pts.length > TRACE_MAX_PTS ? pts.slice(pts.length - TRACE_MAX_PTS) : pts;
+    });
+  }, [snap]);
+
   const world = snap.world;
   const player = snap.player;
   const kmOf = (a, b) => distKm(a[0], a[1], b[0], b[1]);
@@ -439,6 +454,7 @@ function NavMap({ snap, sock }) {
           disabled={player.wpIdx >= (player.waypoints || []).length && !player.autopilot}
           onClick={() => sock.command({ autopilot: !player.autopilot })}
         >🤖 Pilote auto{player.autopilot ? " — ACTIF" : ""}</Btn>
+        <Btn onClick={() => setTrace([])} disabled={trace.length === 0}>🧹 Effacer la trace</Btn>
       </div>
       {planMode && (
         <div className="grid grid-cols-2 gap-2">
@@ -641,13 +657,33 @@ function NavMap({ snap, sock }) {
             <text x={px(p.x)} y={py(p.y) - 5} fontSize="9" fill="#000000" fontWeight="bold" textAnchor="middle">{p.label}</text>
           </g>
         ))}
-        {/* Position estimée + incertitude + cap */}
+        {/* Route parcourue : pointillés gris (positions estimées, mémoire locale) */}
+        {trace.length > 1 && (
+          <polyline
+            points={trace.map(([tx, ty]) => `${px(tx)},${py(ty)}`).join(" ")}
+            fill="none" stroke="#94a3b8" strokeWidth="1.1" strokeDasharray="2 3" opacity="0.55"
+          />
+        )}
+        {/* Faisceau de l'antenne directionnelle : où l'on vise à l'écoute */}
+        {(() => {
+          const ah = (player.heading + player.antOrient + 720) % 360;
+          const hr = (player.antBeam / 2) * Math.PI / 180;
+          const L = 30; // longueur visuelle du cône (px)
+          return (
+            <path
+              transform={`translate(${px(player.estX)},${py(player.estY)}) rotate(${ah})`}
+              d={`M 0 0 L ${(-L * Math.sin(hr)).toFixed(1)} ${(-L * Math.cos(hr)).toFixed(1)} A ${L} ${L} 0 0 1 ${(L * Math.sin(hr)).toFixed(1)} ${(-L * Math.cos(hr)).toFixed(1)} Z`}
+              fill="rgba(192,132,252,0.15)" stroke="rgba(192,132,252,0.45)" strokeWidth="0.8"
+            />
+          );
+        })()}
+        {/* Position estimée + incertitude + consigne de cap */}
         <circle cx={px(player.estX)} cy={py(player.estY)} r={Math.max(1.2, (player.unc / DEG_KM) * S)} fill="rgba(220,38,38,0.18)" stroke="#dc2626" strokeWidth="0.8" />
         <circle cx={px(player.estX)} cy={py(player.estY)} r={2} fill="#dc2626" />
-        <line x1={px(player.estX)} y1={py(player.estY)} x2={px(player.estX) + Math.sin((player.heading * Math.PI) / 180) * 16} y2={py(player.estY) - Math.cos((player.heading * Math.PI) / 180) * 16} stroke="#dc2626" strokeWidth="1.2" />
+        <line x1={px(player.estX)} y1={py(player.estY)} x2={px(player.estX) + Math.sin((player.headingOrder * Math.PI) / 180) * 16} y2={py(player.estY) - Math.cos((player.headingOrder * Math.PI) / 180) * 16} stroke="#dc2626" strokeWidth="1.2" />
       </svg>
       <p className="text-[11px] leading-snug text-slate-500">
-        Terres et avant-postes connus · 🔴 position estimée — cercle = incertitude, échelle exacte · trait rouge = cap · molette/pincement : zoom (×1–×8) · glisser : déplacer
+        Terres et avant-postes connus · 🔴 position estimée — cercle = incertitude, échelle exacte · trait rouge = consigne de cap · cône violet = visée de l'antenne · pointillés gris = route parcourue (estimée) · molette/pincement : zoom (×1–×8) · glisser : déplacer
         {snap.exclusion && " · ⚠️ zone d'exclusion officielle (advisory)"}
         {player.pins.length > 0 && ` · 📌 ${player.pins.map((p) => `${p.label} ${p.y.toFixed(1)}°N ${p.x.toFixed(1)}°E`).join(" · ")}`}
       </p>
