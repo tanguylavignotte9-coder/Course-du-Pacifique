@@ -768,7 +768,7 @@ function SonarTile({ snap, cmd }) {
         >
           🔊 PING — {SONAR_PING_BATTERY_COST} % de batterie</button>
         <p className="text-[11px] leading-snug text-slate-500">
-          Écoute passive continue : gisement des bruits uniquement, aucune distance. Le ping révèle gisement + distance de tout ce qui traîne — sauf un navire immergé. Vos pings sont audibles par les autres jusqu'à {SOUND_DECAY_KM.ping} km.
+          Écoute passive continue : gisement des bruits uniquement, aucune distance. Le ping révèle gisement + distance de tout ce qui traîne — sauf un navire immergé. Vos pings sont audibles par les autres jusqu'à {SOUND_DECAY_KM.ping} km. La terre coupe le son : une île ou la côte masque une source.
           {!uw && " Sonar actif disponible en plongée uniquement."}
         </p>
       </div>

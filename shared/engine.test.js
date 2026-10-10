@@ -7,7 +7,7 @@ import {
   longStrengthKm, strengthKm, SHORT_DECAY_KM, recvCapture, detectBeacon, onProximityPing,
   proxPingIntervalS, captureBeacon, beaconLockTick, beaconLockSteer, pushBeaconSignal, SIGNAL_LOG_MAX, PROX_ARM_KM, ANCHOR_DROP_KM,
   scrambledIntercept, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT,
-  sonarPing, sonarPassiveHear, shipNoisy, nearestOnLine, soundTravelMin,
+  sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, nearestOnLine, soundTravelMin,
   SOUND_KMH, SOUND_DECAY_KM, SONAR_RANGE_KM, SONAR_PING_BATTERY_COST, SONAR_ECHO_PERSIST_S,
   generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, npcFishermanTick,
   NPC_FISHERMEN, NPC_CARGOS, NPC_WHALES, FISHER_RANGE_KM, FISHER_MIN_OFF_KM,
@@ -769,7 +769,12 @@ test("segDistKm : distance point-segment", () => {
 });
 
 // ---------- Sonar ----------
-const sonarStubWorld = { ISLANDS: [{ x: 30, y: 31 }], BEACONS: [], COAST: [[20, 30], [20, 20]] };
+const stubIle = { // île radiale de test : 2,5 km de rayon, à 50 km au nord de (30, 30)
+  x: 30, y: 31, maxR: 0.05,
+  radii: Array.from({ length: 8 }, (_, k) => ({ ang: (k * Math.PI) / 4, rad: 0.05 })),
+  verts: Array.from({ length: 8 }, (_, k) => { const a = (k * Math.PI) / 4; return [30 + Math.sin(a) * 0.05, 31 + Math.cos(a) * 0.05]; }),
+};
+const sonarStubWorld = { ISLANDS: [stubIle], BEACONS: [], COAST: [[20, 30], [20, 20]], isLand: () => false };
 function subAt(w) { // navire de test en plongée, à (30, 30)
   const st = newPlayerState(w);
   st.x = 30; st.y = 30; st.estX = 30; st.estY = 30;
@@ -829,9 +834,9 @@ test("sonarPing : coût 1 % + écho d'île (az, distance, arrivée = 2 × retard
 test("sonarPing : portée par type d'écho, navire immergé invisible", () => {
   const w = buildWorld(42);
   const st = subAt(w);
-  const farIle = { ISLANDS: [{ x: 30 + 310 / DEG_KM, y: 30 }], BEACONS: [], COAST: [[20, 30], [20, 20]] };
+  const farIle = { ISLANDS: [{ x: 30 + 310 / DEG_KM, y: 30 }], BEACONS: [], COAST: [[20, 30], [20, 20]], isLand: () => false };
   assert.ok(!sonarPing(st, farIle).echoes.some((e) => e.kind === "ile"), "île à 310 km : aucun écho (portée 300)");
-  const farBalise = { ISLANDS: [], BEACONS: [{ x: 30 + 125 / DEG_KM, y: 30 }], COAST: [[20, 30], [20, 20]] };
+  const farBalise = { ISLANDS: [], BEACONS: [{ x: 30 + 125 / DEG_KM, y: 30 }], COAST: [[20, 30], [20, 20]], isLand: () => false };
   assert.ok(!sonarPing(st, farBalise).echoes.some((e) => e.kind === "balise"), "balise à 125 km : aucun écho (portée 100)");
   const others = [
     { x: 30.5, y: 30, location: "surface" },     // 25 km, en surface
@@ -857,6 +862,29 @@ test("sonarPassiveHear : gisement seul, décroissance par type de bruit", () => 
   assert.equal(sonarPassiveHear(st, 30, 30 + 250 / DEG_KM, SOUND_DECAY_KM.ping).strength, 50, "ping à 250 km : 50 % (décroissance 500)");
   assert.equal(sonarPassiveHear(st, 30, 30 + 150 / DEG_KM, SOUND_DECAY_KM.biologique), null, "chant à 150 km : silence (décroissance 100)");
   assert.equal(sonarPassiveHear(st, 30 + 100 / DEG_KM, 30).bearing, 90, "gisement est");
+});
+
+test("soundBlocked : la terre coupe, le champ libre passe", () => {
+  const wall = { isLand: (x, y) => x > 30.35 && x < 30.65 && Math.abs(y - 30) < 0.5 }; // mur plein Est à 17,5–32,5 km
+  assert.equal(soundBlocked(wall, 30, 30, 31, 30), true, "un mur sur le trajet coupe");
+  assert.equal(soundBlocked(wall, 30, 30, 31, 30, 4.9), true, "la marge de cible ne sauve pas un mur à mi-trajet");
+  assert.equal(soundBlocked(wall, 30, 30, 30, 29), false, "au sud du mur : champ libre");
+  const open = { isLand: () => false };
+  assert.equal(soundBlocked(open, 30, 30, 40, 40), false, "aucune terre : libre");
+});
+
+test("champ libre : la terre masque les bruits et les échos, l'eau libre entend", () => {
+  const w = buildWorld(42);
+  const st = subAt(w);
+  const clear = { ISLANDS: [stubIle], BEACONS: [], COAST: [[20, 30], [20, 20]], isLand: () => false };
+  const walled = { ISLANDS: [stubIle], BEACONS: [], COAST: [[20, 30], [20, 20]], isLand: (x, y) => (y > 30.35 && y < 30.65 && Math.abs(x - 30) < 0.5) || (x > 30.35 && x < 30.65 && Math.abs(y - 30) < 0.5) }; // mur au nord (île) + à l'est (source passive)
+  // ping : l'écho d'île à 50 km disparaît derrière le mur
+  assert.ok(sonarPing(st, clear).echoes.some((e) => e.kind === "ile"), "champ libre : l'île rebondit");
+  assert.ok(!sonarPing(st, walled).echoes.some((e) => e.kind === "ile"), "mur : l'écho de l'île disparaît");
+  // passif : même règle pour un moteur à 50 km plein Est
+  assert.equal(sonarPassiveHear(st, 31, 30, SOUND_DECAY_KM.moteur, walled), null, "source derrière le mur : silence");
+  assert.ok(sonarPassiveHear(st, 31, 30, SOUND_DECAY_KM.moteur, clear).strength > 0, "champ libre : entendu");
+  assert.ok(sonarPassiveHear(st, 31, 30, SOUND_DECAY_KM.moteur).strength > 0, "sans monde fourni (legacy) : pas d'occlusion");
 });
 
 test("shipNoisy : moteur diesel en surface seulement", () => {

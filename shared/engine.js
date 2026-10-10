@@ -692,6 +692,8 @@ export function scrambledIntercept(strength, source, side) {
 // Les signaux se déplacent à la vitesse du son dans l'eau : bruits et échos
 // arrivent avec leur vrai retard (aller-retour 300 km ≈ 6,7 min).
 // Un écho/ping entendu s'affiche SONAR_ECHO_PERSIST_S secondes.
+// CHAMP LIBRE : le son sous l'eau ne traverse ni les îles ni le continent —
+// un trajet d'eau libre est requis entre la source et le récepteur.
 export const SOUND_KMH = 5400;            // vitesse du son dans l'eau ≈ 1500 m/s
 export const SOUND_DECAY_KM = {           // bruits : décroissance de la force PAR TYPE
   moteur: 200,      // moteur diesel d'un navire en surface (joueurs)
@@ -711,6 +713,24 @@ export const SONAR_ECHO_PERSIST_S = 10;   // affichage d'un écho/ping entendu (
 
 // Retard de propagation : minutes de jeu pour que le son parcoure dKm.
 export const soundTravelMin = (dKm) => dKm / (SOUND_KMH / 60);
+
+// Champ libre : la terre coupe le son. Le trajet est échantillonné par pas
+// fixes ; les extrémités ne comptent pas (l'auditeur est en mer, une cible
+// d'écho est un miroir). `marginKm` : distance conservée avant la CIBLE
+// quand elle touche la terre (rebond d'île ou de côte) — on échantillonne
+// l'eau, pas le mur qui renvoie l'écho.
+export const SOUND_OCCLUSION_STEP_KM = 10; // pas d'échantillonnage du champ libre (km)
+
+export function soundBlocked(world, x1, y1, x2, y2, marginKm = 0) {
+  const dKm = distKm(x1, y1, x2, y2);
+  const usable = dKm - marginKm;
+  const steps = Math.ceil(usable / SOUND_OCCLUSION_STEP_KM);
+  for (let k = 1; k < steps; k++) {
+    const t = (k * SOUND_OCCLUSION_STEP_KM) / dKm;
+    if (world.isLand(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t)) return true;
+  }
+  return false;
+}
 
 // Un navire fait du BRUIT (hydrophone des tiers) si son moteur diesel
 // tourne en surface. Voile, électrique, ancre : silencieux.
@@ -736,10 +756,13 @@ export function nearestOnLine(px, py, pts) {
 // `srcX/srcY` = position de la source AU MOMENT DE L'ÉMISSION : le retard de
 // propagation est appliqué PAR L'APPELANT (le serveur tient l'historique).
 // `decayKm` : décroissance propre au type de bruit (défaut : moteur).
-export function sonarPassiveHear(listenerSt, srcX, srcY, decayKm = SOUND_DECAY_KM.moteur) {
+// `world` : si fourni, la terre coupe — un champ libre d'eau est requis
+// entre la source et l'auditeur (îles, continent).
+export function sonarPassiveHear(listenerSt, srcX, srcY, decayKm = SOUND_DECAY_KM.moteur, world = null) {
   const dKm = distKm(listenerSt.x, listenerSt.y, srcX, srcY);
   const strength = strengthKm(dKm, decayKm);
   if (strength <= 0) return null;
+  if (world && soundBlocked(world, listenerSt.x, listenerSt.y, srcX, srcY)) return null;
   return { bearing: Math.round(bearingTo(listenerSt.x, listenerSt.y, srcX, srcY)), strength };
 }
 
@@ -750,6 +773,8 @@ export function sonarPassiveHear(listenerSt, srcX, srcY, decayKm = SOUND_DECAY_K
 // (minutes de jeu : t + 2 × retard du son). Le serveur n'expose JAMAIS
 // x/y au client (azimut + distance seulement). `others` : navires (surface
 // uniquement) ; `biologics` : baleines — corps biologiques qui rebondissent.
+// La terre coupe : chaque écho exige un champ libre d'eau entre le navire et
+// sa cible (le bord de l'île/de la côte est le MIROIR, pas un obstacle).
 export function sonarPing(st, world, others = [], biologics = []) {
   if (st.location !== "underwater")
     return { ok: false, error: "Sonar actif disponible en plongée uniquement." };
@@ -757,19 +782,24 @@ export function sonarPing(st, world, others = [], biologics = []) {
     return { ok: false, error: `Batteries insuffisantes (${SONAR_PING_BATTERY_COST} % par ping).` };
   st.battery = Math.max(0, st.battery - SONAR_PING_BATTERY_COST);
   const echoes = [];
-  const push = (kind, x, y) => {
+  const push = (kind, x, y, marginKm = 0) => {
     const dKm = distKm(st.x, st.y, x, y);
     if (dKm > SONAR_RANGE_KM[kind] || dKm <= 0) return;
+    if (soundBlocked(world, st.x, st.y, x, y, marginKm)) return; // la terre coupe le trajet
     echoes.push({
       kind, x, y, dKm,
       az: Math.round(bearingTo(st.x, st.y, x, y)),
       arriveMin: st.t + 2 * soundTravelMin(dKm),
     });
   };
-  for (const i of world.ISLANDS) push("ile", i.x, i.y);
+  for (const i of world.ISLANDS) {
+    if (distKm(st.x, st.y, i.x, i.y) > SONAR_RANGE_KM.ile) continue;
+    // miroir : on échantillonne l'eau jusqu'au BORD de l'île, pas son centre
+    push("ile", i.x, i.y, isleRadAt(i, Math.atan2(st.x - i.x, st.y - i.y)) * DEG_KM);
+  }
   for (const b of world.BEACONS) push("balise", b.x, b.y); // capturée ou non : l'objet existe
   const coast = nearestOnLine(st.x, st.y, world.COAST);
-  push("cote", coast[0], coast[1]);
+  push("cote", coast[0], coast[1], 1); // 1 km de marge : le point de côte est le miroir
   for (const o of others) {
     if (o.location !== "surface") continue; // navire immergé : invisible au sonar actif
     push("navire", o.x, o.y);

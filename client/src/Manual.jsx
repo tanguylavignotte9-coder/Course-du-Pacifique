@@ -160,6 +160,7 @@ const ANNEX = [
       ["Coût d'un ping", fmt(SONAR_PING_BATTERY_COST) + " % de batterie"],
       ["Affichage d'un écho", fmt(SONAR_ECHO_PERSIST_S) + " s"],
       ["Retard plein portée", "aller-retour " + fmt(SONAR_MAX_RANGE_KM) + " km ≈ " + fmt(ECHO_FULL_MIN) + " min"],
+      ["Champ libre", "le son ne traverse ni les îles ni le continent — un trajet d'eau libre est requis entre source et récepteur"],
     ],
   },
   {
@@ -425,7 +426,8 @@ export default function Manual({ onClose }) {
               {" "}{fmt(SOUND_DECAY_KM.moteur)} km, pêcheur en transit {fmt(SOUND_DECAY_KM.pecheur)} km,
               cargo {fmt(SOUND_DECAY_KM.cargo)} km, ping {fmt(SOUND_DECAY_KM.ping)} km, chant
               biologique {fmt(SOUND_DECAY_KM.biologique)} km. Un navire à la voile ou en
-              propulsion électrique est silencieux.
+              propulsion électrique est silencieux. Et la terre est un mur : un bruit ne s'entend
+              qu'en champ libre — une île ou le continent entre la source et l'auditeur coupe le son.
             </P>
             <P>
               Actif : un bouton, en plongée uniquement. Portée par type d'écho : îles et côte
@@ -433,7 +435,8 @@ export default function Manual({ onClose }) {
               balises {fmt(SONAR_RANGE_KM.balise)} km, baleines {fmt(SONAR_RANGE_KM.biologique)} km.
               Coût {" "}{fmt(SONAR_PING_BATTERY_COST)} % de batterie. Tout ce qui traîne rebondit — îles,
               côtes, balises, navires en surface — et s'affiche en formes pendant
-              {" "}{fmt(SONAR_ECHO_PERSIST_S)} s, avec gisement et distance.
+              {" "}{fmt(SONAR_ECHO_PERSIST_S)} s, avec gisement et distance. Chaque écho exige
+              lui aussi un trajet d'eau libre entre le navire et sa cible.
             </P>
             <P>
               Les sons voyagent à ≈ {fmt(SOUND_KMH)} km/h dans l'eau : un écho plein portée
