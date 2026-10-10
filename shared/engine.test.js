@@ -777,10 +777,21 @@ function subAt(w) { // navire de test en plongée, à (30, 30)
   return st;
 }
 
-test("sonar : constantes (son 5400 km/h, décroissance 500 km, portée 200 km, coût 1 %)", () => {
+test("sonar : constantes (son 5400 km/h, décroissance par type, portée par écho, coût 1 %)", () => {
   assert.equal(SOUND_KMH, 5400);          // ≈ 1500 m/s
-  assert.equal(SOUND_DECAY_KM, 500);
-  assert.equal(SONAR_RANGE_KM, 200);
+  assert.equal(SOUND_DECAY_KM.moteur, 200);
+  assert.equal(SOUND_DECAY_KM.pecheur, 150);
+  assert.equal(SOUND_DECAY_KM.cargo, 400);
+  assert.equal(SOUND_DECAY_KM.patrouille, 500);
+  assert.equal(SOUND_DECAY_KM.ping, 500);
+  assert.equal(SOUND_DECAY_KM.biologique, 100);
+  assert.equal(SOUND_DECAY_KM.inconnu, 500);
+  assert.equal(SOUND_DECAY_KM.canon, 750);
+  assert.equal(SONAR_RANGE_KM.ile, 300);
+  assert.equal(SONAR_RANGE_KM.cote, 300);
+  assert.equal(SONAR_RANGE_KM.balise, 100);
+  assert.equal(SONAR_RANGE_KM.navire, 150);
+  assert.equal(SONAR_RANGE_KM.biologique, 100);
   assert.equal(SONAR_PING_BATTERY_COST, 1);
   assert.equal(SONAR_ECHO_PERSIST_S, 10);
 });
@@ -815,11 +826,13 @@ test("sonarPing : coût 1 % + écho d'île (az, distance, arrivée = 2 × retard
   assert.ok(Math.abs(e.arriveMin - (100 + 2 * soundTravelMin(50))) < 1e-9, "retour = 2 × retard du son");
 });
 
-test("sonarPing : rien au-delà de 200 km, navire immergé invisible", () => {
+test("sonarPing : portée par type d'écho, navire immergé invisible", () => {
   const w = buildWorld(42);
   const st = subAt(w);
-  const far = { ISLANDS: [{ x: 30 + 210 / DEG_KM, y: 30 }], BEACONS: [], COAST: [[20, 30], [20, 20]] };
-  assert.ok(!sonarPing(st, far).echoes.some((e) => e.kind === "ile"), "île à 210 km : aucun écho");
+  const farIle = { ISLANDS: [{ x: 30 + 310 / DEG_KM, y: 30 }], BEACONS: [], COAST: [[20, 30], [20, 20]] };
+  assert.ok(!sonarPing(st, farIle).echoes.some((e) => e.kind === "ile"), "île à 310 km : aucun écho (portée 300)");
+  const farBalise = { ISLANDS: [], BEACONS: [{ x: 30 + 125 / DEG_KM, y: 30 }], COAST: [[20, 30], [20, 20]] };
+  assert.ok(!sonarPing(st, farBalise).echoes.some((e) => e.kind === "balise"), "balise à 125 km : aucun écho (portée 100)");
   const others = [
     { x: 30.5, y: 30, location: "surface" },     // 25 km, en surface
     { x: 30.4, y: 30, location: "underwater" },   // 20 km, immergé
@@ -827,16 +840,23 @@ test("sonarPing : rien au-delà de 200 km, navire immergé invisible", () => {
   const nav = sonarPing(st, sonarStubWorld, others).echoes.filter((e) => e.kind === "navire");
   assert.equal(nav.length, 1, "un seul navire rebondit");
   assert.ok(Math.abs(nav[0].dKm - 25) < 0.01, "c'est le navire de surface (l'immergé est invisible)");
+  assert.ok(
+    !sonarPing(st, sonarStubWorld, [{ x: 30 + 175 / DEG_KM, y: 30, location: "surface" }])
+      .echoes.some((e) => e.kind === "navire"),
+    "navire à 175 km : aucun écho (portée 150)"
+  );
 });
 
-test("sonarPassiveHear : gisement seul, force uniforme, silence à 500 km", () => {
+test("sonarPassiveHear : gisement seul, décroissance par type de bruit", () => {
   const w = buildWorld(42);
   const st = subAt(w);
-  const h250 = sonarPassiveHear(st, 30, 30 + 250 / DEG_KM);
-  assert.ok(h250 && h250.bearing === 0 && h250.strength === 50, "250 km : plein nord, 50 %");
-  assert.equal("distKm" in (h250 || {}), false, "aucune distance en passif");
-  assert.equal(sonarPassiveHear(st, 30, 30 + 500 / DEG_KM), null, "500 km : silence");
-  assert.equal(sonarPassiveHear(st, 30 + 400 / DEG_KM, 30).bearing, 90, "gisement est");
+  const h100 = sonarPassiveHear(st, 30, 30 + 100 / DEG_KM); // défaut : moteur (200 km)
+  assert.ok(h100 && h100.bearing === 0 && h100.strength === 50, "moteur à 100 km : plein nord, 50 %");
+  assert.equal("distKm" in (h100 || {}), false, "aucune distance en passif");
+  assert.equal(sonarPassiveHear(st, 30, 30 + 250 / DEG_KM), null, "moteur à 250 km : silence (décroissance 200)");
+  assert.equal(sonarPassiveHear(st, 30, 30 + 250 / DEG_KM, SOUND_DECAY_KM.ping).strength, 50, "ping à 250 km : 50 % (décroissance 500)");
+  assert.equal(sonarPassiveHear(st, 30, 30 + 150 / DEG_KM, SOUND_DECAY_KM.biologique), null, "chant à 150 km : silence (décroissance 100)");
+  assert.equal(sonarPassiveHear(st, 30 + 100 / DEG_KM, 30).bearing, 90, "gisement est");
 });
 
 test("shipNoisy : moteur diesel en surface seulement", () => {
@@ -1109,7 +1129,8 @@ test("patrouilleur : constantes (40 km/h, canon 2 min, engagement 10 min, répit
   assert.equal(PATROL_DETECT_COOLDOWN_MIN, 240);
   assert.equal(PATROL_DETECT_R_KM, 30);
   assert.equal(PATROL_TICK_MAX_MIN, 120);
-  assert.equal(CANNON_DECAY_KM, 1000);
+  assert.equal(CANNON_DECAY_KM, 750);
+  assert.equal(CANNON_DECAY_KM, SOUND_DECAY_KM.canon, "DRY : le canon vit dans SOUND_DECAY_KM");
 });
 
 test("patrolDetectPerMin : effort montant avec la fouille, plafonné", () => {

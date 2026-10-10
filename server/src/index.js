@@ -155,25 +155,34 @@ function sonarPassiveFor(id) {
     d = distKm(me.x, me.y, p.x, p.y);
     p = posAtT(hist, me.t - soundTravelMin(d));
     if (!p) continue;
-    const heard = sonarPassiveHear(me, p.x, p.y);
+    const heard = sonarPassiveHear(me, p.x, p.y, SOUND_DECAY_KM.moteur);
     if (heard) out.push({ kind: "moteur", bearing: heard.bearing, strength: heard.strength });
   }
   // Bruits moteurs des NPC (hydrophone) : cargo en traversée, pêcheur en
   // transit — position RETARDÉE du son (npcBackPos), gisement + force.
   const npcs = race.npcs;
   if (npcs) {
-    for (const n of [...npcs.cargos, ...npcs.fishermen]) {
-      if (!npcNoisy(n)) continue;
-      const d = distKm(me.x, me.y, n.x, n.y);
-      const p = npcBackPos(n, soundTravelMin(d));
-      const heard = sonarPassiveHear(me, p.x, p.y);
+    // décroissance PAR TYPE : un pêcheur en transit et un cargo ne portent pas
+    // à la même distance — l'hydrophone les entend chacun à sa portée propre.
+    for (const f of npcs.fishermen) {
+      if (!npcNoisy(f)) continue;
+      const d = distKm(me.x, me.y, f.x, f.y);
+      const p = npcBackPos(f, soundTravelMin(d));
+      const heard = sonarPassiveHear(me, p.x, p.y, SOUND_DECAY_KM.pecheur);
+      if (heard) out.push({ kind: "moteur", bearing: heard.bearing, strength: heard.strength });
+    }
+    for (const c of npcs.cargos) {
+      if (!npcNoisy(c)) continue;
+      const d = distKm(me.x, me.y, c.x, c.y);
+      const p = npcBackPos(c, soundTravelMin(d));
+      const heard = sonarPassiveHear(me, p.x, p.y, SOUND_DECAY_KM.cargo);
       if (heard) out.push({ kind: "moteur", bearing: heard.bearing, strength: heard.strength });
     }
   }
   // Le patrouilleur officiel : moteur allumé en permanence — c'est une
   // vraie coque de cent mètres, on l'entend venir (et on la VOIT de jour).
   if (race.patrol) {
-    const heard = sonarPassiveHear(me, race.patrol.x, race.patrol.y);
+    const heard = sonarPassiveHear(me, race.patrol.x, race.patrol.y, SOUND_DECAY_KM.patrouille);
     if (heard) out.push({ kind: "moteur", bearing: heard.bearing, strength: heard.strength });
   }
   for (const ev of (sonarHeard.get(id) || [])) {
@@ -376,10 +385,11 @@ let lastBeastT = gameMinutesNow();
 // INCONNU à portée d'écoute alimente directement la carte de la compagnie
 // — un gisement depuis une position connue (triangulation gratuite,
 // réseau dense : la baseline officielle de l'estimation).
-function emitSoundToAll(x, y, kind, nowMin, decayKm = SOUND_DECAY_KM) {
+function emitSoundToAll(x, y, kind, nowMin, decayKm) {
+  const decay = decayKm ?? SOUND_DECAY_KM[kind]; // décroissance du type de bruit
   for (const [oid, ost] of states) {
     const dKm = distKm(ost.x, ost.y, x, y);
-    const strength = strengthKm(dKm, decayKm);
+    const strength = strengthKm(dKm, decay);
     if (strength <= 0) continue;
     const q = bioPending.get(oid) || [];
     q.push({
@@ -397,7 +407,7 @@ function emitSoundToAll(x, y, kind, nowMin, decayKm = SOUND_DECAY_KM) {
       race.evidence.push({
         k: "cry", x: b.x, y: b.y,
         brg: Math.round(bearingTo(b.x, b.y, x, y)),
-        str: strengthKm(dKm, SOUND_DECAY_KM), t: nowMin,
+        str: strengthKm(dKm, decay), t: nowMin,
       });
     }
     const patrol = race.patrol;
@@ -405,7 +415,7 @@ function emitSoundToAll(x, y, kind, nowMin, decayKm = SOUND_DECAY_KM) {
       race.evidence.push({
         k: "cry", x: patrol.x, y: patrol.y,
         brg: Math.round(bearingTo(patrol.x, patrol.y, x, y)),
-        str: strengthKm(distKm(patrol.x, patrol.y, x, y), SOUND_DECAY_KM), t: nowMin,
+        str: strengthKm(distKm(patrol.x, patrol.y, x, y), decay), t: nowMin,
       });
     }
   }
@@ -459,22 +469,22 @@ function beastPass(now) {
   ensureBeast();
   const beast = race.beast;
   const npcs = race.npcs;
-  // ouïe : bruits moteurs NPC dans les 500 km + chants récents (mémoire)
+  // ouïe : bruits moteurs NPC à leur portée PAR TYPE + chants récents (mémoire)
   for (let i = recentSongs.length - 1; i >= 0; i--) {
     if (now - recentSongs[i].t > BEAST_SONG_MEMORY_MIN) recentSongs.splice(i, 1);
   }
   const sources = [];
   if (npcs) {
     for (const f of npcs.fishermen) {
-      if (!npcNoisy(f) || distKm(beast.x, beast.y, f.x, f.y) >= SOUND_DECAY_KM) continue;
+      if (!npcNoisy(f) || distKm(beast.x, beast.y, f.x, f.y) >= SOUND_DECAY_KM.pecheur) continue;
       sources.push({ x: f.x, y: f.y, liveX: f.x, liveY: f.y, ref: f });
     }
     for (const c of npcs.cargos) {
-      if (!npcNoisy(c) || distKm(beast.x, beast.y, c.x, c.y) >= SOUND_DECAY_KM) continue;
+      if (!npcNoisy(c) || distKm(beast.x, beast.y, c.x, c.y) >= SOUND_DECAY_KM.cargo) continue;
       sources.push({ x: c.x, y: c.y, liveX: c.x, liveY: c.y, ref: c });
     }
     for (const s of recentSongs) {
-      if (distKm(beast.x, beast.y, s.x, s.y) >= SOUND_DECAY_KM) continue;
+      if (distKm(beast.x, beast.y, s.x, s.y) >= SOUND_DECAY_KM.biologique) continue;
       sources.push({ x: s.x, y: s.y, liveX: s.ref.x, liveY: s.ref.y, ref: s.ref });
     }
   }
@@ -1190,7 +1200,7 @@ wss.on("connection", (ws, req) => {
           for (const [oid, ost] of states) {
             if (oid === id) continue;
             const d = distKm(ost.x, ost.y, st.x, st.y);
-            const strength = strengthKm(d, SOUND_DECAY_KM);
+            const strength = strengthKm(d, SOUND_DECAY_KM.ping);
             if (strength <= 0) continue;
             const q = sonarNoisePending.get(oid) || [];
             q.push({

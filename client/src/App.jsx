@@ -674,8 +674,9 @@ function SonarTile({ snap, cmd }) {
   const p = snap.player;
   const sonar = snap.sonar || { passive: [], echoes: [] };
   const uw = p.location === "underwater";
-  const R = 96; // rayon du disque (viewBox 200) — le bord = SONAR_RANGE_KM
-  const kmPx = (km) => (Math.min(km, SONAR_RANGE_KM) / SONAR_RANGE_KM) * (R - 8);
+  const RMAX = Math.max(...Object.values(SONAR_RANGE_KM)); // portée max du ping (par type d'écho)
+  const R = 96; // rayon du disque (viewBox 200) — le bord = RMAX
+  const kmPx = (km) => (Math.min(km, RMAX) / RMAX) * (R - 8);
   const pos = (az, r) => {
     const a = (az * Math.PI) / 180;
     return [100 + Math.sin(a) * r, 100 - Math.cos(a) * r];
@@ -744,7 +745,7 @@ function SonarTile({ snap, cmd }) {
             le cadran reste nord en haut, le pictogramme pivote au cap réel. */}
         <path d="M 0 -7 L 5 6 L -5 6 Z" transform={`translate(100 100) rotate(${p.heading})`} fill="#38bdf8" stroke="#e0f2fe" strokeWidth="0.7" />
         <text x="100" y="188" fontSize="6.5" fill="#475569" textAnchor="middle">
-          cercle = {SONAR_RANGE_KM} km · bruits {SOUND_DECAY_KM} km
+          cercle = {RMAX} km · portées par type
         </text>
       </svg>
       <div className="space-y-2">
@@ -767,7 +768,7 @@ function SonarTile({ snap, cmd }) {
         >
           🔊 PING — {SONAR_PING_BATTERY_COST} % de batterie</button>
         <p className="text-[11px] leading-snug text-slate-500">
-          Écoute passive continue : gisement des bruits uniquement, aucune distance. Le ping révèle gisement + distance de tout ce qui traîne — sauf un navire immergé. Vos pings sont audibles par les autres jusqu'à {SOUND_DECAY_KM} km.
+          Écoute passive continue : gisement des bruits uniquement, aucune distance. Le ping révèle gisement + distance de tout ce qui traîne — sauf un navire immergé. Vos pings sont audibles par les autres jusqu'à {SOUND_DECAY_KM.ping} km.
           {!uw && " Sonar actif disponible en plongée uniquement."}
         </p>
       </div>

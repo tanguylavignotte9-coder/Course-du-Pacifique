@@ -680,20 +680,32 @@ export function scrambledIntercept(strength, source, side) {
 // DEUX CANAUX, une seule tuile :
 // - ÉCOUTE PASSIVE (hydrophone) : continue, gratuite, en surface comme en
 //   plongée. GISEMENT SEUL, aucune distance : icône au bord du cercle. Force
-//   UNIFORME pour tous les bruits : 100 % -> 0 % sur SOUND_DECAY_KM.
+//   PAR TYPE DE BRUIT : 100 % -> 0 % sur SOUND_DECAY_KM[type] (chaque type
+//   de bruit porte à sa propre distance).
 //   Catalogue v1 : moteur diesel d'un navire en surface ; ping actif d'un
 //   autre navire (événement). (Bête et warship : plus tard, même mécanique.)
 // - PING ACTIF : UN clic = UN ping (pas de mode continu), plongée uniquement,
 //   SONAR_PING_BATTERY_COST % de batterie. Tout ce qui traîne dans
-//   SONAR_RANGE_KM rebondit : îles, côte, balises (capturées ou non),
+//   SONAR_RANGE_KM[kind] rebondit : îles, côte, balises (capturées ou non),
 //   navires EN SURFACE. Un navire IMMERGÉ est totalement invisible (et
 //   silencieux : il ne se trahit que s'il ping lui-même).
 // Les signaux se déplacent à la vitesse du son dans l'eau : bruits et échos
-// arrivent avec leur vrai retard (aller-retour 200 km ≈ 4,4 min).
+// arrivent avec leur vrai retard (aller-retour 300 km ≈ 6,7 min).
 // Un écho/ping entendu s'affiche SONAR_ECHO_PERSIST_S secondes.
 export const SOUND_KMH = 5400;            // vitesse du son dans l'eau ≈ 1500 m/s
-export const SOUND_DECAY_KM = 500;        // bruits : force uniforme, 0 % à 500 km
-export const SONAR_RANGE_KM = 200;        // portée du ping actif
+export const SOUND_DECAY_KM = {           // bruits : décroissance de la force PAR TYPE
+  moteur: 200,      // moteur diesel d'un navire en surface (joueurs)
+  pecheur: 150,     // pêcheur NPC en transit (silencieux à la pêche)
+  cargo: 400,       // cargo NPC en traversée
+  patrouille: 500,  // frégate officielle : moteur allumé en permanence
+  ping: 500,        // ping actif d'un autre navire (événement)
+  biologique: 100,  // chant de baleine
+  inconnu: 500,     // son inconnu
+  canon: 750,       // tirs lointains
+};
+export const SONAR_RANGE_KM = {           // portée du ping actif PAR TYPE D'ÉCHO
+  ile: 300, cote: 300, balise: 100, navire: 150, biologique: 100,
+};
 export const SONAR_PING_BATTERY_COST = 1; // % de batterie par ping
 export const SONAR_ECHO_PERSIST_S = 10;   // affichage d'un écho/ping entendu (s)
 
@@ -723,9 +735,10 @@ export function nearestOnLine(px, py, pts) {
 // Écoute passive d'une source : GISEMENT + FORCE seulement (aucune distance).
 // `srcX/srcY` = position de la source AU MOMENT DE L'ÉMISSION : le retard de
 // propagation est appliqué PAR L'APPELANT (le serveur tient l'historique).
-export function sonarPassiveHear(listenerSt, srcX, srcY) {
+// `decayKm` : décroissance propre au type de bruit (défaut : moteur).
+export function sonarPassiveHear(listenerSt, srcX, srcY, decayKm = SOUND_DECAY_KM.moteur) {
   const dKm = distKm(listenerSt.x, listenerSt.y, srcX, srcY);
-  const strength = strengthKm(dKm, SOUND_DECAY_KM);
+  const strength = strengthKm(dKm, decayKm);
   if (strength <= 0) return null;
   return { bearing: Math.round(bearingTo(listenerSt.x, listenerSt.y, srcX, srcY)), strength };
 }
@@ -746,7 +759,7 @@ export function sonarPing(st, world, others = [], biologics = []) {
   const echoes = [];
   const push = (kind, x, y) => {
     const dKm = distKm(st.x, st.y, x, y);
-    if (dKm > SONAR_RANGE_KM || dKm <= 0) return;
+    if (dKm > SONAR_RANGE_KM[kind] || dKm <= 0) return;
     echoes.push({
       kind, x, y, dKm,
       az: Math.round(bearingTo(st.x, st.y, x, y)),
@@ -1262,7 +1275,7 @@ export const BEAST_FLEE_LONG_KMH = 60;          // fuite longue : 60 km/h…
 export const BEAST_FLEE_LONG_MIN = 240;         // …pendant 4 h
 export const BEAST_FLEE_SHORT_KM = 50;          // fuite courte : 50 km d'un coup
 export const BEAST_FLEE_SILENCE_MIN = 240;      // plus un cri après un engagement
-export const CANNON_DECAY_KM = 1000;             // le canon s'entend de très loin
+export const CANNON_DECAY_KM = SOUND_DECAY_KM.canon; // le canon s'entend de très loin (DRY)
 
 // Effort de détection par minute de fouille : MONTANT avec le temps passé
 // à chercher. La créature ne bouge pas hors chasse (immobile, immergée) —

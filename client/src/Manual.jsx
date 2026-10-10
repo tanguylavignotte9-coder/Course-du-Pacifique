@@ -27,13 +27,14 @@ import {
   RARITY_MIN, RARITY_STYLE, VIS_BASE, VIS_NUIT,
 } from "../../shared/engine.js";
 
-const fmt = (v) => (typeof v === "number" ? String(v).replace(".", ",") : String(v));
+const fmt = (v) => (typeof v === "number" ? String(Math.round(v * 10) / 10).replace(".", ",") : String(v));
 // Portées d'émergence dérivées des constantes (jamais figées)
 const OMNI_LONG_KM = LONG_DECAY_KM * (1 - OMNI_DETECT_PCT / 100);   // lecture omni, famille longue
 const OMNI_SHORT_KM = SHORT_DECAY_KM * (1 - OMNI_DETECT_PCT / 100); // lecture omni, famille courte
 const DIR_LONG_KM = LONG_DECAY_KM * (1 - dirSensitivity(1) / 100);  // lecture directionnelle 1°, famille longue
-const ECHO_FULL_MIN = (2 * SONAR_RANGE_KM) / (SOUND_KMH / 60);      // aller-retour plein portée
-const SOUND_FULL_MIN = SOUND_DECAY_KM / (SOUND_KMH / 60);          // bruit au bord de la décroissance
+const SONAR_MAX_RANGE_KM = Math.max(...Object.values(SONAR_RANGE_KM)); // portée max du ping (îles/côte)
+const ECHO_FULL_MIN = (2 * SONAR_MAX_RANGE_KM) / (SOUND_KMH / 60);     // aller-retour plein portée
+const SONG_FULL_MIN = SOUND_DECAY_KM.biologique / (SOUND_KMH / 60);    // chant au bord de sa portée
 
 function Sec({ t, children, open }) {
   return (
@@ -154,11 +155,11 @@ const ANNEX = [
     titre: "Sonar",
     rows: [
       ["Vitesse du son (eau)", "≈ " + fmt(SOUND_KMH) + " km/h"],
-      ["Décroissance des bruits", "force 100 → 0 % sur " + fmt(SOUND_DECAY_KM) + " km"],
-      ["Portée du ping actif", fmt(SONAR_RANGE_KM) + " km"],
+      ["Décroissance des bruits", "par type — moteur " + fmt(SOUND_DECAY_KM.moteur) + " · pêcheur " + fmt(SOUND_DECAY_KM.pecheur) + " · cargo " + fmt(SOUND_DECAY_KM.cargo) + " · ping " + fmt(SOUND_DECAY_KM.ping) + " · biologique " + fmt(SOUND_DECAY_KM.biologique) + " km"],
+      ["Portée du ping actif", "par écho — île " + fmt(SONAR_RANGE_KM.ile) + " · côte " + fmt(SONAR_RANGE_KM.cote) + " · balise " + fmt(SONAR_RANGE_KM.balise) + " · navire " + fmt(SONAR_RANGE_KM.navire) + " · biologique " + fmt(SONAR_RANGE_KM.biologique) + " km"],
       ["Coût d'un ping", fmt(SONAR_PING_BATTERY_COST) + " % de batterie"],
       ["Affichage d'un écho", fmt(SONAR_ECHO_PERSIST_S) + " s"],
-      ["Retard plein portée", "aller-retour " + fmt(SONAR_RANGE_KM) + " km ≈ " + fmt(ECHO_FULL_MIN) + " min"],
+      ["Retard plein portée", "aller-retour " + fmt(SONAR_MAX_RANGE_KM) + " km ≈ " + fmt(ECHO_FULL_MIN) + " min"],
     ],
   },
   {
@@ -420,25 +421,30 @@ export default function Manual({ onClose }) {
             <P>
               Passif (hydrophone) : continu, gratuit, en surface comme en plongée. Il ne donne qu'un
               gisement — aucune distance. Les icônes se placent au bord du cercle, l'opacité traduit la
-              force (décroissance sur {fmt(SOUND_DECAY_KM)} km). Sources audibles : moteurs des navires
-              en surface, pings actifs des autres, chants biologiques. Un navire à la voile ou en
+              force, qui tombe à zéro à une distance propre à chaque bruit : moteur
+              {" "}{fmt(SOUND_DECAY_KM.moteur)} km, pêcheur en transit {fmt(SOUND_DECAY_KM.pecheur)} km,
+              cargo {fmt(SOUND_DECAY_KM.cargo)} km, ping {fmt(SOUND_DECAY_KM.ping)} km, chant
+              biologique {fmt(SOUND_DECAY_KM.biologique)} km. Un navire à la voile ou en
               propulsion électrique est silencieux.
             </P>
             <P>
-              Actif : un bouton, en plongée uniquement. Portée {fmt(SONAR_RANGE_KM)} km, coût
-              {" "}{fmt(SONAR_PING_BATTERY_COST)} % de batterie. Tout ce qui traîne rebondit — îles,
+              Actif : un bouton, en plongée uniquement. Portée par type d'écho : îles et côte
+              {" "}{fmt(SONAR_RANGE_KM.ile)} km, navires en surface {fmt(SONAR_RANGE_KM.navire)} km,
+              balises {fmt(SONAR_RANGE_KM.balise)} km, baleines {fmt(SONAR_RANGE_KM.biologique)} km.
+              Coût {" "}{fmt(SONAR_PING_BATTERY_COST)} % de batterie. Tout ce qui traîne rebondit — îles,
               côtes, balises, navires en surface — et s'affiche en formes pendant
               {" "}{fmt(SONAR_ECHO_PERSIST_S)} s, avec gisement et distance.
             </P>
             <P>
-              Les sons voyagent à ≈ {fmt(SOUND_KMH)} km/h dans l'eau : un écho plein portée met
-              environ {fmt(ECHO_FULL_MIN)} min à revenir, un bruit au bord de la décroissance
-              ({" "}{fmt(SOUND_DECAY_KM)} km) s'entend au bout d'environ {fmt(SOUND_FULL_MIN)} min.
+              Les sons voyagent à ≈ {fmt(SOUND_KMH)} km/h dans l'eau : un écho plein portée
+              ({" "}{fmt(SONAR_MAX_RANGE_KM)} km) met environ {fmt(ECHO_FULL_MIN)} min à revenir, un
+              chant au bord de sa portée ({fmt(SOUND_DECAY_KM.biologique)} km) s'entend au bout
+              {" "}d'environ {fmt(SONG_FULL_MIN)} min.
             </P>
             <P>
               Un navire en plongée n'apparaît ni au passif ni au ping : il n'est repérable que s'il
-              émet lui-même. Pingez = révélez votre présence à {fmt(SOUND_DECAY_KM)} km pour voir
-              {" "}{fmt(SONAR_RANGE_KM)} km.
+              émet lui-même. Pingez = révélez votre présence à {fmt(SOUND_DECAY_KM.ping)} km pour voir
+              {" "}jusqu'à {fmt(SONAR_MAX_RANGE_KM)} km.
             </P>
 
           </Sec>
