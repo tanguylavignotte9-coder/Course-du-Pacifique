@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, coastStep, PATROL_BERTH_KM } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, coastStep, PATROL_BERTH_KM, tracePush } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -749,11 +749,19 @@ function ensureState(id) {
 // Le serveur est AUTORITATIF : chaque seconde réelle, il avance chaque navire
 // au temps de course courant, par pas bornés (5 min de jeu max, design).
 let lastPersist = 0;
+// Tick + trace de route : la trace vit côté SERVEUR — elle persiste à la
+// reconnexion (comme le reste de l'état) et s'enregistre à CHAQUE tick. Un
+// saut de temps debug rejoue les ticks : la trace du saut est donc la vraie
+// route parcourue, virages compris.
+const tickTraced = (st, step) => {
+  tick(st, step, world);
+  st.trace = tracePush(st.trace, st.estX, st.estY);
+};
 setInterval(() => {
   const now = gameMinutesNow();
   for (const [, st] of states) {
     while (st.t < now) {
-      tick(st, Math.min(MAX_STEP_MIN, now - st.t), world);
+      tickTraced(st, Math.min(MAX_STEP_MIN, now - st.t));
     }
   }
   multiplayerPass(now);
@@ -932,6 +940,7 @@ function publicSnapshot(id) {
       fuel: st.fuel, battery: st.battery, food: st.food,
       score: st.score, codes: st.codes, unc: st.unc,
       estX: st.estX, estY: st.estY,
+      trace: st.trace || [],   // route parcourue (mémoire serveur, positions estimées)
       travelledKm: st.travelledKm, dailyKm: st.dailyKm,
       waypoints: st.waypoints || [], wpIdx: st.wpIdx || 0, autopilot: !!st.autopilot,
       navFixActive: st.navFix.active,
@@ -1382,6 +1391,8 @@ wss.on("connection", (ws, req) => {
       }
       if (Array.isArray(c.pins)) st.pins = c.pins.slice(0, PINS_MAX);
       if (Array.isArray(c.measures)) st.measures = c.measures.slice(0, 40);
+      // Trace de route (outil papier) : effacement à la demande du joueur.
+      if (c.traceClear === true) { st.trace = []; store.save(); }
       // Saut de temps : super utilisateur uniquement. L'horloge de course est
       // PARTAGÉE : le saut est global — l'epoch recule, le serveur simule
       // ensuite chaque minute pour chaque navire (pulsations, détections,
@@ -1392,7 +1403,7 @@ wss.on("connection", (ws, req) => {
         const now = gameMinutesNow();
         // (displayEpoch reste fixe : l'heure affichée avance avec t)
         for (const [, pst] of states) {
-          while (pst.t < now) tick(pst, Math.min(MAX_STEP_MIN, now - pst.t), world);
+          while (pst.t < now) tickTraced(pst, Math.min(MAX_STEP_MIN, now - pst.t));
         }
         store.save();
         st.notifSeq = (st.notifSeq || 0) + 1;

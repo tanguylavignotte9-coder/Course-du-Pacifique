@@ -377,8 +377,6 @@ function VhfKeypad({ dialed, onDial, onAction, radioOk, portee }) {
 // Reprise fidèle du proto : zoom molette/pincement centré curseur, pan par
 // glissement, outils punaise (1 clic) et mesure (2 clics) avec conversion
 // letterbox exacte, suppression, indicateur du 1er point.
-const TRACE_STEP_KM = 0.5; // trace de route : écart mini entre deux points (km, position estimée)
-const TRACE_MAX_PTS = 600; // trace de route : plafond mémoire (points, FIFO au-delà)
 function NavMap({ snap, sock }) {
   const S = 10;
   const MAP_PX = MAP * S;
@@ -393,7 +391,6 @@ function NavMap({ snap, sock }) {
   const [measurePend, setMeasurePend] = useState(null);
   const [planMode, setPlanMode] = useState(false);
   const [hoverPt, setHoverPt] = useState(null); // position curseur (degres) pour la previsualisation
-  const [trace, setTrace] = useState([]); // route parcourue (positions estimées, mémoire locale)
 
   const clampVB = (v) => ({ ...v, x: clamp(v.x, 0, MAP_PX - v.w), y: clamp(v.y, 0, MAP_PX - v.w) });
   // Zoom d'un facteur autour d'un point (coordonnées viewBox)
@@ -426,18 +423,6 @@ function NavMap({ snap, sock }) {
     return () => el.removeEventListener("wheel", onW);
   }, []);
 
-  // Route parcourue : un point de trace par tranche de distance parcourue
-  // (position ESTIMÉE), plafonné — mémoire locale au client, effaçable.
-  useEffect(() => {
-    const p = snap.player;
-    setTrace((tr) => {
-      const last = tr[tr.length - 1];
-      if (last && distKm(last[0], last[1], p.estX, p.estY) < TRACE_STEP_KM) return tr;
-      const pts = [...tr, [p.estX, p.estY]];
-      return pts.length > TRACE_MAX_PTS ? pts.slice(pts.length - TRACE_MAX_PTS) : pts;
-    });
-  }, [snap]);
-
   const world = snap.world;
   const player = snap.player;
   const kmOf = (a, b) => distKm(a[0], a[1], b[0], b[1]);
@@ -454,7 +439,7 @@ function NavMap({ snap, sock }) {
           disabled={player.wpIdx >= (player.waypoints || []).length && !player.autopilot}
           onClick={() => sock.command({ autopilot: !player.autopilot })}
         >🤖 Pilote auto{player.autopilot ? " — ACTIF" : ""}</Btn>
-        <Btn onClick={() => setTrace([])} disabled={trace.length === 0}>🧹 Effacer la trace</Btn>
+        <Btn onClick={() => sock.command({ traceClear: true })} disabled={!(player.trace || []).length}>🧹 Effacer la trace</Btn>
       </div>
       {planMode && (
         <div className="grid grid-cols-2 gap-2">
@@ -657,10 +642,12 @@ function NavMap({ snap, sock }) {
             <text x={px(p.x)} y={py(p.y) - 5} fontSize="9" fill="#000000" fontWeight="bold" textAnchor="middle">{p.label}</text>
           </g>
         ))}
-        {/* Route parcourue : pointillés gris (positions estimées, mémoire locale) */}
-        {trace.length > 1 && (
+        {/* Route parcourue : pointillés gris (positions estimées). Mémoire SERVEUR :
+            persiste à la déconnexion/reconnexion, remplie à chaque tick — donc aussi
+            pendant les sauts de temps debug (vraie route, virages compris). */}
+        {(player.trace || []).length > 1 && (
           <polyline
-            points={trace.map(([tx, ty]) => `${px(tx)},${py(ty)}`).join(" ")}
+            points={(player.trace || []).map(([tx, ty]) => `${px(tx)},${py(ty)}`).join(" ")}
             fill="none" stroke="#94a3b8" strokeWidth="1.1" strokeDasharray="2 3" opacity="0.55"
           />
         )}

@@ -8,6 +8,7 @@ import {
   proxPingIntervalS, captureBeacon, beaconLockTick, beaconLockSteer, pushBeaconSignal, SIGNAL_LOG_MAX, PROX_ARM_KM, ANCHOR_DROP_KM,
   scrambledIntercept, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT,
   sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, nearestOnLine, soundTravelMin,
+  tracePush, TRACE_STEP_KM, TRACE_MAX_PTS,
   SOUND_KMH, SOUND_DECAY_KM, SONAR_RANGE_KM, SONAR_PING_BATTERY_COST, SONAR_ECHO_PERSIST_S,
   generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, npcFishermanTick,
   NPC_FISHERMEN, NPC_CARGOS, NPC_WHALES, FISHER_RANGE_KM, FISHER_MIN_OFF_KM,
@@ -1426,4 +1427,23 @@ test("point visuel sur le port : l'estime est recentrée dans le cercle rétréc
   const errKm = distKm(st.x, st.y, st.estX, st.estY);
   assert.ok(errKm <= st.unc + 0.5,
     `l'estime doit être dans le cercle autour de la position vraie (écart ${errKm.toFixed(1)} km, unc ${st.unc.toFixed(1)} km)`);
+});
+
+test("tracePush : trace de route serveur — seuil 0,5 km, plafond FIFO, paires [x, y] arrondies", () => {
+  let tr = tracePush(null, 10, 10);
+  assert.equal(tr.length, 1, "premier point immédiat");
+  tr = tracePush(tr, 10.002, 10); // ~0,2 km : sous le seuil
+  assert.equal(tr.length, 1, "moins de 0,5 km parcourus : aucun point");
+  tr = tracePush(tr, 10.02, 10); // 1,0 km : au-dessus du seuil
+  assert.equal(tr.length, 2, "au-delà du seuil : un point");
+  tr = tracePush(tr, 12.3456789, 20); // grand écart (ex. saut de temps debug) : point d'arrivée
+  assert.equal(tr.length, 3, "un écart important ajoute son point d'arrivée");
+  const lastPt = tr[tr.length - 1];
+  assert.equal(lastPt[0], 12.346, "coordonnées arrondies au millième de degré");
+  assert.equal(lastPt[1], 20, "coordonnées arrondies au millième de degré");
+  for (let i = 0; i < TRACE_MAX_PTS; i++) tr = tracePush(tr, 10 + 0.02 * i, 10);
+  assert.equal(tr.length, TRACE_MAX_PTS, "plafond mémoire respecté (FIFO)");
+  assert.ok(tr.every((p) => Array.isArray(p) && p.length === 2), "points = paires [x, y]");
+  const tr2 = tracePush(tr, tr[tr.length - 1][0], tr[tr.length - 1][1]);
+  assert.equal(tr2, tr, "aucun mouvement : la trace est renvoyée telle quelle");
 });

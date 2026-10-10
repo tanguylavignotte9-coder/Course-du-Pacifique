@@ -87,6 +87,23 @@ export const SAIL_DEFAULT = 0.8;          // voilure par défaut (nouveau navire
 export const HORIZON_KM = 20;              // horizon géographique depuis le pont (km)
 export const SPAWN_SEP_KM = 0.5;          // anti-chevauchement des spawns au port (km)
 export const HULL_HIST_KM = 0.03;         // hystérésis collision : une demi-longueur de coque (~30 m)
+// Trace de route (outil papier) : la route parcourue à la position ESTIMÉE,
+// mémoire SERVEUR par navire — elle persiste à la reconnexion (comme le reste
+// de l'état). Un point par tranche de TRACE_STEP_KM, plafond TRACE_MAX_PTS
+// (FIFO au-delà). Robuste aux sauts de temps debug : l'enregistrement suit
+// chaque tick, or un saut rejoue les ticks — la trace d'un saut est donc la
+// vraie route parcourue, virages compris. Coordonnées arrondies au millième
+// de degré (~100 m) pour garder snapshots et sauvegardes légers.
+export const TRACE_STEP_KM = 0.5;        // trace de route : écart mini entre deux points (km, estime)
+export const TRACE_MAX_PTS = 600;       // trace de route : plafond mémoire par navire (points, FIFO)
+export function tracePush(trace, x, y) {
+  const tr = trace || [];
+  const last = tr[tr.length - 1];
+  if (last && distKm(last[0], last[1], x, y) < TRACE_STEP_KM) return tr;
+  const pts = [...tr, [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000]];
+  return pts.length > TRACE_MAX_PTS ? pts.slice(pts.length - TRACE_MAX_PTS) : pts;
+}
+
 export function randomCode() {
   return String(Math.floor(Math.random() * CODE_POOL)).padStart(4, "0");
 }
