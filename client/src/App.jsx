@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { login, GameSocket } from "./net.js";
 import Scene from "./Scene.jsx";
+import Manual from "./Manual.jsx";
 import {
   MAP, DEG_KM, RARITY_STYLE,
   distKm, dirSensitivity, DOUGLAS_LABEL, LONG_DECAY_KM,
@@ -784,6 +785,7 @@ export default function App() {
   const [shopOpen, setShopOpen] = useState(false);
   const [wxOpen, setWxOpen] = useState(false);
   const [netOpen, setNetOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
   const [dial, setDial] = useState("");
   const [radioMode, setRadioMode] = useState("prive"); // prive | diffusion
   const [wxH, setWxH] = useState(0);
@@ -847,9 +849,12 @@ export default function App() {
             {daylight ? "☀️ Jour" : "🌙 Nuit"} · {fmtT(snap.t, snap.epoch)} (heure de Paris) · Score : <span className="font-semibold text-sky-300">{player.score} pts</span> · Codes à bord : {player.codes.length} · Balises restantes : {snap.world.activeBeaconIds.length}/{snap.world.beaconCount}
           </p>
         </div>
-        <span className={`text-xs ${status === "connected" ? "text-emerald-300" : "text-amber-300"}`}>
-          {status === "connected" ? "● connecté" : "● reconnexion…"}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs ${status === "connected" ? "text-emerald-300" : "text-amber-300"}`}>
+            {status === "connected" ? "● connecté" : "● reconnexion…"}
+          </span>
+          <Btn onClick={() => setManualOpen(true)}>📖 Manuel</Btn>
+        </div>
       </div>
 
       {/* Boîte à outils super utilisateur : accélération et sauts de temps */}
@@ -1225,6 +1230,9 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Manuel du jeu : ouvert à tout moment depuis l'en-tête */}
+      {manualOpen && <Manual onClose={() => setManualOpen(false)} />}
       </div>
     </div>
   );
