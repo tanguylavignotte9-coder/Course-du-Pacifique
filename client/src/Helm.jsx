@@ -2,7 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import NavMap from "./NavMap.jsx";
 import {
   DEG_KM, MS_PER_MIN, CAPTURE_R_KM, DOUGLAS_LABEL, RARITY_STYLE,
+  AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT,
+  SONAR_RANGE_KM, SONAR_PING_BATTERY_COST, SONAR_ECHO_PERSIST_S,
 } from "../../shared/engine.js";
+
+const AUTOGUIDE_LABEL = { off: "Aucun", active: "Actives", disabled: "Déjà capturées", all: "Toutes" };
 
 const wrap360 = (d) => ((d % 360) + 360) % 360;
 const wrap180 = (d) => (((d % 360) + 540) % 360) - 180;
@@ -728,6 +732,235 @@ function Counter({ label, value }) {
   );
 }
 
+// ---------- Antenne : manette graduée moletée, throttle 10 Hz + envoi final ----------
+function AntennaLever({ label, value, min, max, unit, onCommit }) {
+  const lastSent = useRef(0);
+  const onInput = (e) => {
+    const t = performance.now();
+    if (t - lastSent.current > 100) { lastSent.current = t; onCommit(+e.target.value); }
+  };
+  return (
+    <div className="flex items-center gap-2">
+      <span className="engrave w-[52px] shrink-0 text-[8.5px] uppercase tracking-wider">{label}</span>
+      <div className="flex-1">
+        <div className="mb-0.5 flex justify-between px-2">
+          {Array.from({ length: 13 }, (_, i) => (
+            <span key={i} className={`w-px ${i % 3 === 0 ? "h-[7px] bg-[#c9b48a]" : "h-[4px] bg-[#6b5a35]"}`} />
+          ))}
+        </div>
+        <input type="range" min={min} max={max} value={value} onInput={onInput} onChange={(e) => onCommit(+e.target.value)} className="rngbig w-full" />
+      </div>
+      <span className="w-[44px] shrink-0 rounded border border-[#5c3a1a] bg-[#08090a] py-0.5 text-center font-mono text-[11px] font-bold text-amber-300"
+        style={{ textShadow: "0 0 7px rgba(251,191,36,0.55)" }}>{value}{unit}</span>
+    </div>
+  );
+}
+
+// Radio muette si : ni surface, ni immersion+périscope, ou batteries à 0.
+const radioOk = (snap) => {
+  const p = snap.player;
+  return (p.location === "surface" || (p.location === "underwater" && p.periscope)) && p.battery > 0;
+};
+const view_antHeading = (snap) => (snap.view || {}).antHeading ?? ((snap.player.heading + snap.player.antOrient + 720) % 360);
+
+// ---------- Poste radio VHF : logique VhfKeypad réutilisée, habillage cuivre ----------
+function RadioSet({ snap, cmd, dial, setDial, radioMode, setRadioMode }) {
+  const player = snap.player;
+  const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "C", "0", "⌫"];
+  const press = (k) => {
+    if (k === "C") return setDial("");
+    if (k === "⌫") return setDial(dial.slice(0, -1));
+    if (dial.length < 4) setDial(dial + k);
+  };
+  const ready = dial.length === 4;
+  const az = (view_antHeading(snap) + 720) % 360;
+  const beam = player.antBeam;
+  const hr = (beam / 2) * Math.PI / 180;
+  const radioOn = radioOk(snap);
+  const by = new Map();
+  for (const sg of [...(player.signals || [])].reverse()) {
+    const cur = by.get(sg.beaconId);
+    if (cur) cur.n++;
+    else by.set(sg.beaconId, { sg, n: 1 });
+  }
+  return (
+    <div className="instrument rivets p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="plate rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em]">Poste radio — VHF</span>
+        <span className={`flex items-center gap-1 text-[9px] uppercase tracking-widest ${radioOn ? "text-emerald-300" : "text-rose-400"}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${radioOn ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]" : "bg-rose-500"}`} /> {radioOn ? "écoute" : "muette"}
+        </span>
+      </div>
+      <div className="mb-2 h-8 rounded border border-[#244a2f] bg-[#0a1410]"
+        style={{ backgroundImage: "radial-gradient(rgba(94,234,212,0.35) 1.1px, transparent 1.3px)", backgroundSize: "6px 6px" }} />
+      <div className="flex gap-2.5">
+        <div className="flex-1">
+          <div className="mb-1.5 flex items-center justify-center gap-1 rounded border border-emerald-900 bg-[#020a08] px-2 py-1.5">
+            {[0, 1, 2, 3].map((i) => (
+              <span key={i} className={`w-6 text-center font-mono text-base font-bold ${i < dial.length ? "text-emerald-300" : "text-slate-700"}`}>
+                {dial[i] || "–"}
+              </span>
+            ))}
+          </div>
+          <div className="grid grid-cols-3 gap-1">
+            {keys.map((k) => (
+              <button key={k} onClick={() => press(k)}
+                className={`rounded py-1 font-mono text-[12px] font-bold ${k === "C" || k === "⌫"
+                  ? "bg-[#4a1a1a] text-rose-200 hover:bg-[#5c2222]"
+                  : "bg-gradient-to-b from-[#b87333] to-[#7c4a1a] text-[#1c130a] hover:from-[#d08a4a]"}`}>
+                {k}
+              </button>
+            ))}
+          </div>
+          <div className="mt-1.5 grid grid-cols-2 gap-1">
+            <button disabled={!ready || !radioOn} onClick={() => { cmd({ shipMsg: { kind: "posq", to: dial } }); setDial(""); }}
+              className={`rounded py-1 text-[9.5px] font-bold uppercase tracking-wide ${ready && radioOn
+                ? "bg-gradient-to-b from-[#b87333] to-[#7c4a1a] text-[#1c130a]" : "bg-[#1a2430] text-slate-600 cursor-not-allowed"}`}>❓ Position ?</button>
+            <button disabled={!ready || !radioOn} onClick={() => { cmd({ shipMsg: { kind: "mypos", to: dial } }); setDial(""); }}
+              className={`rounded py-1 text-[9.5px] font-bold uppercase tracking-wide ${ready && radioOn
+                ? "bg-gradient-to-b from-[#b87333] to-[#7c4a1a] text-[#1c130a]" : "bg-[#1a2430] text-slate-600 cursor-not-allowed"}`}>📍 Ma position</button>
+          </div>
+        </div>
+        <div className="w-[104px] shrink-0">
+          <svg viewBox="0 0 100 100" className="w-[98px]">
+            <circle cx="50" cy="50" r="46" fill="#0d1420" stroke="#7e22ce" strokeWidth="2.5" />
+            <path transform={`translate(50 50) rotate(${az})`}
+              d={`M 0 0 L ${(-42 * Math.sin(hr)).toFixed(1)} ${(-42 * Math.cos(hr)).toFixed(1)} A 42 42 0 0 1 ${(42 * Math.sin(hr)).toFixed(1)} ${(-42 * Math.cos(hr)).toFixed(1)} Z`}
+              fill="rgba(192,132,252,0.25)" stroke="rgba(192,132,252,0.6)" strokeWidth="0.8" />
+            <circle cx="50" cy="50" r="3.5" fill="#38bdf8" />
+            <text x="50" y="95" textAnchor="middle" fontSize="8" fill="#c084fc" fontFamily="monospace">{Math.round(az)}°</text>
+          </svg>
+        </div>
+      </div>
+
+      <div className="mt-2.5 space-y-2 rounded border border-[#4a3820] bg-[#0a0f16]/60 p-2">
+        <AntennaLever label="Faisceau" value={beam} min={1} max={180} unit="°" onCommit={(v) => cmd({ antBeam: v })} />
+        <AntennaLever label="Azimut" value={player.antOrient} min={-180} max={180} unit="°" onCommit={(v) => cmd({ antOrient: v })} />
+      </div>
+
+      <div className="mt-2.5 flex gap-1.5">
+        {["prive", "diffusion"].map((m) => (
+          <button key={m} onClick={() => setRadioMode(m)}
+            className={`flex-1 rounded border px-2 py-1.5 text-[9.5px] font-bold uppercase tracking-wide transition-transform hover:scale-[1.02] ${radioMode === m
+              ? "border-amber-300 bg-gradient-to-b from-[#d08a4a] to-[#8a5a2b] text-[#1c130a] shadow-[inset_0_2px_4px_rgba(0,0,0,0.3),0_0_7px_rgba(251,191,36,0.4)]"
+              : "border-[#3a2410] bg-gradient-to-b from-[#6b4a26] to-[#4a3218] text-[#c9b48a] hover:from-[#7d5830]"}`}>
+            {m === "prive" ? "🔒 Privé" : "📢 Diffusion"}
+          </button>
+        ))}
+      </div>
+      {radioMode === "diffusion" && (
+        <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+          <button disabled={!radioOn} onClick={() => cmd({ shipMsg: { kind: "mypos" } })}
+            className={`rounded border py-1 text-[9px] font-bold uppercase tracking-wide ${radioOn
+              ? "border-emerald-700 bg-emerald-900/50 text-emerald-200 hover:bg-emerald-800/60" : "border-emerald-950 bg-[#0a1410] text-emerald-900 cursor-not-allowed"}`}>
+            📍 Diffuser ma position
+          </button>
+          <button disabled={!radioOn} onClick={() => cmd({ sos: true })}
+            className={`rounded border py-1 text-[9px] font-bold uppercase tracking-wide ${radioOn
+              ? "border-rose-700 bg-rose-900/50 text-rose-200 hover:bg-rose-800/60" : "border-rose-950 bg-[#140a0a] text-rose-900 cursor-not-allowed"}`}>
+            🆘 Émettre un SOS
+          </button>
+        </div>
+      )}
+
+      <div className="mt-2">
+        <p className="engrave mb-1 text-[8px] uppercase tracking-[0.18em]">Autoguidage — verrouiller sur</p>
+        <div className="flex gap-1">
+          {AUTOGUIDE_MODES.map((m) => (
+            <button key={m} onClick={() => cmd({ autoguide: m })}
+              className={`flex-1 rounded border px-0.5 py-1.5 text-[8px] font-bold uppercase tracking-wide ${(player.autoguide || AUTOGUIDE_DEFAULT) === m
+                ? "border-amber-300 bg-gradient-to-b from-[#d08a4a] to-[#8a5a2b] text-[#1c130a] shadow-[inset_0_2px_4px_rgba(0,0,0,0.3),0_0_7px_rgba(251,191,36,0.4)]"
+                : "border-[#3a2410] bg-gradient-to-b from-[#6b4a26] to-[#4a3218] text-[#c9b48a] hover:from-[#7d5830]"}`}>
+              {AUTOGUIDE_LABEL[m]}
+            </button>
+          ))}
+        </div>
+        {player.beaconLock && (
+          <p className="engrave mt-1 text-center text-[8px] uppercase tracking-widest">🔒 verrou engagé : balise {player.beaconLock}</p>
+        )}
+      </div>
+      <div className="mt-2 rounded border border-[#4a3820] p-1.5">
+        <div className="paperbg rounded-sm px-2 py-1.5 font-mono text-[9px] leading-relaxed text-[#3a2c14]">
+          {by.size === 0
+            ? <p>— aucune station captée —</p>
+            : [...by.entries()].map(([code, e]) => (
+              <p key={code}>{e.sg.kind === "prox" ? "⚡" : "📡"} {code}{e.sg.off ? " [balise désactivée]" : ""} — signal {e.sg.strength}%{e.sg.side ? ` · zone ${e.sg.side}` : ""}{e.n > 1 ? ` · ×${e.n}` : ""}</p>
+            ))}
+        </div>
+        <p className="engrave mt-1 text-center text-[7.5px] uppercase tracking-[0.2em]">ruban des signaux — par station</p>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Sonar cathodique : logique SonarTile réutilisée ----------
+function SonarScope({ snap, cmd }) {
+  const p = snap.player;
+  const sonar = snap.sonar || { passive: [], echoes: [] };
+  const uw = p.location === "underwater";
+  const RMAX = Math.max(...Object.values(SONAR_RANGE_KM));
+  const kmPx = (km) => (Math.min(km, RMAX) / RMAX) * 88;
+  const pos = (az, r) => {
+    const a = (az * Math.PI) / 180;
+    return [105 + Math.sin(a) * r, 105 - Math.cos(a) * r];
+  };
+  return (
+    <div className="instrument rivets p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="plate rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em]">Sonar — hydrophone</span>
+        <span className="text-[8px] uppercase tracking-widest text-emerald-300">passif continu</span>
+      </div>
+      <div className="relative mx-auto h-[210px] w-[210px] overflow-hidden rounded-full border-[6px] border-[#2c3a2e] bg-[#031408]">
+        <div className="pcSweep absolute inset-0 rounded-full" />
+        {[0.25, 0.5, 0.75].map((f) => (
+          <div key={f} className="absolute rounded-full border border-emerald-500/20"
+            style={{ inset: `${(1 - f) * 50}%` }} />
+        ))}
+        <div className="absolute left-0 right-0 top-1/2 h-px bg-emerald-500/20" />
+        <div className="absolute bottom-0 top-0 left-1/2 w-px bg-emerald-500/20" />
+        {sonar.passive.map((s, i) => {
+          const [x, y] = pos(s.bearing, 88);
+          const o = Math.max(0.25, s.strength / 100);
+          return (
+            <div key={`p${i}`} style={{ opacity: o }}>
+              {s.kind === "moteur" && <div className="absolute h-2.5 w-2.5 rounded-full" style={{ left: x - 5, top: y - 5, border: "1.6px solid #f97316", boxShadow: "0 0 6px #f97316" }} />}
+              {s.kind === "ping" && <div className="absolute text-[10px] font-bold" style={{ left: x - 4, top: y - 6, color: "#a855f7", textShadow: "0 0 6px #a855f7" }}>✕</div>}
+              {s.kind === "biologique" && <div className="absolute text-[10px]" style={{ left: x - 6, top: y - 6, color: "#34d399", textShadow: "0 0 6px #34d399" }}>∿</div>}
+              {s.kind === "canon" && <div className="absolute text-[10px]" style={{ left: x - 5, top: y - 6, color: "#fb923c", textShadow: "0 0 6px #fb923c" }}>✳</div>}
+              {s.kind === "inconnu" && <div className="absolute text-[11px]" style={{ left: x - 6, top: y - 6, color: "#f8fafc", textShadow: "0 0 6px #f8fafc" }}>⌇</div>}
+            </div>
+          );
+        })}
+        {sonar.echoes.map((e, i) => {
+          const [x, y] = pos(e.az, kmPx(e.distKm));
+          const col = { ile: "#2dd4bf", balise: "#facc15", navire: "#22d3ee", cote: "#94a3b8", biologique: "#34d399" }[e.kind] || "#94a3b8";
+          const fade = Math.max(0.15, 1 - e.ageS / SONAR_ECHO_PERSIST_S);
+          return (
+            <div key={`e${i}`} style={{ opacity: fade, color: col, textShadow: `0 0 6px ${col}` }}>
+              {e.kind === "navire" && <span className="absolute text-[10px]" style={{ left: x - 4, top: y - 6 }}>●</span>}
+              {e.kind === "biologique" && <span className="absolute text-[10px]" style={{ left: x - 5, top: y - 6 }}>○</span>}
+              {e.kind === "balise" && <span className="absolute text-[10px]" style={{ left: x - 5, top: y - 6 }}>◆</span>}
+              {e.kind === "ile" && <span className="absolute text-[10px]" style={{ left: x - 5, top: y - 6 }}>▲</span>}
+              {e.kind === "cote" && <span className="absolute text-[10px]" style={{ left: x - 5, top: y - 6 }}>◡</span>}
+            </div>
+          );
+        })}
+        <svg viewBox="0 0 20 20" className="absolute left-1/2 top-1/2 h-5 w-5"
+          style={{ transform: `translate(-50%, -50%) rotate(${p.heading}deg)` }}>
+          <path d="M 10 2 L 16 17 L 10 14 L 4 17 Z" fill="#38bdf8" stroke="#e0f2fe" strokeWidth="0.8" />
+        </svg>
+      </div>
+      <button disabled={!uw || p.battery < SONAR_PING_BATTERY_COST} onClick={() => cmd({ ping: true })}
+        className={`mt-2.5 w-full rounded border-2 py-1.5 text-[11px] font-bold uppercase tracking-[0.14em] ${uw && p.battery >= SONAR_PING_BATTERY_COST
+          ? "border-[#155e75] bg-gradient-to-b from-[#0e7490] to-[#155e75] text-[#e0f2fe] hover:from-[#0891b2]"
+          : "border-[#123] bg-[#0a1014] text-[#3a4a52] cursor-not-allowed"}`}>
+        🔊 Ping — {SONAR_PING_BATTERY_COST} % de batterie
+      </button>
+      <p className="engrave mt-1 text-center text-[8px] uppercase tracking-widest">gisement seul · le ping donne la distance · {RMAX} km{!uw && " · plongée requise"}</p>
+    </div>
+  );
+}
+
 // ---------- Interrupteur laiton avec voyant ----------
 function BrassSwitch({ on, label, onClick }) {
   return (
@@ -745,6 +978,165 @@ function BrassSwitch({ on, label, onClick }) {
   );
 }
 
+// ---------- Journal de bord : player.notifications filtrés par ruban ----------
+const INK = { info: "#2b2b2b", good: "#1e4620", warn: "#7a5a10", bad: "#7a1f1f" };
+function LogBook({ snap, filter, setFilter }) {
+  const player = snap.player;
+  const ribbons = [
+    ["tout", "Tout"], ["navire", "Navire"], ["nav", "Nav"], ["meteo", "Météo"],
+    ["radio", "Radio"], ["sonar", "Sonar"], ["vision", "Vision"], ["balises", "Balises"], ["alertes", "Alertes"],
+  ];
+  const shown = (player.notifications || []).filter((e) => filter === "tout" || e.cat === filter);
+  return (
+    <div className="relative rounded-lg p-3 pt-7"
+      style={{ background: "linear-gradient(180deg, #5a4023, #3b2a17)", border: "2px solid #241a0e" }}>
+      <div className="absolute left-4 right-4 top-0 flex justify-center gap-0.5">
+        {ribbons.map(([id, label]) => (
+          <button key={id} onClick={() => setFilter(id)}
+            className={`px-1.5 pb-0.5 pt-2.5 font-serif text-[8.5px] tracking-wide transition-transform hover:-translate-y-0.5 ${filter === id
+              ? "bg-[#7c2d12] text-amber-100" : "bg-[#8a5a2b] text-amber-50/75 hover:bg-[#9a6a3b]"}`}
+            style={{ transform: "rotate(-1.5deg)", borderRadius: "2px 2px 0 0" }}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="paperbg mx-auto flex h-[470px] max-w-[640px] flex-col overflow-hidden rounded-sm px-5 py-3 shadow-[0_0_18px_rgba(0,0,0,0.5)]">
+        <h3 className="mb-0.5 font-serif text-base font-bold tracking-wide text-[#3a2c14]">Journal de bord</h3>
+        <p className="mb-2 border-b border-[#8a6d3b]/40 pb-1 font-serif text-[10px] italic text-[#6b5a35]">
+          navire {player.code} — course du Pacifique — {fmtT(snap.t, snap.epoch)}
+        </p>
+        <div className="flex-1 overflow-y-auto pr-1"
+          style={{ backgroundImage: "repeating-linear-gradient(transparent, transparent 24px, rgba(120,90,40,0.10) 25px)" }}>
+          {shown.length === 0
+            ? <p className="font-serif text-[12px] italic text-[#6b5a35]">Rien à signaler — mer calme.</p>
+            : shown.map((e) => (
+              <div key={e.id} className="mb-1 flex gap-2.5 border-l-2 border-[#b91c1c]/40 pl-2.5">
+                <span className="w-11 shrink-0 pt-px font-serif text-[10px] tabular-nums text-[#6b5a35]">{fmtTime(e.t, snap.epoch)}</span>
+                <span className="font-serif text-[12.5px] leading-snug" style={{ color: INK[e.kind] || INK.info }}>{e.text}</span>
+              </div>
+            ))}
+        </div>
+        <p className="mt-1 border-t border-[#8a6d3b]/40 pt-1 font-serif text-[9px] italic text-[#6b5a35]">
+          « Toute observation ne vaut que si elle est inscrite. »
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Instruments de pont : chaque instrument = sa fonction ----------
+function WeatherBoard({ snap }) {
+  const WX = snap.weather;
+  const player = snap.player;
+  return (
+    <div className="instrument rivets p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="plate rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em]">Instruments de pont</span>
+        <Gear size={18} />
+      </div>
+      <p className="engrave mb-2 text-center text-[9px] uppercase tracking-[0.18em]">{WX.name}</p>
+      <div className="grid grid-cols-3 gap-2">
+        {/* anémomètre = vent APPARENT du navire */}
+        <Dial label="Anémomètre" value={player.awSpd} max={60} unit="km/h" color="#7dd3fc" />
+        {/* girouette : vent vrai */}
+        <div className="flex flex-col items-center">
+          <svg viewBox="0 0 100 100" className="w-[92px]">
+            <circle cx="50" cy="50" r="47" fill="#0d1420" stroke="#8a5a2b" strokeWidth="2.5" />
+            {[["N", 0], ["E", 90], ["S", 180], ["O", 270]].map(([c, d]) => {
+              const rr = (d * Math.PI) / 180;
+              return <text key={c} x={50 + Math.sin(rr) * 36} y={50 - Math.cos(rr) * 36 + 3} textAnchor="middle" fontSize="9" fill="#8fa3b5">{c}</text>;
+            })}
+            <g transform={`rotate(${WX.windDir} 50 50)`}>
+              <path d="M 50 12 L 55 44 L 50 38 L 45 44 Z" fill="#93c5fd" />
+              <line x1="50" y1="50" x2="50" y2="38" stroke="#93c5fd" strokeWidth="1.6" />
+            </g>
+            <circle cx="50" cy="50" r="3.5" fill="#d4a24e" stroke="#5c3a1a" />
+          </svg>
+          <span className="engrave mt-0.5 text-[8.5px] uppercase tracking-widest">Girouette</span>
+          <span className="font-mono text-[9px] text-sky-300">{WX.windDir}°</span>
+        </div>
+        {/* nébulosité : la lucarne de ciel se voile — l'opacité = la couverture */}
+        <div className="flex flex-col items-center">
+          <div className="relative h-[74px] w-[88px] overflow-hidden rounded-md border-2 border-[#8a5a2b]"
+            style={{ background: "linear-gradient(180deg, #38bdf8, #bae6fd 70%, #e0f2fe)" }}>
+            <div className="absolute right-[9px] top-[7px] h-[18px] w-[18px] rounded-full bg-[#fde68a]"
+              style={{ opacity: Math.max(0.08, 1 - WX.clouds / 110), boxShadow: "0 0 10px rgba(253,230,138,0.8)" }} />
+            <div className="absolute inset-0" style={{ opacity: WX.clouds / 100, background: "linear-gradient(180deg, #e2e8f0, #cbd5e1)" }} />
+            <div className="pcFog absolute inset-0" style={{ opacity: (WX.clouds / 100) * 0.55 }}>
+              {[[-6, 4, 34, 16], [18, 22, 40, 18], [46, 2, 36, 15], [58, 26, 38, 16]].map(([x, y, rw, rh], i) => (
+                <span key={i} className="absolute rounded-[50%] blur-[2px] bg-white"
+                  style={{ left: `${x}%`, top: `${y}px`, width: rw, height: rh }} />
+              ))}
+            </div>
+          </div>
+          <span className="engrave mt-0.5 text-[8.5px] uppercase tracking-widest">Nébulosité</span>
+          <span className="font-mono text-[9px] text-slate-300">{WX.clouds} % — ciel voilé</span>
+        </div>
+      </div>
+      <div className="mt-2 grid grid-cols-3 gap-2 rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 p-2">
+        {/* thermomètre */}
+        <div className="flex items-center justify-center gap-1.5">
+          <svg viewBox="0 0 30 90" className="h-[86px] w-[26px]">
+            <rect x="10" y="6" width="10" height="66" rx="5" fill="#0d1420" stroke="#8a5a2b" strokeWidth="1.5" />
+            <circle cx="15" cy="78" r="7" fill="#7f1d1d" stroke="#8a5a2b" strokeWidth="1.5" />
+            <rect x="12" y={72 - (WX.temp / 40) * 62} width="6" height={(WX.temp / 40) * 62 + 2} rx="3" fill="#ef4444" />
+            {[0, 10, 20, 30, 40].map((t) => (
+              <g key={t}>
+                <line x1="21" y1={72 - (t / 40) * 62} x2="25" y2={72 - (t / 40) * 62} stroke="#8fa3b5" strokeWidth="1" />
+                <text x="24" y={75 - (t / 40) * 62} fontSize="6" fill="#8fa3b5">{t}</text>
+              </g>
+            ))}
+          </svg>
+          <div>
+            <p className="engrave text-[8px] uppercase tracking-widest">Thermo.</p>
+            <p className="font-mono text-[13px] font-bold text-amber-300">{WX.temp} °C</p>
+          </div>
+        </div>
+        {/* houle : échelle de Douglas */}
+        <div className="flex flex-col items-center">
+          <div className="relative h-[80px] w-8 overflow-hidden rounded border border-[#5c3a1a] bg-[#0d1420]">
+            <div className="absolute inset-x-0 bottom-0 bg-sky-800/70" style={{ height: `${(WX.douglas / 9) * 100}%` }} />
+            <div className="absolute inset-x-0 border-t-2 border-amber-400" style={{ bottom: `${(WX.douglas / 9) * 100}%` }} />
+          </div>
+          <span className="engrave mt-0.5 text-[8px] uppercase tracking-widest">Houle — Douglas {WX.douglas}</span>
+          <span className="font-mono text-[9px] text-sky-300">{WX.hs} m · {DOUGLAS_LABEL[WX.douglas]}</span>
+        </div>
+        {/* visibilité */}
+        <div className="flex flex-col items-center justify-center gap-1">
+          <svg viewBox="0 0 100 60" className="w-[80px]">
+            <ellipse cx="50" cy="30" rx="20" ry="13" fill="none" stroke="#7dd3fc" strokeWidth="2" />
+            <circle cx="50" cy="30" r="6" fill="#7dd3fc" />
+            <circle cx="50" cy="30" r="2.2" fill="#0d1420" />
+            <path d="M 12 30 Q 50 -2 88 30" fill="none" stroke="#7dd3fc" strokeWidth="1" opacity="0.6" />
+            <path d="M 12 30 Q 50 62 88 30" fill="none" stroke="#7dd3fc" strokeWidth="1" opacity="0.6" />
+          </svg>
+          <span className="engrave text-[8px] uppercase tracking-widest">Visibilité</span>
+          <span className="font-mono text-[13px] font-bold text-amber-300">{WX.visibility} km</span>
+          <span className="text-[7.5px] uppercase tracking-wide text-amber-200/70">
+            {WX.fog ? "brouillard dense" : WX.storm ? "⛈️ tempête" : WX.rain > 20 ? "pluie en cours" : "air clair"}
+          </span>
+        </div>
+      </div>
+      <div className="mt-2 flex items-center justify-center gap-2 rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 px-2 py-1.5">
+        <svg viewBox="0 0 40 40" className="h-8 w-8">
+          <g transform={`rotate(${WX.curDir} 20 20)`}>
+            <line x1="20" y1="38" x2="20" y2="10" stroke="#5eead4" strokeWidth="2.4" />
+            <polygon points="20,4 15,13 25,13" fill="#5eead4" />
+          </g>
+        </svg>
+        <p className="engrave text-[9px] leading-tight">
+          <b className="font-mono text-teal-300">{WX.curSpd} km/h · {WX.curDir}°</b> — courant :<br />
+          affiché au quart, non intégré à l'estime
+        </p>
+        <p className="engrave text-[9px] leading-tight">
+          vent vrai <b className="font-mono text-sky-300">{WX.windSpd} km/h au {WX.windDir}°</b><br />
+          apparent <b className="font-mono text-sky-300">{Math.round(player.awSpd)} km/h {player.awRel >= 0 ? "T" : "B"}</b>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, onWx, superBlock, canShop }) {
   const cmd = (data) => sock && sock.command(data);
   const player = snap.player;
@@ -753,6 +1145,9 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
   const d = new Date(snap.epoch + snap.t * MS_PER_MIN);
   const hour = d.getHours() + d.getMinutes() / 60;
   const [regardCabin, setRegardCabin] = useState(42);
+  const [dial, setDial] = useState("");
+  const [radioMode, setRadioMode] = useState("prive");
+  const [logFilter, setLogFilter] = useState("tout");
   const uw = player.location === "underwater";
   const wheelLocked = player.autopilot || !!player.beaconLock;
   const canCapture = (view.beacons || []).some((b) => b.km <= CAPTURE_R_KM);
@@ -880,9 +1275,20 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
             </div>
           </div>
 
-          {/* RADIO + SONAR (section 3.5) + JOURNAL (3.6) : colonne suivante */}
+          {/* RADIO + SONAR */}
           <div className="col-span-12 space-y-3 xl:col-span-4">
-            {/* TODO INTEGRATION: 3.5 radio/sonar, 3.6 journal + instruments de pont */}
+            <RadioSet snap={snap} cmd={cmd} dial={dial} setDial={setDial} radioMode={radioMode} setRadioMode={setRadioMode} />
+            <SonarScope snap={snap} cmd={cmd} />
+          </div>
+
+          {/* JOURNAL DE BORD */}
+          <div className="col-span-12 xl:col-span-8">
+            <LogBook snap={snap} filter={logFilter} setFilter={setLogFilter} />
+          </div>
+
+          {/* INSTRUMENTS DE PONT */}
+          <div className="col-span-12 xl:col-span-4">
+            <WeatherBoard snap={snap} />
           </div>
         </div>
 
