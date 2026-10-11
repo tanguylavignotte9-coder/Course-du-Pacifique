@@ -1025,10 +1025,10 @@ test("beastSpawn : pleine eau, à au moins 1000 km du port (plusieurs graines)",
   }
 });
 
-test("bête : rassasiée immobile (jauge décroît) ; affamée sans bruit, à l'écoute immobile", () => {
-  const beast = { x: 30, y: 30, heading: 0, hunger: 1 };
+test("bête : rassasiée en sieste (immobile, jauge décroît) ; affamée sans bruit, à l'écoute immobile", () => {
+  const beast = { x: 30, y: 30, heading: 0, hunger: 1, digestCruise: false, digestPhaseLeft: 60 };
   beastTick(beast, 60, beastStubWorld, [{ x: 31, y: 30, liveX: 31, liveY: 30, ref: {} }]);
-  assert.equal(beast.x, 30); assert.equal(beast.y, 30, "rassasiée : immobile malgré une proie audible");
+  assert.equal(beast.x, 30); assert.equal(beast.y, 30, "rassasiée en sieste : immobile malgré une proie audible");
   assert.ok(Math.abs(beast.hunger - (1 - 60 / BEAST_HUNGER_MIN)) < 1e-9, "jauge décroît linéairement");
   beast.hunger = 0;
   beastTick(beast, 60, beastStubWorld, []);
@@ -1101,7 +1101,7 @@ test("estimation : constantes (bulletin 6 h, balises 400 km, plancher 40, plafon
   assert.equal(BEACON_HEAR_KM, 400);
   assert.equal(ESTIMATE_MIN_R_KM, 40);
   assert.equal(ESTIMATE_MAX_R_KM, 800);
-  assert.equal(ESTIMATE_GROWTH_KMH, 2);
+  assert.equal(ESTIMATE_GROWTH_KMH, 12);
 });
 
 test("bearingCross : croisement à 90° exact, parallèles rejetées", () => {
@@ -1135,7 +1135,7 @@ test("estimateZone : deux gisements croisés → zone près de la source", () =>
 
 test("estimateZone : la zone regonfle avec l'âge des relevés", () => {
   const z = estimateZone([{ k: "trace", x: 20, y: 20, t: 0 }], 360); // 6 h plus tard
-  assert.ok(Math.abs(z.rKm - (ESTIMATE_MIN_R_KM + 6 * ESTIMATE_GROWTH_KMH)) < 1e-6, "+2 km/h depuis le relevé le plus frais");
+  assert.ok(Math.abs(z.rKm - (ESTIMATE_MIN_R_KM + 6 * ESTIMATE_GROWTH_KMH)) < 1e-6, "regonflement depuis le relevé le plus frais");
 });
 
 test("estimateZone : relevés trop vieux sont morts → null", () => {
@@ -1157,7 +1157,7 @@ test("patrouilleur : constantes (40 km/h, canon 2 min, engagement 10 min, répit
   assert.equal(PATROL_CANNON_EVERY_MIN, 2);
   assert.equal(PATROL_ENGAGE_MIN, 10);
   assert.equal(PATROL_DETECT_COOLDOWN_MIN, 240);
-  assert.equal(PATROL_DETECT_R_KM, 45);
+  assert.equal(PATROL_DETECT_R_KM, 90);
   assert.equal(PATROL_TICK_MAX_MIN, 120);
   assert.equal(CANNON_DECAY_KM, 750);
   assert.equal(CANNON_DECAY_KM, SOUND_DECAY_KM.canon, "DRY : le canon vit dans SOUND_DECAY_KM");
@@ -1200,8 +1200,8 @@ test("patrolTick : détection par effort cumulé quand la créature est à port�
 test("patrolTick : créature hors du rayon de balayage → jamais de contact", () => {
   const w = buildWorld(42);
   const p = { x: 30, y: 30, mode: "recherche", tgtX: 31, tgtY: 30, searchMin: 5000, searchAcc: 0, cooldownLeftMin: 0 };
-  const ev = patrolTick(p, 120, w, { x: 30.5, y: 30, rKm: 100 }, { x: 33, y: 30 });
-  assert.deepEqual(ev, [], "aucun contact à 150 km");
+  const ev = patrolTick(p, 120, w, { x: 30.5, y: 30, rKm: 100 }, { x: 40, y: 30 });
+  assert.deepEqual(ev, [], "aucun contact à 500 km");
   assert.notEqual(p.mode, "engage");
 });
 

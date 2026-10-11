@@ -1091,7 +1091,8 @@ export function npcsTick(npcs, dtMin, world) {
 // Sens unique : l'OUÏE — les bruits moteurs des NPC et les chants de
 // baleines récents. Pas de vision, pas de radio, pas de sonar actif. Les
 // navires JOUEURS sont ignorés en v1 (le danger joueur viendra plus tard).
-// Elle ne bouge QUE pour manger ; rassasiée, immobile et silencieuse.
+// Elle mange, sieste et croise ; silencieuse en digestion (elle ne crie
+// qu'en chasse) — un grand prédateur qui traverse l'océan de repas en repas.
 export const BEAST_SPAWN_MIN_PORT_KM = 1000;  // spawn : distance min au port principal
 export const BEAST_SPD_KMH = 50;             // vitesse de chasse
 export const BEAST_HUNGER_MIN = 480;         // satiété : jauge 1 → 0 (fallback, minutes de jeu)
@@ -1100,6 +1101,8 @@ export const BEAST_DIGEST_MAX = 1800;        // digestion la plus longue : 30 h 
 export const BEAST_STARVE_WANDER_MIN = 360;  // faim sans proie audible : 6 h d'écoute puis elle erre
 export const BEAST_SPAWN_DIGEST_MIN = 360;  // départ : digestion restante min (1re estimation ≥ 6 h)
 export const BEAST_SPAWN_DIGEST_MAX = 2520; // départ : digestion restante max (1re estimation ≤ 48 h)
+export const BEAST_CRUISE_KMH = 50;          // digestion : vitesse de croisière (même allure que la chasse)
+export const BEAST_DIGEST_PHASE_MIN = 120;   // digestion : durée de base d'une phase sieste/croisière (tirée 0,5× à 1,5×)
 export const BEAST_STRIKE_KM = 2;             // portée du repas
 export const BEAST_CRY_MEAN_MIN = 90;        // cadence moyenne des cris
 export const BEAST_SONG_MEMORY_MIN = 90;     // mémoire d'un chant entendu (cible potentielle) : 1h30 — une vraie chasseuse
@@ -1206,7 +1209,28 @@ export function beastTick(beast, dtMin, world, sources) {
     }
     if (beast.hunger > 0) {
       beast.hunger = Math.max(0, beast.hunger - step / (beast.satietyMin || BEAST_HUNGER_MIN));
-      continue; // rassasiée : immobile
+      // DEUX PHASES de digestion : la moitié du temps elle SIESTE (immobile —
+      // elle digère), l'autre moitié elle CROISÉ à BEAST_CRUISE_KMH. La durée
+      // de chaque phase est tirée à la bascule (0,5× à 1,5× de la base).
+      // TOUJOURS silencieuse en digestion : elle ne crie qu'en chasse.
+      if ((beast.digestPhaseLeft || 0) <= 0) {
+        beast.digestCruise = !beast.digestCruise; // bascule sieste <-> croisière
+        beast.digestPhaseLeft = BEAST_DIGEST_PHASE_MIN * (0.5 + Math.random());
+        // Cap de croisière PERSISTANT : il tient d'une phase à l'autre (avec
+        // une dérive légère ±15° par bascule) et ne change vraiment qu'au
+        // rebond — une migration, pas un papillonnage. C'est ce qui la fait
+        // TRAVERSER l'océan au lieu de vibrer sur son carré de départ.
+        if (beast.digestCruise)
+          beast.cruiseHeading = Math.round(((beast.cruiseHeading ?? Math.random() * 360) + (Math.random() * 2 - 1) * 15 + 360) % 360);
+      }
+      beast.digestPhaseLeft -= step;
+      if (beast.digestCruise) {
+        const cv = coastStep(world, beast.x, beast.y, beast.cruiseHeading, (BEAST_CRUISE_KMH / 60 / DEG_KM) * step);
+        beast.x = cv.x; beast.y = cv.y;
+        beast.heading = Math.round(cv.heading);
+        beast.cruiseHeading = cv.bounced ? Math.round(cv.heading) : beast.cruiseHeading;
+      }
+      continue; // rassasiée : sieste ou croisière — jamais de chasse ni de repas
     }
     let best = null, bestD = Infinity;
     for (const s of sources) {
@@ -1238,6 +1262,9 @@ export function beastTick(beast, dtMin, world, sources) {
       // jeûne près de deux jours — métabolisme d'un prédateur océanique.
       beast.satietyMin = BEAST_DIGEST_MIN * Math.exp(Math.random() * Math.log(BEAST_DIGEST_MAX / BEAST_DIGEST_MIN));
       beast.starveMin = 0; beast.wanderHeading = null;
+      // la digestion commence par une SIESTE (elle vient de chasser) : la
+      // première phase est immobile, la croisière viendra à la bascule.
+      beast.digestCruise = false; beast.digestPhaseLeft = BEAST_DIGEST_PHASE_MIN * (0.5 + Math.random());
       eaten = best.ref;
       break;
     }
@@ -1271,7 +1298,7 @@ export const ESTIMATE_MIN_WEIGHT = 0.02;    // en dessous : le relevé est mort
 export const ESTIMATE_CROSS_MIN_DEG = 30;   // croisement minimal pour trianguler
 export const ESTIMATE_MIN_R_KM = 40;        // rayon plancher : jamais chirurgical
 export const ESTIMATE_MAX_R_KM = 800;       // rayon plafond
-export const ESTIMATE_GROWTH_KMH = 2;       // la zone regonfle avec l'âge des données
+export const ESTIMATE_GROWTH_KMH = 12;      // la zone regonfle avec l'âge des données (elle croise à 50 km/h sous le silence)
 export const ESTIMATE_SPREAD_FACTOR = 2;    // dispersion des relevés → rayon
 export const CRY_POINT_W = 0.15;            // point mono-ouïe : poids (grossier, jamais chirurgical)
 export const CRY_DIST_UNC_PCT = 0.5;         // point mono-ouïe : ±50 % sur la distance déduite de la force
@@ -1362,7 +1389,7 @@ export const PATROL_PUBLISH_MIN = 60;            // publication NETWORK : horair
 export const PATROL_VIS_KM = 25;                 // coque visible de jour (selon météo)
 export const PATROL_VIS_NUIT_KM = 5;             // … de nuit (feux de navigation)
 export const PATROL_ARRIVE_KM = 2;               // rayon d'arrivée sur un point
-export const PATROL_DETECT_R_KM = 45;            // balayage : proximité de détection
+export const PATROL_DETECT_R_KM = 90;            // la Bête croise — fouille en zigzag (vigies + hydrophone)
 export const PATROL_DETECT_BASE_PER_MIN = 0.005; // effort de base : 0,5 %/min
 export const PATROL_DETECT_GAIN_PER_MIN2 = 0.0001; // +0,01 %/min par minute de fouille
 export const PATROL_DETECT_MAX_PER_MIN = 0.10;   // plafond : 10 %/min
