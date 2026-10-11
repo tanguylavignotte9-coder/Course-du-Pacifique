@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, coastStep, PATROL_BERTH_KM, tracePush } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SPAWN_DIGEST_MIN, BEAST_SPAWN_DIGEST_MAX, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, coastStep, PATROL_BERTH_KM, tracePush } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -382,7 +382,13 @@ function ensureBeast() {
     const p = beastSpawn(world);
     race.beast = {
       x: p.x, y: p.y, heading: Math.floor(Math.random() * 360),
-      hunger: 1, nextCryMin: nextNpcEventMin(gameMinutesNow(), BEAST_CRY_MEAN_MIN),
+      hunger: 1, // repue : elle vient de se nourrir juste avant le départ
+      // Digestion pré-course tirée uniformément [6 h, 42 h] : le premier
+      // cri (fin de digestion) tombe dans cette fenêtre, et la PREMIÈRE
+      // estimation (le bulletin de 6 h qui suit) tombe aléatoirement dans
+      // la plage 6–48 h — un état digestif initial, pas un timer.
+      satietyMin: BEAST_SPAWN_DIGEST_MIN + Math.random() * (BEAST_SPAWN_DIGEST_MAX - BEAST_SPAWN_DIGEST_MIN),
+      nextCryMin: nextNpcEventMin(gameMinutesNow(), BEAST_CRY_MEAN_MIN),
       traces: [], traceSeq: 0,
     };
     store.save();
@@ -536,8 +542,11 @@ function beastPass(now) {
       });
     }
   }
-  // Cris périodiques (en chasse comme rassasiée — on ne sait jamais où elle est)
-  if (now >= beast.nextCryMin) {
+  // Cris périodiques — EN CHASSE UNIQUEMENT : une créature qui digère est
+  // silencieuse et immobile. C'est ce silence digestif qui étale la
+  // première estimation sur la plage 6–48 h (une zone publiée pendant
+  // une digestion serait de la pure invention).
+  if (now >= beast.nextCryMin && beast.hunger <= 0) {
     beast.nextCryMin = nextNpcEventMin(now, BEAST_CRY_MEAN_MIN);
     emitSoundToAll(beast.x, beast.y, "inconnu", now);
   }
@@ -641,9 +650,13 @@ function patrolPass(now) {
   const patrol = race.patrol;
   const prev = lastPatrolT;
   lastPatrolT = now;
-  const est = estimateZone(race.evidence, now);
   const beast = race.beast;
-  const events = patrolTick(patrol, now - prev, world, est, beast ? { x: beast.x, y: beast.y } : null);
+  // BULLETIN-GATING : la patrouille vit sur la zone PUBLIÉE (les avis
+  // officiels d'exclusionPass, cadence EXCLUSION_BULLETIN_MIN) — pas sur
+  // une estimation recalculée en continu. Une seule source de vérité
+  // (« une estimation, trois surfaces ») et un rythme de fouille gouverné
+  // par la cadence officielle des avis.
+  const events = patrolTick(patrol, now - prev, world, race.exclusion, beast ? { x: beast.x, y: beast.y } : null);
   // Publication NETWORK : position officielle horaire (toujours en retard
   // d'une heure au plus — la donnée publique est un service, pas une vue).
   if (now >= (patrol.nextPubMin || 0)) {
@@ -700,7 +713,21 @@ function exclusionPass(now) {
   // purge : les relevés de plus de EVIDENCE_MAX_AGE_MIN sont morts
   race.evidence = race.evidence.filter((e) => now - e.t < EVIDENCE_MAX_AGE_MIN);
   const est = estimateZone(race.evidence, now);
-  if (!est) return; // aucune donnée vivante : aucune zone publiée
+  if (!est) {
+    // Plus de relevés vivants : la zone est LEVÉE — un avis qui traîne
+    // indéfiniment sans preuve vivante est pire qu'aucune zone (et la
+    // patrouille, qui vit sur la zone publiée, regagne son quai).
+    if (race.exclusion) {
+      race.exclusion = null;
+      store.save();
+      const text = `⚖️ AVIS OFFICIEL — la zone d'exclusion est levée (plus de relevés hydrographiques vivants).`;
+      for (const [, st] of states) {
+        st.notifSeq = (st.notifSeq || 0) + 1;
+        st.notifications.unshift({ id: st.notifSeq, t: st.t, text, kind: "good", cat: "radio" });
+      }
+    }
+    return;
+  }
   race.exclusion = { x: est.x, y: est.y, rKm: est.rKm, t: now };
   store.save();
   const text = `⚠️ AVIS OFFICIEL — zone d'exclusion ${est.y.toFixed(1)}°N ${est.x.toFixed(1)}°E, rayon ${Math.round(est.rKm)} km (opérations hydrographiques en cours). Navigation dans le secteur à vos risques et périls.`;

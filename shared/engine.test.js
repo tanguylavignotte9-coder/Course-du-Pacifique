@@ -791,7 +791,7 @@ test("sonar : constantes (son 5400 km/h, décroissance par type, portée par éc
   assert.equal(SOUND_DECAY_KM.cargo, 400);
   assert.equal(SOUND_DECAY_KM.patrouille, 500);
   assert.equal(SOUND_DECAY_KM.ping, 500);
-  assert.equal(SOUND_DECAY_KM.biologique, 100);
+  assert.equal(SOUND_DECAY_KM.biologique, 125);
   assert.equal(SOUND_DECAY_KM.inconnu, 500);
   assert.equal(SOUND_DECAY_KM.canon, 750);
   assert.equal(SONAR_RANGE_KM.ile, 300);
@@ -907,10 +907,10 @@ test("nearestOnLine : point le plus proche de la polyligne", () => {
 });
 
 // ---------- Vie du monde (NPC v1) ----------
-test("npcs : constantes (25 pêcheurs, 3 cargos, 100 baleines)", () => {
+test("npcs : constantes (25 pêcheurs, 5 cargos, 120 baleines)", () => {
   assert.equal(NPC_FISHERMEN, 25);
-  assert.equal(NPC_CARGOS, 3);
-  assert.equal(NPC_WHALES, 100);
+  assert.equal(NPC_CARGOS, 5);
+  assert.equal(NPC_WHALES, 120);
   assert.equal(FISHER_RANGE_KM, 100);
   assert.equal(FISHER_MIN_OFF_KM, 3);
   assert.equal(CARGO_SPD_KMH, 30);
@@ -1008,9 +1008,9 @@ test("npcsTick : baleine jamais hors carte après un gros pas", () => {
 // ---------- La Bête v1 ----------
 const beastStubWorld = { isLand: () => false };
 
-test("bête : constantes (50 km/h, faim 12 h, frappe 2 km, spawn ≥ 1000 km, traces 12 h)", () => {
+test("bête : constantes (50 km/h, faim fallback 8 h, frappe 2 km, spawn ≥ 1000 km, traces 12 h)", () => {
   assert.equal(BEAST_SPD_KMH, 50);
-  assert.equal(BEAST_HUNGER_MIN, 720);
+  assert.equal(BEAST_HUNGER_MIN, 480);
   assert.equal(BEAST_STRIKE_KM, 2);
   assert.equal(BEAST_SPAWN_MIN_PORT_KM, 1000);
   assert.equal(BEAST_TRACE_PERSIST_MIN, 720);
@@ -1096,9 +1096,9 @@ test("fabriques NPC : mêmes champs que generateNpcs (respawn à population cons
 });
 
 // ---------- Estimation : la carte de la compagnie ----------
-test("estimation : constantes (bulletin 6 h, balises 200 km, plancher 40, plafond 800)", () => {
+test("estimation : constantes (bulletin 6 h, balises 400 km, plancher 40, plafond 800)", () => {
   assert.equal(EXCLUSION_BULLETIN_MIN, 360);
-  assert.equal(BEACON_HEAR_KM, 200);
+  assert.equal(BEACON_HEAR_KM, 400);
   assert.equal(ESTIMATE_MIN_R_KM, 40);
   assert.equal(ESTIMATE_MAX_R_KM, 800);
   assert.equal(ESTIMATE_GROWTH_KMH, 2);
@@ -1157,7 +1157,7 @@ test("patrouilleur : constantes (40 km/h, canon 2 min, engagement 10 min, répit
   assert.equal(PATROL_CANNON_EVERY_MIN, 2);
   assert.equal(PATROL_ENGAGE_MIN, 10);
   assert.equal(PATROL_DETECT_COOLDOWN_MIN, 240);
-  assert.equal(PATROL_DETECT_R_KM, 30);
+  assert.equal(PATROL_DETECT_R_KM, 45);
   assert.equal(PATROL_TICK_MAX_MIN, 120);
   assert.equal(CANNON_DECAY_KM, 750);
   assert.equal(CANNON_DECAY_KM, SOUND_DECAY_KM.canon, "DRY : le canon vit dans SOUND_DECAY_KM");

@@ -718,7 +718,7 @@ export const SOUND_DECAY_KM = {           // bruits : décroissance de la force 
   cargo: 400,       // cargo NPC en traversée
   patrouille: 500,  // frégate officielle : moteur allumé en permanence
   ping: 500,        // ping actif d'un autre navire (événement)
-  biologique: 100,  // chant de baleine
+  biologique: 125,  // chant de baleine
   inconnu: 500,     // son inconnu
   canon: 750,       // tirs lointains
 };
@@ -837,8 +837,8 @@ export function sonarPing(st, world, others = [], biologics = []) {
 //   privés des cargos (brouillés pour les joueurs — jamais destinataires).
 // Aucune collision, aucune capture, aucune détection visuelle en v1.
 export const NPC_FISHERMEN = 25;        // pêcheurs autour du continent et des îles (50 : cacophonie à l'hydrophone)
-export const NPC_CARGOS = 3;            // cargos simultanés, traversées bord à bord
-export const NPC_WHALES = 100;          // baleines réparties sur la carte
+export const NPC_CARGOS = 5;            // cargos simultanés, traversées bord à bord
+export const NPC_WHALES = 120;          // baleines réparties sur la carte
 export const FISHER_RANGE_KM = 100;     // rayon d'action max d'un pêcheur au large
 export const FISHER_MIN_OFF_KM = 3;     // distance min d'un spot de pêche à la côte
 export const FISHER_SPD_KMH = 15;       // transit d'un pêcheur
@@ -1094,10 +1094,15 @@ export function npcsTick(npcs, dtMin, world) {
 // Elle ne bouge QUE pour manger ; rassasiée, immobile et silencieuse.
 export const BEAST_SPAWN_MIN_PORT_KM = 1000;  // spawn : distance min au port principal
 export const BEAST_SPD_KMH = 50;             // vitesse de chasse
-export const BEAST_HUNGER_MIN = 720;         // satiété : jauge 1 → 0 (minutes de jeu)
+export const BEAST_HUNGER_MIN = 480;         // satiété : jauge 1 → 0 (fallback, minutes de jeu)
+export const BEAST_DIGEST_MIN = 180;         // digestion la plus courte : 3 h (frénésie)
+export const BEAST_DIGEST_MAX = 1800;        // digestion la plus longue : 30 h (disette)
+export const BEAST_STARVE_WANDER_MIN = 360;  // faim sans proie audible : 6 h d'écoute puis elle erre
+export const BEAST_SPAWN_DIGEST_MIN = 360;  // départ : digestion restante min (1re estimation ≥ 6 h)
+export const BEAST_SPAWN_DIGEST_MAX = 2520; // départ : digestion restante max (1re estimation ≤ 48 h)
 export const BEAST_STRIKE_KM = 2;             // portée du repas
 export const BEAST_CRY_MEAN_MIN = 90;        // cadence moyenne des cris
-export const BEAST_SONG_MEMORY_MIN = 30;     // mémoire d'un chant entendu (cible potentielle)
+export const BEAST_SONG_MEMORY_MIN = 90;     // mémoire d'un chant entendu (cible potentielle) : 1h30 — une vraie chasseuse
 export const BEAST_TRACE_PERSIST_MIN = 720;  // traces : 12 h de jeu
 export const BEAST_TICK_MAX_MIN = 120;      // garde-fou : dt max par passe serveur
 export const BEAST_SUBSTEP_MIN = 5;         // sous-pas de déplacement
@@ -1135,7 +1140,7 @@ export function coastReflect(world, x, y, heading) {
   let vx = 0, vy = 0;
   for (let k = 0; k < 16; k++) {
     const a = (k * 22.5 * Math.PI) / 180;
-    if (!world.isLand(x + Math.sin(a) * r, y + Math.cos(a) * r)) { vx += Math.sin(a); vy += Math.cos(a); }
+    if (inOcean(world, x + Math.sin(a) * r, y + Math.cos(a) * r)) { vx += Math.sin(a); vy += Math.cos(a); }
   }
   if (vx === 0 && vy === 0) // encerclé de terre : demi-tour dispersé
     return (heading + 180 + (Math.random() * 2 - 1) * WHALE_BOUNCE_JITTER_DEG + 360) % 360;
@@ -1148,17 +1153,30 @@ export function coastReflect(world, x, y, heading) {
 // (jusqu'à COAST_BOUNCE_TRIES réflexions). `bounced` signale le rebond :
 // l'appelant CONSERVE le cap réfléchi (poursuite dans la direction du
 // rebond) — le re-visageage ne reprend qu'au tick suivant.
+// L'océan jouable est borné par la carte : au-delà de [0, MAP] il n'y a
+// pas d'eau. Les bords de carte rebondissent donc comme une côte — sans
+// cette borne, une fuite cap au large emporte la Bête (ou la frégate)
+// hors de la zone de course pour toujours.
+const inOcean = (world, x, y) =>
+  x >= 0 && x <= MAP && y >= 0 && y <= MAP && !world.isLand(x, y);
+
 export function coastStep(world, x, y, heading, stepDeg) {
   let h = heading;
   let bounced = false;
   for (let k = 0; k < COAST_BOUNCE_TRIES; k++) {
     const nx = x + Math.sin((h * Math.PI) / 180) * stepDeg;
     const ny = y + Math.cos((h * Math.PI) / 180) * stepDeg;
-    if (!world.isLand(nx, ny)) return { x: nx, y: ny, heading: h, bounced };
+    if (inOcean(world, nx, ny)) return { x: nx, y: ny, heading: h, bounced };
     h = coastReflect(world, nx, ny, h);
     bounced = true;
   }
-  return { x, y, heading: h, bounced }; // encoincement de côtes : pas perdu, cap réfléchi
+  // Encoincement de côtes : pas perdu — et le cap réfléchi est BRISÉ
+  // aléatoirement. Sans ça, un cycle de réflexions déterministe (un cap
+  // qui se réfléchit sur lui-même, pile opposé à la normale d'eau libre)
+  // fige le navire sur place POUR TOUJOURS : demi-tour dispersé, comme
+  // un encerclement. La brisure aléatoire garantit la sortie du piège.
+  h = (h + 180 + (Math.random() * 2 - 1) * 45 + 720) % 360;
+  return { x, y, heading: h, bounced };
 }
 
 // Tick de la Bête. `sources` : bruits AUDIBLES construits par le serveur —
@@ -1187,7 +1205,7 @@ export function beastTick(beast, dtMin, world, sources) {
       continue;
     }
     if (beast.hunger > 0) {
-      beast.hunger = Math.max(0, beast.hunger - step / BEAST_HUNGER_MIN);
+      beast.hunger = Math.max(0, beast.hunger - step / (beast.satietyMin || BEAST_HUNGER_MIN));
       continue; // rassasiée : immobile
     }
     let best = null, bestD = Infinity;
@@ -1196,9 +1214,30 @@ export function beastTick(beast, dtMin, world, sources) {
       const d = distKm(beast.x, beast.y, s.x, s.y);
       if (d < bestD) { bestD = d; best = s; }
     }
-    if (!best) continue; // rien d'audible : à l'écoute, immobile
+    if (!best) {
+      // Faim + rien d'audible : à l'écoute un temps, puis elle ERRA — une
+      // créature affamée quitte les eaux vides (sinon désert = famine
+      // éternelle et zone périmée à l'identique). Le cap d'errance tient
+      // jusqu'à un rebond (côte ou bord de carte — voir coastStep).
+      beast.starveMin = (beast.starveMin || 0) + step;
+      if (beast.starveMin >= BEAST_STARVE_WANDER_MIN) {
+        if (beast.wanderHeading == null) beast.wanderHeading = Math.floor(Math.random() * 360);
+        const wv = coastStep(world, beast.x, beast.y, beast.wanderHeading, (BEAST_SPD_KMH / 60 / DEG_KM) * step);
+        beast.x = wv.x; beast.y = wv.y;
+        beast.heading = Math.round(wv.heading);
+        beast.wanderHeading = wv.bounced ? Math.round(wv.heading) : beast.wanderHeading;
+      }
+      continue;
+    }
+    beast.starveMin = 0; beast.wanderHeading = null;
     if (distKm(beast.x, beast.y, best.liveX, best.liveY) <= BEAST_STRIKE_KM) {
       beast.hunger = 1; // repue
+      // APPÉTIT VARIABLE : la durée de digestion suivante est tirée au
+      // hasard (log-uniforme entre frénésie et disette), indépendamment
+      // de la précédente. La Bête mange parfois deux fois par jour, puis
+      // jeûne près de deux jours — métabolisme d'un prédateur océanique.
+      beast.satietyMin = BEAST_DIGEST_MIN * Math.exp(Math.random() * Math.log(BEAST_DIGEST_MAX / BEAST_DIGEST_MIN));
+      beast.starveMin = 0; beast.wanderHeading = null;
       eaten = best.ref;
       break;
     }
@@ -1234,7 +1273,9 @@ export const ESTIMATE_MIN_R_KM = 40;        // rayon plancher : jamais chirurgic
 export const ESTIMATE_MAX_R_KM = 800;       // rayon plafond
 export const ESTIMATE_GROWTH_KMH = 2;       // la zone regonfle avec l'âge des données
 export const ESTIMATE_SPREAD_FACTOR = 2;    // dispersion des relevés → rayon
-export const BEACON_HEAR_KM = 200;          // balises hydrophones : portée d'écoute
+export const CRY_POINT_W = 0.15;            // point mono-ouïe : poids (grossier, jamais chirurgical)
+export const CRY_DIST_UNC_PCT = 0.5;         // point mono-ouïe : ±50 % sur la distance déduite de la force
+export const BEACON_HEAR_KM = 400;          // balises hydrophones : portée d'écoute
 export const EXCLUSION_BULLETIN_MIN = 360;  // bulletin officiel : toutes les 6 h
 export const EVIDENCE_MAX_AGE_MIN = 4320;   // purge : relevés de plus de 3 jours
 export const TELEMETRY_MAX = 200;           // tampon local du télémetre d'un navire
@@ -1248,7 +1289,7 @@ export function bearingCross(l1, l2) {
   const v2 = { x: Math.sin(rad(l2.brg)), y: Math.cos(rad(l2.brg)) };
   const det = v1.x * v2.y - v1.y * v2.x;
   const deg = Math.abs((Math.atan2(det, v1.x * v2.x + v1.y * v2.y) * 180) / Math.PI);
-  if (deg < ESTIMATE_CROSS_MIN_DEG) return null;
+  if (Math.min(deg, 180 - deg) < ESTIMATE_CROSS_MIN_DEG) return null;
   const dx = l2.x - l1.x, dy = l2.y - l1.y;
   const t = (dx * v2.y - v2.x * dy) / det;
   return { x: l1.x + v1.x * t, y: l1.y + v1.y * t, deg };
@@ -1273,8 +1314,21 @@ export function estimateZone(evidence, nowMin) {
   const pts = []; // { x, y, w }
   for (const e of live) if (e.k !== "cry") pts.push({ x: e.x, y: e.y, w: e.w });
   const cries = live.filter((e) => e.k === "cry");
+  // Point mono-ouïe GROSSIER : d'un seul gisement, la force du cri donne une
+  // distance approchée (décroissance) — une localisation vague sur la ligne
+  // de relèvement, jamais chirurgicale. L'incertitude (unc) gonfle le rayon.
+  for (const e of cries) {
+    if (e.str == null  | e.str <= 0) continue;
+    const dKm = SOUND_DECAY_KM.inconnu * (1 - e.str / 100);
+    const a = (e.brg * Math.PI) / 180;
+    pts.push({
+      x: e.x + Math.sin(a) * (dKm / DEG_KM), y: e.y + Math.cos(a) * (dKm / DEG_KM),
+      w: CRY_POINT_W * e.w, unc: dKm * CRY_DIST_UNC_PCT,
+    });
+  }
   for (let i = 0; i < cries.length; i++) {
     for (let j = i + 1; j < cries.length; j++) {
+      if (cries[i].x === cries[j].x && cries[i].y === cries[j].y) continue; // même ouïe : jamais deux
       const c = bearingCross(cries[i], cries[j]);
       if (c) pts.push({ x: c.x, y: c.y, w: cries[i].w * cries[j].w });
     }
@@ -1284,7 +1338,7 @@ export function estimateZone(evidence, nowMin) {
   const x = pts.reduce((s, p) => s + p.x * p.w, 0) / W;
   const y = pts.reduce((s, p) => s + p.y * p.w, 0) / W;
   const spreadKm = Math.sqrt(
-    pts.reduce((s, p) => s + p.w * distKm(x, y, p.x, p.y) ** 2, 0) / W,
+    pts.reduce((s, p) => s + p.w * (distKm(x, y, p.x, p.y) + (p.unc || 0)) ** 2, 0) / W,
   );
   const latest = Math.max(...live.map((e) => e.t));
   const rKm = clamp(
@@ -1308,7 +1362,7 @@ export const PATROL_PUBLISH_MIN = 60;            // publication NETWORK : horair
 export const PATROL_VIS_KM = 25;                 // coque visible de jour (selon météo)
 export const PATROL_VIS_NUIT_KM = 5;             // … de nuit (feux de navigation)
 export const PATROL_ARRIVE_KM = 2;               // rayon d'arrivée sur un point
-export const PATROL_DETECT_R_KM = 30;            // balayage : proximité de détection
+export const PATROL_DETECT_R_KM = 45;            // balayage : proximité de détection
 export const PATROL_DETECT_BASE_PER_MIN = 0.005; // effort de base : 0,5 %/min
 export const PATROL_DETECT_GAIN_PER_MIN2 = 0.0001; // +0,01 %/min par minute de fouille
 export const PATROL_DETECT_MAX_PER_MIN = 0.10;   // plafond : 10 %/min
@@ -1318,6 +1372,7 @@ export const PATROL_DETECT_COOLDOWN_MIN = 240;   // après engagement : 4 h de r
 export const PATROL_TICK_MAX_MIN = 120;          // garde-fou dt par passe serveur
 export const PATROL_SUBSTEP_MIN = 5;            // sous-pas de déplacement
 export const PATROL_BERTH_KM = 2;               // poste fixe de la frégate : 2 km au large du port
+const PATROL_BOUNCE_MIN = 45;                 // rebond : le cap réfléchi tient 45 min (anti-grind)
 export const BEAST_FLEE_LONG_KMH = 60;          // fuite longue : 60 km/h…
 export const BEAST_FLEE_LONG_MIN = 240;         // …pendant 4 h
 export const BEAST_FLEE_SHORT_KM = 50;          // fuite courte : 50 km d'un coup
@@ -1346,7 +1401,7 @@ export function beastFlee(beast, fromX, fromY) {
   beast.fleeHeading = Math.round(away);
 }
 
-// Tick du Patrouilleur. `zone` : estimation FRAÎCHE { x, y, rKm } ou null
+// Tick du Patrouilleur. `zone` : zone publiée { x, y, rKm, t } ou null
 // (null → à quai : rien à chercher). `beastPos` : position VRAIE de la
 // créature ou null. Retourne des événements :
 //   { k: "detect", x, y }  contact : la créature est vue (et fuit)
@@ -1362,7 +1417,7 @@ export function patrolTick(patrol, dtMin, world, zone, beastPos) {
   const pickTarget = () => {
     for (let k = 0; k < 5; k++) {
       const a = Math.random() * Math.PI * 2;
-      const rr = Math.sqrt(Math.random()) * ((zone.rKm * 0.8) / DEG_KM); // en degrés
+      const rr = Math.sqrt(Math.random()) * ((zone.rKm * 0.6) / DEG_KM); // en degrés — cœur de zone : la créature y est plus probable
       const tx = zone.x + Math.cos(a) * rr, ty = zone.y + Math.sin(a) * rr;
       if (!world.isLand(tx, ty)) { patrol.tgtX = tx; patrol.tgtY = ty; return; }
     }
@@ -1379,7 +1434,14 @@ export function patrolTick(patrol, dtMin, world, zone, beastPos) {
     const mv = coastStep(world, patrol.x, patrol.y, brg, stepDeg);
     patrol.x = mv.x; patrol.y = mv.y;
     patrol.heading = Math.round(mv.heading);
-    patrol.bounceHeading = mv.bounced ? mv.heading : null;
+    // ANTI-GRIND : le cap réfléchi TIENT (45 min) — re-viser la côte à
+    // chaque pas fait vibrer la frégate sur place dans un cul-de-sac.
+    if (mv.bounced) {
+      patrol.bounceHeading = mv.heading;
+      patrol.bounceLeftMin = PATROL_BOUNCE_MIN;
+    } else if ((patrol.bounceLeftMin || 0) > 0) {
+      patrol.bounceLeftMin -= step; // poursuite du rebond en eau libre
+    } else patrol.bounceHeading = null;
   };
   let remaining = Math.min(Math.max(0, dtMin), PATROL_TICK_MAX_MIN);
   while (remaining > 1e-9) {
@@ -1410,7 +1472,33 @@ export function patrolTick(patrol, dtMin, world, zone, beastPos) {
         pickTarget();
         continue;
       }
-      moveToward(zone.x, zone.y, step);
+      // ANTI-GRIND DE TRANSIT : derrière une masse terrestre, le cap direct
+      // vibre de rebond en rebond sans jamais contourner. Si la distance
+      // NETTE au centre ne baisse plus (1 h), on BORDE : cap décalé de 90°
+      // côté eau libre (500 km, sinon 250) pour contourner l'obstacle —
+      // bordage abandonné au point de bordage atteint, au bout de 6 h,
+      // ou dès que le progrès net reprend (nouveau bulletin).
+      if (patrol.zoneT !== zone.t) { patrol.zoneT = zone.t; patrol.transitBestD = Infinity; patrol.transitStallMin = 0; patrol.wp = null; }
+      const dC = distKm(patrol.x, patrol.y, zone.x, zone.y);
+      if (dC < (patrol.transitBestD ?? Infinity) - 25) { patrol.transitBestD = dC; patrol.transitStallMin = 0; patrol.wp = null; }
+      else {
+        patrol.transitStallMin = (patrol.transitStallMin || 0) + step;
+        if (patrol.transitStallMin >= 60 && patrol.wp == null) {
+          const brgD = bearingTo(patrol.x, patrol.y, zone.x, zone.y);
+          for (const r of [10, 5]) for (const side of [1, -1]) {
+            const a = ((brgD + side * 90) * Math.PI) / 180;
+            const wx = patrol.x + Math.sin(a) * r, wy = patrol.y + Math.cos(a) * r;
+            if (!world.isLand(wx, wy)) { patrol.wp = { x: wx, y: wy }; patrol.wpLeftMin = 360; patrol.transitStallMin = 0; break; }
+          }
+        }
+      }
+      let tx = zone.x, ty = zone.y;
+      if (patrol.wp) {
+        patrol.wpLeftMin = (patrol.wpLeftMin ?? 360) - step;
+        if (distKm(patrol.x, patrol.y, patrol.wp.x, patrol.wp.y) <= PATROL_ARRIVE_KM || patrol.wpLeftMin <= 0) patrol.wp = null;
+        else { tx = patrol.wp.x; ty = patrol.wp.y; }
+      }
+      moveToward(tx, ty, step);
       continue;
     }
     // Recherche : balayage de la zone + effort de détection
