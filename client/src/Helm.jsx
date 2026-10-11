@@ -817,7 +817,25 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
               {superBlock}
             </div>
           </div>
-          <WindowsBand hour={hour} w={weather} dive={uw} peri={player.periscope} snap={snap} />
+          <div className="flex flex-col items-center gap-3 xl:flex-row">
+            <div className="w-full xl:w-1/2">
+              <WindowsBand hour={hour} w={weather} dive={uw} peri={player.periscope} snap={snap} />
+            </div>
+            <div className="w-full xl:w-1/2">
+              <div className="flex items-center justify-center gap-2">
+                <span className="plate rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em]">Vue de dessus — horizon 20 km</span>
+                <Gear size={16} />
+              </div>
+              <div className="mx-auto mt-2 w-fit rounded-full border-4 border-[#6b5323] p-1.5 shadow-[0_4px_12px_rgba(0,0,0,0.55)]">
+                <div className="rounded-full border border-[#b87333]">
+                  <TopView snap={snap} />
+                </div>
+              </div>
+              <p className="engrave mt-2 text-center text-[7.5px] uppercase tracking-[0.18em]">
+                {uw && !player.periscope ? "🕳️ périscope rentré — aucune observation visuelle" : "molette / pincement : zoom ×1 à ×16 · voile gris = visibilité météo"}
+              </p>
+            </div>
+          </div>
           <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
             {canShop && <button onClick={onShop} className="plate rounded px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider hover:brightness-110">📦 Avitaillement</button>}
             {snap.networkZone && <button onClick={onNetwork} className="plate rounded px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider hover:brightness-110">📡 NETWORK</button>}
@@ -903,22 +921,8 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
             </div>
           </div>
 
-          {/* VUE DE DESSUS + TABLE À CARTES */}
-          <div className="col-span-12 space-y-3 xl:col-span-5">
-            <div className="instrument rivets p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="plate rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em]">Vue de dessus — horizon 20 km</span>
-                <Gear size={16} />
-              </div>
-              <div className="mx-auto w-fit rounded-full border-4 border-[#6b5323] p-1.5 shadow-[0_4px_12px_rgba(0,0,0,0.55)]">
-                <div className="rounded-full border border-[#b87333]">
-                  <TopView snap={snap} />
-                </div>
-              </div>
-              <p className="engrave mt-2 text-center text-[7.5px] uppercase tracking-[0.18em]">
-                {uw && !player.periscope ? "🕳️ périscope rentré — aucune observation visuelle" : "molette / pincement : zoom ×1 à ×16 · voile gris = visibilité météo"}
-              </p>
-            </div>
+          {/* TABLE À CARTES */}
+          <div className="col-span-12 xl:col-span-5">
             <div className="instrument rivets p-3">
               <NavMap snap={snap} sock={sock} />
             </div>
