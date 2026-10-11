@@ -38,11 +38,11 @@ const SONG_FULL_MIN = SOUND_DECAY_KM.biologique / (SOUND_KMH / 60);    // chant 
 
 function Sec({ t, children, open }) {
   return (
-    <details name="pc-manuel" open={open} className="rounded-lg border border-slate-700 bg-slate-800/50">
-      <summary className="cursor-pointer select-none rounded-lg px-3 py-2 text-sm font-semibold text-sky-300 hover:bg-slate-700/40">
+    <details name="pc-manuel" open={open} className="rounded-lg border border-[#4a3820] bg-[#0a0f16]/50">
+      <summary className="cursor-pointer select-none rounded-lg px-3 py-2 text-sm font-semibold text-amber-200 hover:bg-[#3a2c18]/60">
         {t}
       </summary>
-      <div className="space-y-2 px-4 pb-4 pt-1 text-xs leading-relaxed text-slate-300">{children}</div>
+      <div className="space-y-2 px-4 pb-4 pt-1 text-xs leading-relaxed text-amber-100/85">{children}</div>
     </details>
   );
 }
@@ -50,18 +50,18 @@ function Sec({ t, children, open }) {
 // Petite grille clé/valeur (annexes et tableaux)
 function Kv({ rows }) {
   return (
-    <div className="grid grid-cols-[minmax(9rem,auto)_1fr] gap-x-4 gap-y-1 rounded-lg border border-slate-700/60 bg-slate-900/60 p-2.5">
+    <div className="grid grid-cols-[minmax(9rem,auto)_1fr] gap-x-4 gap-y-1 rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 p-2.5">
       {rows.map(([k, v], i) => (
         <Fragment key={i}>
-          <span className="text-slate-400">{k}</span>
-          <span className="tabular-nums text-slate-200">{v}</span>
+          <span className="engrave text-[9.5px] tracking-wider">{k}</span>
+          <span className="tabular-nums text-amber-100">{v}</span>
         </Fragment>
       ))}
     </div>
   );
 }
 
-const P = ({ children }) => <p className="text-slate-300">{children}</p>;
+const P = ({ children }) => <p className="text-amber-100/85">{children}</p>;
 
 // ---------- Annexe technique : générée depuis les constantes importées ----------
 const ANNEX = [
@@ -183,17 +183,18 @@ export default function Manual({ onClose }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
       <div
-        className="flex max-h-[92vh] w-full max-w-3xl flex-col rounded-xl border border-slate-700 bg-slate-900 p-5"
+        className="flex max-h-[92vh] w-full max-w-3xl flex-col rounded-xl border-2 border-[#241a0e] p-5 shadow-[0_6px_16px_rgba(0,0,0,0.55)]"
+        style={{ background: "linear-gradient(180deg, #4a3421, #33230f)" }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-3 flex items-center justify-between gap-4">
           <div>
-            <h2 className="text-base font-bold text-sky-300">📖 Manuel du jeu</h2>
-            <p className="text-[11px] text-slate-400">Référence des systèmes et de l'équilibrage — valeurs lues directement dans le moteur.</p>
+            <h2 className="plate rounded px-2.5 py-1 text-[12px] font-bold uppercase tracking-[0.14em]">📖 Manuel du jeu</h2>
+            <p className="engrave mt-1 text-[9px] uppercase tracking-[0.14em]">Référence des systèmes et de l'équilibrage — valeurs lues directement dans le moteur.</p>
           </div>
           <button
             onClick={onClose}
-            className="shrink-0 rounded px-2.5 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700"
+            className="plate rounded shrink-0 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:brightness-110"
           >
             Fermer ✕
           </button>
@@ -501,13 +502,13 @@ export default function Manual({ onClose }) {
             </P>
             {ANNEX.map((g) => (
               <div key={g.titre} className="space-y-1.5">
-                <p className="pt-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">{g.titre}</p>
+                <p className="engrave pt-1 text-[9.5px] uppercase tracking-wider">{g.titre}</p>
                 <Kv rows={g.rows} />
               </div>
             ))}
           </Sec>
 
-          <p className="pt-1 text-center text-[11px] text-slate-500">Échap ou clic à l'extérieur pour reprendre la navigation.</p>
+          <p className="engrave pt-1 text-center text-[8.5px] uppercase tracking-[0.18em]">Échap ou clic à l'extérieur pour reprendre la navigation.</p>
         </div>
       </div>
     </div>
