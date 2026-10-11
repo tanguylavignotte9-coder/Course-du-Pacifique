@@ -1243,7 +1243,7 @@ test("ancre : position figée même avec une consigne de cap (giration sur place
 });
 
 test("constantes de tuning : caps et défauts centralisés (règle DRY du README)", () => {
-  assert.equal(NOTIF_MAX, 150);
+  assert.equal(NOTIF_MAX, 200);
   assert.equal(PINS_MAX, 26);
   assert.equal(SAIL_DEFAULT, 0.8);
   assert.equal(HORIZON_KM, 20);
@@ -1480,4 +1480,21 @@ test("migration : état ancien sans consigne électrique → repli sur engine", 
   delete st.electric;
   for (let i = 0; i < 10; i++) tick(st, 1, w);
   assert.ok(Math.abs(st.vkmh - SUB_SPD_KMH * 0.6) < 1e-6, `repli sur engine (obtenu ${st.vkmh})`);
+});
+
+test("saut de temps (rejeu moteur) : 6 h par pas de 5 min → les 6 pulsations horaires, aucune manquée", () => {
+  const w = buildWorld(42);
+  const b = w.BEACONS[0];
+  const st = newPlayerState(w);
+  st.x = b.x; st.y = b.y; st.estX = b.x; st.estY = b.y; // sur la balise : eau libre par construction
+  st.anchored = false;
+  st.mast = false; st.engineOn = true; st.engine = 1; st.vkmh = DIESEL_SPD_KMH; // s'éloigne (~180 km en 6 h, sous le seuil omni)
+  for (let i = 0; i < 72; i++) tick(st, 5, w); // +6 h = 72 × MAX_STEP_MIN (5 min), comme le rejeu serveur
+  const pings = st.notifications.filter((n) => n.text.includes(`Ping ${b.code}`));
+  assert.equal(pings.length, 6, "6 heures simulées = 6 pulsations captées, aucune manquée");
+  assert.ok(st.notifications.length <= NOTIF_MAX, "journal borné à NOTIF_MAX");
+});
+
+test("journal de bord : les 200 dernières entrées par navire (arbitrage 2026-10-11)", () => {
+  assert.equal(NOTIF_MAX, 200);
 });

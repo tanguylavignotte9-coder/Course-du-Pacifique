@@ -332,6 +332,6 @@ export default function NavMap({ snap, sock }) {
 export function nextPhase(tMin, targetHour) {
   const cur = tMin / 60;
   let delta = (targetHour - (cur % 24) + 24) % 24;
-  if (delta < 0.1) delta = 24;
-  return delta * 60;
+  if (delta === 0) delta = 24; // pile sur l'heure cible : prochaine occurrence = demain
+  return delta * 60;            // sinon : on saute les quelques minutes restantes (plus de 24 h à 6 min de la cible)
 }

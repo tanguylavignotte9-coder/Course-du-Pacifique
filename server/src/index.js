@@ -264,7 +264,6 @@ function gameMinutesNow() {
 }
 
 const states = new Map(); // accountId -> player state (engine)
-const proxLast = new Map(); // code balise → dernier ping court (ms)
 
 // ---------- Sonar — état éphémère (non persisté) ----------
 // Le sonar vit côté serveur : positions vraies, historique pour le retard
@@ -344,16 +343,24 @@ function sonarPassiveFor(id) {
   return out;
 }
 
+// Échantillon de position pour le retard du son (écoute passive) : poussé à
+// CHAQUE PAS de simulation — temps réel comme sauts de temps. Avant, un
+// saut ne poussait rien : l'hydrophone juste après un saut replongeait
+// dans des positions d'avant-saut.
+function pushNoise(id, tMin, x, y) {
+  let hist = noiseHistory.get(id);
+  if (!hist) { hist = []; noiseHistory.set(id, hist); }
+  hist.push({ t: tMin, x, y });
+  while (hist.length > 500) hist.shift(); // ~8 min : couvre le retard max (500 km ≈ 5,6 min)
+}
+
 // Passe sonar (boucle 1 Hz) : historique des positions, arrivées des échos
 // et des pings entendus, purge des événements expirés.
 function sonarPass() {
   const nowMs = Date.now();
   const cut = nowMs - SONAR_ECHO_PERSIST_S * 1000;
   for (const [id, st] of states) {
-    let hist = noiseHistory.get(id);
-    if (!hist) { hist = []; noiseHistory.set(id, hist); }
-    hist.push({ t: st.t, x: st.x, y: st.y });
-    while (hist.length > 500) hist.shift(); // ~8 min : couvre le retard max (500 km ≈ 5,6 min)
+    // (l'échantillon de position est poussé par simulateTo, à chaque pas de simulation)
     const pend = sonarPending.get(id);
     if (pend && pend.length) {
       sonarPending.set(id, pend.filter((e) => {
@@ -928,51 +935,95 @@ const tickTraced = (st, step) => {
   tick(st, step, world);
   st.trace = tracePush(st.trace, st.estX, st.estY);
 };
-setInterval(() => {
-  const now = gameMinutesNow();
-  for (const [, st] of states) {
-    while (st.t < now) {
-      tickTraced(st, Math.min(MAX_STEP_MIN, now - st.t));
+// — Balise-vigie : signal de proximité (famille courte), accéléré —
+// l'intervalle se règle sur le navire le plus proche de la station.
+// Cadence en MINUTES DE JEU (une minute de jeu = une minute réelle à
+// TIME_MULT=1 : comportement temps réel inchangé) : les pings vivent
+// AUSSI pendant les sauts de temps — avant, cadence Date.now() = silence
+// total d'un saut. Une balise CAPTURÉE (désactivée) émet aussi :
+// l'autoguidage du joueur (3 positions) décide seul si elle peut
+// verrouiller son pilote.
+const proxNextMin = new Map(); // code station → prochaine émission (min de jeu)
+function proxPass(now) {
+  // Stations émettrices : les 40 balises + le PORT + les 5 AVANT-POSTES
+  // (autoguidage d'approche « identique au balise » : le retour au port
+  // et les escales se verrouillent comme une balise — ancre auto à 50 m,
+  // donc à l'intérieur de la zone de livraison de 500 m).
+  for (const b of [world.PORT, ...world.OUTPOSTS, ...world.BEACONS]) {
+    let dMin = Infinity;
+    for (const st of states.values()) dMin = Math.min(dMin, distKm(st.x, st.y, b.x, b.y));
+    if (!isFinite(dMin)) continue; // personne sur l'eau
+    // VIGIE ARMÉE : la station n'émet son signal de proximité que si un
+    // navire est dans son rayon de veille (PROX_ARM_KM — tout navire,
+    // même plongé : la vigie détecte la coque, pas la radio). Silencieuse
+    // sinon, et c'est l'information : une balise qui s'affole au loin
+    // dans un faisceau, c'est un concurrent qui approche.
+    if (dMin > PROX_ARM_KM) { proxNextMin.delete(b.code); continue; } // désarmée : réarmement → ping immédiat
+    const next = proxNextMin.get(b.code);
+    if (next != null && now < next) continue;
+    proxNextMin.set(b.code, now + proxPingIntervalS(dMin) / 60);
+    for (const st of states.values()) {
+      const radioOk = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
+      if (!radioOk) continue;
+      const cap = detectBeacon(st, b, world, SHORT_DECAY_KM);
+      if (cap) onProximityPing(st, b, cap);
     }
   }
-  multiplayerPass(now);
-  npcPass(now);
-  beastPass(now);
-  patrolPass(now);
-  exclusionPass(now);
-  sonarPass();
+}
+
+// ---------- Avancement du temps (voie UNIQUE : temps réel ET sauts) ----------
+
+// simulateTo fait vivre TOUT le monde jusqu'à l'instant de jeu `now` :
+// navires (ticks moteur par pas de MAX_STEP_MIN) ET passes monde —
+// détections inter-navires, NPC, Bête, patrouille, exclusion, pings de
+// proximité, coupure NETWORK — INTERLEACÉES au fil des pas. La boucle 1 Hz
+// l'appelle avec l'instant courant ; le saut de temps super user l'appelle
+// avec l'instant post-saut : un saut est une accélération EXACTE du temps
+// réel — mêmes événements, mêmes journaux, AUCUN raccourci (avant : NPC,
+// Bête et patrouille plafonnés à 120 min de rattrapage, événements
+// programmés manqués, détections et collisions non échantillonnées).
+// Garde epsilon : l'arithmétique flottante peut laisser un curseur à un ulp
+// de la cible sans progresser — on boucle sur `now - EPS` puis on raccorde
+// (jamais de boucle infinie).
+const SIM_EPS_MIN = 1e-6;
+let simT = gameMinutesNow(); // curseur monde : dernier instant simulé
+function simulateTo(now) {
+  let guard = 0;
+  while (simT < now - SIM_EPS_MIN && guard++ < 100000) {
+    const step = Math.min(MAX_STEP_MIN, now - simT);
+    simT += step;
+    // Navires d'abord : les passes monde voient les positions de l'instant.
+    for (const [, st] of states) {
+      let g = 0;
+      while (st.t < simT - SIM_EPS_MIN && g++ < 10000) {
+        tickTraced(st, Math.min(MAX_STEP_MIN, simT - st.t));
+      }
+      if (st.t < simT) st.t = simT; // raccord epsilon (jamais en arrière)
+    }
+    // Passes monde à l'instant intermédiaire : les timers NPC (bafouillage
+    // 2 h, cargos 4 h, chants 2 h, cris 1,5 h) tirent à ≥ 0,5× la cadence
+    // (≥ 45 min) : un pas de 5 min ne peut rater aucun événement prévu.
+    multiplayerPass(simT);
+    npcPass(simT);
+    beastPass(simT);
+    patrolPass(simT);
+    exclusionPass(simT);
+    proxPass(simT);
     // NETWORK : coupure automatique dès que le navire quitte la zone —
     // revenir = se RECONNECTER = nouvelle entrée dans le journal global.
     for (const [, st] of states) if (st.networked && !netZone(st)) st.networked = false;
-    // — Balise-vigie : signal de proximité (famille courte), accéléré —
-    // l'intervalle se règle sur le navire le plus proche de la balise.
-    // Une balise CAPTURÉE (désactivée) émet aussi : l'autoguidage du joueur
-    // (3 positions) décide seul si elle peut verrouiller son pilote.
-    const nowMs = Date.now();
-    // Stations émettrices : les 40 balises + le PORT + les 5 AVANT-POSTES
-    // (autoguidage d'approche « identique au balise » : le retour au port
-    // et les escales se verrouillent comme une balise — ancre auto à 50 m,
-    // donc à l'intérieur de la zone de livraison de 500 m).
-    for (const b of [world.PORT, ...world.OUTPOSTS, ...world.BEACONS]) {
-      let dMin = Infinity;
-      for (const st of states.values()) dMin = Math.min(dMin, distKm(st.x, st.y, b.x, b.y));
-      if (!isFinite(dMin)) continue; // personne sur l'eau
-      // VIGIE ARMÉE : la balise n'émet son signal de proximité que si un
-      // navire est dans son rayon de veille (PROX_ARM_KM — tout navire,
-      // même plongé : la vigie détecte la coque, pas la radio). Silencieuse
-      // sinon, et c'est l'information : une balise qui s'affole au loin
-      // dans un faisceau, c'est un concurrent qui approche.
-      if (dMin > PROX_ARM_KM) continue;
-      const intervalMs = proxPingIntervalS(dMin) * 1000;
-      if (nowMs - (proxLast.get(b.code) || 0) < intervalMs) continue;
-      proxLast.set(b.code, nowMs);
-      for (const st of states.values()) {
-        const radioOk = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
-        if (!radioOk) continue;
-        const cap = detectBeacon(st, b, world, SHORT_DECAY_KM);
-        if (cap) onProximityPing(st, b, cap);
-      }
-    }
+    // Sonar : échantillon de positions retardées à l'instant simulé.
+    for (const [id, st] of states) pushNoise(id, simT, st.x, st.y);
+  }
+  simT = now;
+}
+
+setInterval(() => {
+  // Temps réel : le monde entier avance à l'instant courant. Le sonar
+  // (persistance des écoutes en temps RÉEL) et la sauvegarde restent
+  // sur l'horloge réelle.
+  simulateTo(gameMinutesNow());
+  sonarPass();
   if (Date.now() - lastPersist > PERSIST_MS) {
     lastPersist = Date.now();
     for (const [id] of states) race.players[id] = states.get(id);
@@ -1567,20 +1618,26 @@ wss.on("connection", (ws, req) => {
       // Trace de route (outil papier) : effacement à la demande du joueur.
       if (c.traceClear === true) { st.trace = []; store.save(); }
       // Saut de temps : super utilisateur uniquement. L'horloge de course est
-      // PARTAGÉE : le saut est global — l'epoch recule, le serveur simule
-      // ensuite chaque minute pour chaque navire (pulsations, détections,
-      // points aux étoiles et consommations sont conservés pour tous).
+      // PARTAGÉE : le saut est global — l'epoch recule, puis simulateTo fait
+      // vivre TOUT le monde (navires ET passes : NPC, Bête, patrouille,
+      // exclusion, pings de proximité, détections inter-navires) au fil des
+      // pas de MAX_STEP_MIN : pulsations, points aux étoiles, consommations,
+      // bafouillages, SOS, avis officiels — tout est conservé, pour tous.
       if (c.timeSkipMin != null && isSuper(id)) {
         const mins = Math.round(clamp(Number(c.timeSkipMin) || 0, 1, 24 * 60));
         race.epoch = (race.epoch || new Date(race.startedAt).getTime()) - mins * MS_PER_MIN / TIME_MULT;
-        const now = gameMinutesNow();
         // (displayEpoch reste fixe : l'heure affichée avance avec t)
-        for (const [, pst] of states) {
-          while (pst.t < now) tickTraced(pst, Math.min(MAX_STEP_MIN, now - pst.t));
-        }
+        simulateTo(gameMinutesNow());
         store.save();
-        st.notifSeq = (st.notifSeq || 0) + 1;
-        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⏱️ Saut de temps : +${mins} min (super user).`, kind: "info", cat: "navire" });
+        // Journal : le saut est un événement MONDIAL — chaque journal de
+        // bord (les 200 dernières entrées, serveur) le consigne, pas
+        // seulement le maître de course.
+        const dur = mins % 60 === 0 ? `+${mins / 60} h` : `+${mins} min`;
+        for (const [, pst] of states) {
+          pst.notifSeq = (pst.notifSeq || 0) + 1;
+          pst.notifications.unshift({ id: pst.notifSeq, t: pst.t, text: `⏱️ Saut de temps du maître de course : ${dur}.`, kind: "info", cat: "navire" });
+          if (pst.notifications.length > NOTIF_MAX) pst.notifications.pop();
+        }
       }
       // Reset de la course : nouvelle graine (nouveau monde, nouvelles
       // balises), navires remis à neuf, horloge re-synchronisée sur Paris.
@@ -1643,6 +1700,8 @@ wss.on("connection", (ws, req) => {
         race.evidence = [];
         race.exclusion = null;
         nextBulletinMin = gameMinutesNow();
+        simT = gameMinutesNow(); // curseur monde : la nouvelle course part de l'instant présent
+        proxNextMin.clear();     // vigies : réarmement → premier ping immédiat
         store.save();
         // Notifier le NOUVEL état du joueur : l'ancien objet `st` a été
         // remplacé dans `states` par le rebuild ci-dessus (sinon : notif perdue)
