@@ -613,6 +613,7 @@ export function dirEffSensitivity(antBeam, diff, sens) {
 // Les champs bearing/beam restent dans les objets de capture (usage interne,
 // ex. verrou) — ils ne sont jamais imprimés dans les textes.
 export function recvCapture(st, brg, strength) {
+  strength *= condFactor(st.antH); // antenne avariée : TOUT se capte plus faiblement (pings, réponses, SOS, messages)
   let got = null;
   if (strength >= OMNI_DETECT_PCT) got = { bearing: null, strength, source: "omni" };
   const sens = dirSensitivity(st.antBeam);
@@ -664,7 +665,7 @@ export function callPosition(st, code, world, noCost = false) {
   if (!target) return null;
   const dKm = distKm(st.x, st.y, target.x, target.y);
   const brg = bearingTo(st.x, st.y, target.x, target.y);
-  const strength = longStrengthKm(dKm);           // émission navire : omni, longue
+  const strength = longStrengthKm(dKm) * condFactor(st.antH); // émission navire : omni, longue — antenne avariée : la station entend plus faiblement
   if (strength < RADIO_MIN_STRENGTH) return null; // la station n'entend pas : silence
   const respStrength = longStrengthKm(dKm);        // réponse : famille longue
   const cap = recvCapture(st, brg, respStrength);  // lire exige capter
@@ -1690,6 +1691,7 @@ export function newPlayerState(world, opts = {}) {
   const sx = sp.x;
   const eastCoast = world.CONTINENT.x1 <= MAP / 2;
   return {
+    kind: "player", // la Bête teste eaten.kind — un navire joueur est une cible à part entière
     t: 0, x: sp.x, y: sp.y, heading: eastCoast ? 90 : 270, headingOrder: eastCoast ? 90 : 270,
     sail: SAIL_DEFAULT, engine: 0.8,
     estX: sp.x, estY: sp.y, unc: 0,
@@ -1699,9 +1701,11 @@ export function newPlayerState(world, opts = {}) {
     beaconLock: null, lockBrg: null, anchored: true, // ancre jetée au départ (navire à quai)
     autoguide: AUTOGUIDE_DEFAULT, networked: false,
     fuel: 100, battery: 100, food: 100, score: 0, codes: [],
+    hullH: 100, sailH: 100, antH: 100, // santé : coque, voilure, antenne radio (100 % = neuf)
     waypoints: [], wpIdx: 0, autopilot: false,
     antBeam: 45, antOrient: 0, signals: [], notifications: [], notifSeq: 0,
     grounded: false, wasStorm: false, warnedFood: false, warnedFuel: false, warnedBatt: false,
+    groundHitArmed: true, needsRescue: false, // avarie d'échouement armée / remorquage requis (coque 0 %)
     ffEvents: [], travelledKm: 0, dailyKm: 0, dayIdx: 0,
     weatherSeed: opts.weatherSeed ?? Math.floor(Math.random() * 1000), weatherName: null,
     code: opts.shipCode ?? randomCode(),
@@ -1711,6 +1715,32 @@ export function newPlayerState(world, opts = {}) {
     compDev: (COMP_DEV_MIN_DEG + Math.random() * (COMP_DEV_MAX_DEG - COMP_DEV_MIN_DEG)) * (Math.random() < 0.5 ? -1 : 1),
     logErr: (LOG_ERR_MIN_PCT + Math.random() * (LOG_ERR_MAX_PCT - LOG_ERR_MIN_PCT)) * (Math.random() < 0.5 ? -1 : 1),
   };
+}
+
+// ---------- Santé du navire : avaries et efficacité ----------
+export const DAMAGE_HIT_PCT = 25;   // dégât par événement (% appliqué à l'élément)
+export const DAMAGE_ROLL_MIN = 5;  // période de tirage des avaries de mer (minutes DE JEU)
+export const DAMAGE_ROLL_PCT = 2;   // probabilité d'avarie par tirage (%)
+
+// Facteur d'efficacité d'un élément selon sa santé : 100 % → 1 ; 0 % → 0,5.
+// Malus linéaire identique pour tous les éléments (coque, voilure, antenne).
+// `h ?? 100` : migration des états anciens sans champ santé.
+export function condFactor(h) {
+  return 1 - 0.5 * (1 - clamp((h ?? 100) / 100, 0, 1));
+}
+
+// Applique un dégât à un élément (hullH/sailH/antH), notifie (cat « alertes »),
+// clamp à 0, et arme le remorquage si la coque tombe à 0 % (game over doux :
+// le balayage serveur fait le reste — jamais de respawn depuis tick).
+export function damagePart(st, key, pct, text) {
+  const cur = st[key] ?? 100;
+  if (cur <= 0) return;
+  st[key] = Math.max(0, cur - pct);
+  notify(st, text, "bad", "alertes");
+  if (key === "hullH" && st.hullH <= 0) {
+    st.needsRescue = true;
+    notify(st, "💀 COQUE BRISÉE — le navire coule : la compagnie envoie un remorqueur.", "bad", "alertes");
+  }
 }
 
 function notify(st, text, kind, cat) {
@@ -1729,14 +1759,14 @@ function speedKmh(st, w) {
     if (st.mast) {
       const { drive, aw } = sailAutoDrive(st, w);
       const wf = clamp(aw / WIND_REF_KMH, 0, WIND_FACTOR_CAP); // facteur de VENT APPARENT
-      v += SAIL_SPD_KMH * wf * drive * st.sail; // st.sail = fraction de voile déployée (commande joueur)
+      v += SAIL_SPD_KMH * wf * drive * st.sail * condFactor(st.sailH); // santé voilure : poussée réduite (−50 % max)
     }
     if (st.engineOn && st.fuel > 0) v += DIESEL_SPD_KMH * st.engine;
     v = Math.min(v, VMAX_KMH);
   } else {
     if (st.electricOn && st.battery > 0) v += (st.periscope ? SCOPE_SPD_KMH : SUB_SPD_KMH) * (st.electric ?? st.engine);
   }
-  return v;
+  return v * condFactor(st.hullH); // santé coque : malus global sur TOUTE la propulsion (−50 % max)
 }
 
 // Recentrage de l'estime lors d'un point (étoiles, visuel) : l'estimation est
@@ -1887,6 +1917,11 @@ export function tick(st, dtMin, world) {
         st.autopilot = false;
         notify(st, "⚠️ Limite de zone — pilote automatique coupé, intervention requise.", "warn", "alertes");
       }
+      // Heurt de la limite = échouement : une seule avarie de coque par contact
+      if (st.groundHitArmed ?? true) {
+        st.groundHitArmed = false;
+        damagePart(st, "hullH", DAMAGE_HIT_PCT, "🔩 Heurt de la limite de zone : la coque encaisse (−25 %).");
+      }
     }
     st.grounded = true;
     st.vkmh = 0;
@@ -1900,6 +1935,12 @@ export function tick(st, dtMin, world) {
         notify(st, "⚠️ Échouement — pilote automatique coupé, intervention requise.", "warn", "alertes");
       }
       st.beaconLock = null; st.lockBrg = null; // échouement coupe le verrou
+      // Échouement : une seule avarie de coque par contact — ré-armée à 100 m
+      // de toute terre (voir la branche d'eau libre ci-dessous)
+      if (st.groundHitArmed ?? true) {
+        st.groundHitArmed = false;
+        damagePart(st, "hullH", DAMAGE_HIT_PCT, "🔩 Échouement : la coque encaisse un choc violent (−25 %).");
+      }
     }
     st.grounded = true;
     st.vkmh = 0;
@@ -1908,6 +1949,32 @@ export function tick(st, dtMin, world) {
     st.estX += Math.sin(rad) * through;
     st.estY += Math.cos(rad) * through;
     st.unc += UNC_PER_KM * (st.vkmh * dtMin / 60) + UNC_PER_H * (dtMin / 60) + drift * DEG_KM;
+    // Ré-armement de l'avarie d'échouement : plus aucune terre ni limite à
+    // 100 m tout autour (anneau de 8 points) — le prochain échouement re-frappera.
+    if (!(st.groundHitArmed ?? true)) {
+      const rDeg = 0.1 / DEG_KM; // 100 m
+      let clear = true;
+      for (let k = 0; k < 8 && clear; k++) {
+        const a = (k * Math.PI) / 4;
+        const px = st.x + Math.cos(a) * rDeg, py = st.y + Math.sin(a) * rDeg;
+        if (px < 0.2 || px > MAP - 0.2 || py < 0.2 || py > MAP - 0.2 || world.isLand(px, py)) clear = false;
+      }
+      if (clear) st.groundHitArmed = true;
+    }
+  }
+
+  // Avaries de mer : un tirage par frontière de 5 MINUTES DE JEU — les sauts
+  // de temps rattrapent chaque frontière. Probabilité basse par tirage :
+  // un risque, pas une obligation. Aucun cooldown : tant que les conditions
+  // dangereuses durent, le risque revient à chaque tirage.
+  const nRolls = Math.floor(st.t / DAMAGE_ROLL_MIN) - Math.floor(prevT / DAMAGE_ROLL_MIN);
+  for (let i = 0; i < nRolls; i++) {
+    if (st.mast && st.sail > 0.5 && (w.windSpd >= 50 || w.storm) && Math.random() < DAMAGE_ROLL_PCT / 100)
+      damagePart(st, "sailH", DAMAGE_HIT_PCT, "🧵 Coup de vent dans la voilure : toile endommagée (−25 %). Réelez la voilure ou entrez au port pour réparer.");
+    if (st.vkmh >= 30 && w.douglas >= 5 && Math.random() < DAMAGE_ROLL_PCT / 100)
+      damagePart(st, "hullH", DAMAGE_HIT_PCT, "🔩 Coup de mer brutal à pleine vitesse : la coque fatigue (−25 %).");
+    if (w.storm && Math.random() < DAMAGE_ROLL_PCT / 100)
+      damagePart(st, "antH", DAMAGE_HIT_PCT, "📡 La foudre secoue l'antenne : le matériel radio souffre (−25 %) — émissions et réceptions affaiblies.");
   }
 
   // Validation des points de passage (pilote auto) : au plus court sur la

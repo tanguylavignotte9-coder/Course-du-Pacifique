@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SPAWN_DIGEST_MIN, BEAST_SPAWN_DIGEST_MAX, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, coastStep, PATROL_BERTH_KM, tracePush } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SPAWN_DIGEST_MIN, BEAST_SPAWN_DIGEST_MAX, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, coastStep, PATROL_BERTH_KM, tracePush, condFactor, damagePart, DAMAGE_HIT_PCT } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -661,12 +661,32 @@ function beastPass(now) {
       sources.push({ x: s.x, y: s.y, liveX: s.ref.x, liveY: s.ref.y, ref: s.ref });
     }
   }
+  // JOUEURS : la Bête entend AUSSI les moteurs diesel des navires joueurs —
+  // ciblage par le bruit, joueurs et NPC égaux devant la créature. Voile pure,
+  // électrique, ancre : silencieux — couper le moteur fait perdre la cible à
+  // la passe suivante. `ref` référence l'état PERSISTANT (beastTick ne lit que
+  // x/y — jamais de mutation de sa part).
+  for (const [, pst] of states) {
+    if (!shipNoisy(pst) || distKm(beast.x, beast.y, pst.x, pst.y) >= SOUND_DECAY_KM.moteur || soundBlocked(world, beast.x, beast.y, pst.x, pst.y)) continue;
+    if (!pst.kind) pst.kind = "player"; // migration des états anciens
+    sources.push({ x: pst.x, y: pst.y, liveX: pst.x, liveY: pst.y, ref: pst });
+  }
   const prev = lastBeastT;
   lastBeastT = now;
   const eaten = beastTick(beast, now - prev, world, sources);
   // Repas : la cible disparaît, une trace naît, un cri part — et un SOS si
   // c'est un bateau (une baleine n'a pas de radio).
-  if (eaten && npcs) {
+  if (eaten && eaten.kind === "player") {
+    // Navire JOUEUR percuté : −25 % sur les TROIS éléments, puis la Bête
+    // digère (une attaque par chasse — beastTick a déjà mis hunger = 1).
+    // Pas de disparition, pas d'épave, pas de SOS : l'équipage vit. Si la
+    // coque tombe à 0 %, c'est le remorquage (simulateTo) qui prend le relais.
+    damagePart(eaten, "hullH", DAMAGE_HIT_PCT, "💀 PERCUTATION — quelque chose vous éperonne : la coque encaisse (−25 %).");
+    damagePart(eaten, "sailH", DAMAGE_HIT_PCT, "💀 Le choc déchire la voilure (−25 %).");
+    damagePart(eaten, "antH", DAMAGE_HIT_PCT, "💀 L'antenne craque sous l'impact (−25 %).");
+    emitSoundToAll(beast.x, beast.y, "inconnu", now); // le cri de l'attaque
+    store.save();
+  } else if (eaten && npcs) {
     const list = eaten.kind === "whale" ? npcs.whales : eaten.kind === "cargo" ? npcs.cargos : npcs.fishermen;
     const idx = list.indexOf(eaten);
     if (idx >= 0) list.splice(idx, 1);
@@ -1012,6 +1032,10 @@ function simulateTo(now) {
     // NETWORK : coupure automatique dès que le navire quitte la zone —
     // revenir = se RECONNECTER = nouvelle entrée dans le journal global.
     for (const [, st] of states) if (st.networked && !netZone(st)) st.networked = false;
+    // Coque 0 % : remorquage immédiat — balayé à CHAQUE instant simulé, il
+    // vit donc AUSSI pendant les sauts de temps (jamais dans tick : pas de
+    // respawn au milieu d'un tick).
+    for (const [id, st] of states) if (st.needsRescue) rescueShip(id, st);
     // Sonar : échantillon de positions retardées à l'instant simulé.
     for (const [id, st] of states) pushNoise(id, simT, st.x, st.y);
   }
@@ -1148,6 +1172,35 @@ app.use(express.json());
 app.use(express.static(path.join(ROOT, "client/dist")));
 app.get("/admin", (req, res) => res.sendFile(path.join(ROOT, "server/public/admin.html")));
 
+// ---------- Remorquage : coque 0 % = game over doux ----------
+
+// Le navire coule : la compagnie le remorque instantanément au port.
+// Identité, score et cartographie conservés ; navire remis à NEUF (valeurs
+// d'usine de newPlayerState) ; le stock de codes est PERDU et les balises
+// correspondantes redeviennent CAPTURABLES (réactivées pour toute la flotte).
+function rescueShip(id, st) {
+  for (const c of st.codes || []) {
+    const b = world.BEACONS.find((x) => x.id === c.id);
+    if (b) b.active = true;
+  }
+  st.codes = [];
+  const sp = spawnPosition(world, takenSpawns); // nouveau slot de quai
+  st.x = sp.x; st.y = sp.y; st.estX = sp.x; st.estY = sp.y; st.unc = 0;
+  st.heading = world.CONTINENT.x1 <= MAP / 2 ? 90 : 270;
+  st.headingOrder = st.heading;
+  st.hullH = 100; st.sailH = 100; st.antH = 100;
+  st.fuel = 100; st.battery = 100; st.food = 100;
+  st.engine = 0.8; st.engineOn = false; st.electricOn = false; st.periscope = false;
+  st.mast = false; st.sail = SAIL_DEFAULT;
+  st.vkmh = 0; st.anchored = true; st.grounded = false;
+  st.groundHitArmed = true; st.needsRescue = false;
+  st.beaconLock = null; st.lockBrg = null; st.autopilot = false;
+  st.notifSeq = (st.notifSeq || 0) + 1;
+  st.notifications.unshift({ id: st.notifSeq, t: st.t, kind: "warn", cat: "navire",
+    text: "🚢 Coque brisée — remorquage par la compagnie : navire remis à neuf au port. Stock de codes perdu : les balises correspondantes redeviennent capturables." });
+  store.save();
+}
+
 function publicSnapshot(id) {
   const st = ensureState(id);
   const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
@@ -1161,6 +1214,7 @@ function publicSnapshot(id) {
       location: st.location, mast: st.mast, engineOn: st.engineOn,
       electricOn: st.electricOn, periscope: st.periscope, vkmh: st.vkmh,
       fuel: st.fuel, battery: st.battery, food: st.food,
+      hullH: st.hullH ?? 100, sailH: st.sailH ?? 100, antH: st.antH ?? 100,
       score: st.score, codes: st.codes, unc: st.unc,
       estX: st.estX, estY: st.estY,
       trace: st.trace || [],   // route parcourue (mémoire serveur, positions estimées)
@@ -1530,7 +1584,7 @@ wss.on("connection", (ws, req) => {
             if (!otherRadioOk) continue;
             const dKm = distKm(ost.x, ost.y, st.x, st.y);
             const brg = bearingTo(ost.x, ost.y, st.x, st.y);
-            const strength = longStrengthKm(dKm); // émission navire : omni, longue
+            const strength = longStrengthKm(dKm) * condFactor(st.antH); // émission navire : omni, longue — antenne avariée : émission affaiblie
             if (strength < RADIO_MIN_STRENGTH) continue;
             const cap = recvCapture(ost, brg, strength); // lire exige capter
             if (!cap) continue;
@@ -1572,7 +1626,7 @@ wss.on("connection", (ws, req) => {
             if (!otherRadioOk) continue;
             const dKm = distKm(ost.x, ost.y, st.x, st.y);
             const brg = bearingTo(ost.x, ost.y, st.x, st.y);
-            const strength = longStrengthKm(dKm); // émission navire : omni, longue
+            const strength = longStrengthKm(dKm) * condFactor(st.antH); // émission navire : omni, longue — antenne avariée : émission affaiblie
             if (strength < RADIO_MIN_STRENGTH) continue;
             const cap = recvCapture(ost, brg, strength); // lire exige capter
             if (!cap) continue;
@@ -1599,6 +1653,17 @@ wss.on("connection", (ws, req) => {
         st.fuel = 100; st.food = 100;
         st.notifSeq = (st.notifSeq || 0) + 1;
         st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🛒 Avitaillement complet : carburant et vivres à 100 %.", kind: "good", cat: "navire" });
+      }
+
+      // Radoub (réparation santé) : gratuit et instantané, uniquement à quai —
+      // même garde anti-triche serveur que l'avitaillement (le client masquant
+      // le bouton ne suffit pas).
+      if (c.repair === true && st.location === "surface" &&
+          (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
+           world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM))) {
+        st.hullH = 100; st.sailH = 100; st.antH = 100; st.groundHitArmed = true; st.needsRescue = false;
+        st.notifSeq = (st.notifSeq || 0) + 1;
+        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🛠️ Radoub complet : coque, voilure et antenne réparées (100 %).", kind: "good", cat: "navire" });
       }
       // Planificateur : points de passage (max 30, coordonnées bornées à la
       // carte). Toute modification de route relance la visée au 1er point.

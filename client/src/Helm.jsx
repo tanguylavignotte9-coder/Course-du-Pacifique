@@ -368,6 +368,54 @@ function Dial({ label, value, max, unit, color }) {
   );
 }
 
+// ---------- État du navire : silhouette + jauges de santé (coque/voilure/antenne) ----------
+const healthColor = (h) => (h >= 75 ? "#4ade80" : h >= 40 ? "#fbbf24" : "#ef4444");
+
+function ShipState({ player }) {
+  const hull = player.hullH ?? 100;
+  const sail = player.sailH ?? 100;
+  const ant = player.antH ?? 100;
+  const worst = Math.min(hull, sail, ant);
+  const Bar = ({ label, v, color }) => (
+    <div className="flex-1">
+      <div className="mb-0.5 flex items-baseline justify-between">
+        <span className="engrave text-[7.5px] uppercase tracking-[0.14em]">{label}</span>
+        <span className="font-mono text-[9px] font-bold" style={{ color }}>{Math.round(v)} %</span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded border border-[#5c3a1a] bg-[#08090a]">
+        <div className="h-full" style={{ width: `${Math.max(v, 0)}%`, background: color, boxShadow: `0 0 6px ${color}88` }} />
+      </div>
+    </div>
+  );
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="plate rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em]">État du navire</span>
+        <span className="engrave text-[7.5px] uppercase tracking-widest" style={{ color: healthColor(worst) }}>
+          {worst < 40 ? "avarie sérieuse — réparation conseillée" : "navire en forme"}
+        </span>
+      </div>
+      <div className="flex items-center gap-3">
+        <svg viewBox="0 0 120 56" className="w-[150px] shrink-0">
+          {/* coque (profil) */}
+          <path d="M 8 40 L 20 31 H 100 L 112 40 L 60 50 Z" fill={healthColor(hull)} fillOpacity="0.75" stroke="#08090a" strokeWidth="1" />
+          {/* mât + voilure */}
+          <line x1="58" y1="31" x2="58" y2="5" stroke="#c9b48a" strokeWidth="1.6" />
+          <path d="M 60 7 L 60 29 L 42 29 Z" fill={healthColor(sail)} fillOpacity="0.85" stroke="#08090a" strokeWidth="0.8" />
+          {/* antenne radio */}
+          <line x1="88" y1="31" x2="88" y2="10" stroke={healthColor(ant)} strokeWidth="1.6" strokeLinecap="round" />
+          <circle cx="88" cy="8" r="1.6" fill={healthColor(ant)} />
+        </svg>
+        <div className="flex flex-1 items-center gap-2.5">
+          <Bar label="Coque" v={hull} color={healthColor(hull)} />
+          <Bar label="Voilure" v={sail} color={healthColor(sail)} />
+          <Bar label="Antenne" v={ant} color={healthColor(ant)} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- Compteur mécanique ----------
 function Counter({ label, value }) {
   return (
@@ -973,9 +1021,12 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
           </div>
 
           {/* TABLE À CARTES */}
-          <div className="col-span-12 xl:col-span-5">
+          <div className="col-span-12 space-y-3 xl:col-span-5">
             <div className="instrument rivets p-3">
               <NavMap snap={snap} sock={sock} />
+            </div>
+            <div className="instrument rivets p-3">
+              <ShipState player={player} />
             </div>
           </div>
 

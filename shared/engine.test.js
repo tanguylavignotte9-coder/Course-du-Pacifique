@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildWorld, newPlayerState, tick, weatherAt, computeView, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, HORIZON_KM,
+  condFactor, damagePart, DAMAGE_HIT_PCT, DAMAGE_ROLL_MIN, DAMAGE_ROLL_PCT,
   distKm, CAPTURE_R_KM, DELIVERY_R_KM, WP_R_KM, DEG_KM, LONG_DECAY_KM, VMAX_KMH, DIESEL_SPD_KMH,
   sailAutoDrive, apparentWind, SAIL_SPD_KMH, clamp, callPosition, RARITY_MIN, bearingTo, segDistKm,
   longStrengthKm, strengthKm, SHORT_DECAY_KM, recvCapture, detectBeacon, onProximityPing,
@@ -1497,4 +1498,133 @@ test("saut de temps (rejeu moteur) : 6 h par pas de 5 min → les 6 pulsations h
 
 test("journal de bord : les 200 dernières entrées par navire (arbitrage 2026-10-11)", () => {
   assert.equal(NOTIF_MAX, 200);
+});
+
+// ---------- Système de santé du navire ----------
+
+test("santé : condFactor — efficacité linéaire 1 → 0,5 (malus 50 % à 0 %)", () => {
+  assert.equal(DAMAGE_HIT_PCT, 25);
+  assert.equal(DAMAGE_ROLL_MIN, 5);
+  assert.equal(DAMAGE_ROLL_PCT, 2);
+  assert.equal(condFactor(100), 1);
+  assert.equal(condFactor(75), 0.875);
+  assert.equal(condFactor(50), 0.75);
+  assert.equal(condFactor(25), 0.625);
+  assert.equal(condFactor(0), 0.5);
+  assert.equal(condFactor(undefined), 1); // migration : état ancien sans santé
+  assert.equal(condFactor(150), 1);       // clamp au-dessus
+  assert.equal(condFactor(-20), 0.5);     // clamp au-dessous
+});
+
+test("santé : damagePart — −25 % par événement, clamp 0, needsRescue à la coque brisée", () => {
+  const w = buildWorld(42);
+  const st = newPlayerState(w);
+  for (let i = 0; i < 4; i++) damagePart(st, "hullH", DAMAGE_HIT_PCT, "choc");
+  assert.equal(st.hullH, 0, "100 → 75 → 50 → 25 → 0");
+  assert.equal(st.needsRescue, true, "coque 0 % = remorquage requis");
+  damagePart(st, "hullH", DAMAGE_HIT_PCT, "choc");
+  assert.equal(st.hullH, 0, "jamais négatif");
+  const st2 = newPlayerState(w);
+  damagePart(st2, "sailH", DAMAGE_HIT_PCT, "choc");
+  assert.equal(st2.sailH, 75);
+  assert.equal(st2.needsRescue, false, "voilure brisée : pas de game over");
+  delete st2.hullH; // état migré à chaud, sans champ santé
+  damagePart(st2, "hullH", DAMAGE_HIT_PCT, "choc");
+  assert.equal(st2.hullH, 75, "repli sur 100 % (?? 100)");
+});
+
+test("santé : coque dégradée bride TOUTE la propulsion, voilure dégradée bride la poussée voile", () => {
+  const w = buildWorld(42);
+  // Graine météo calme et portante au spawn sur l'horizon du test : aucune
+  // avarie de tirage ne peut se déclencher (vent < 50, pas d'orage, mer ≤ 3,
+  // voile utilisable). Rend le test déterministe.
+  const probe = newPlayerState(w);
+  const mkSail = (sh, s) => {
+    const st = newPlayerState(w, { weatherSeed: s });
+    if (sh != null) st.sailH = sh;
+    st.anchored = false; st.mast = true; st.sail = 1; st.engineOn = false;
+    return st;
+  };
+  let seed = -1;
+  for (let s = 0; s < 400 && seed < 0; s++) {
+    let ok = true;
+    for (let t = 0; t <= 30 && ok; t += 5) {
+      const wx = weatherAt(probe.x, probe.y, t, s);
+      if (wx.storm || wx.windSpd < 15 || wx.windSpd > 30 || wx.douglas > 3) ok = false;
+    }
+    if (ok && sailAutoDrive(probe, weatherAt(probe.x, probe.y, 0, s)).drive < 0.5) ok = false;
+    // Garde-fou du retour « vent apparent » : le navire ralenti par la voilure
+    // avariée voit un vent apparent PLUS fort (facteur de vent plus élevé) — la
+    // graine retenue doit donner un rapport final ≈ 0,5 malgré ce couplage.
+    if (ok) {
+      let v100 = 0, v0 = 0;
+      const st100 = mkSail(null, s), st0 = mkSail(0, s);
+      for (let i = 0; i < 10; i++) { tick(st100, 1, w); tick(st0, 1, w); }
+      v100 = st100.vkmh; v0 = st0.vkmh;
+      if (v100 <= 1 || Math.abs(v0 / v100 - 0.5) >= 0.06) ok = false;
+    }
+    if (ok) seed = s;
+  }
+  assert.ok(seed >= 0, "une graine météo calme et portante existe");
+  const run = (st, n) => { for (let i = 0; i < n; i++) tick(st, 1, w); return st.vkmh; };
+  const mkHull = (h) => {
+    const st = newPlayerState(w, { weatherSeed: seed });
+    if (h != null) st.hullH = h;
+    st.anchored = false; st.mast = false; st.engineOn = true; st.engine = 1;
+    return st;
+  };
+  const v100 = run(mkHull(null), 5);
+  const v50 = run(mkHull(50), 5);
+  assert.ok(Math.abs(v100 - DIESEL_SPD_KMH) < 1e-9, `convergence au plein diesel (obtenu ${v100})`);
+  assert.ok(Math.abs(v50 - v100 * 0.75) < 1e-9, `coque 50 % → vitesse ×0,75 (obtenu ${v50} vs ${v100})`);
+  const mkSailAtSeed = (sh) => mkSail(sh, seed);
+  const vs100 = run(mkSailAtSeed(null), 10);
+  const vs0 = run(mkSailAtSeed(0), 10);
+  assert.ok(vs100 > 1, `la voile pousse sous cette graine (obtenu ${vs100})`);
+  assert.ok(Math.abs(vs0 / vs100 - 0.5) < 0.06, `voilure 0 % → poussée ×0,5 (obtenu ${vs0} vs ${vs100})`);
+});
+
+test("santé : échouement — −25 % coque UNE fois par contact, ré-armement à 100 m de terre", () => {
+  const w = buildWorld(42);
+  // Un point d'eau libre à 200 m d'une case terre, avec ~1,5 km d'eau libre
+  // derrière (direction d'éloignement du test).
+  let spot = null;
+  outer: for (let gy = 1; gy < 59 && !spot; gy += 0.5) {
+    for (let gx = 1; gx < 59; gx += 0.5) {
+      if (!w.isLand(gx, gy)) continue;
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * 2 * Math.PI;
+        const px = gx + Math.cos(a) * 0.004, py = gy + Math.sin(a) * 0.004;
+        if (px <= 0.25 || px >= 59.75 || py <= 0.25 || py >= 59.75) continue;
+        if (w.isLand(px, py)) continue;
+        const ax = px + (px - gx) * 7.5, ay = py + (py - gy) * 7.5;
+        if (ax <= 0.25 || ax >= 59.75 || ay <= 0.25 || ay >= 59.75 || w.isLand(ax, ay)) continue;
+        spot = { x: px, y: py, lx: gx, ly: gy };
+        break outer;
+      }
+    }
+  }
+  assert.ok(spot, "une côte existe dans ce monde");
+  // Moteur par défaut (0,8 → 24 km/h < 30) : aucune avarie de tirage coque
+  // possible pendant le test ; mât rentré : pas d'avarie voile. Déterministe.
+  const st = newPlayerState(w);
+  st.x = spot.x; st.y = spot.y; st.estX = spot.x; st.estY = spot.y;
+  st.heading = bearingTo(spot.x, spot.y, spot.lx, spot.ly);
+  st.headingOrder = st.heading;
+  st.anchored = false; st.mast = false; st.sail = 0; st.engineOn = true;
+  for (let i = 0; i < 30 && !st.grounded; i++) tick(st, 1, w);
+  assert.equal(st.grounded, true, "le navire échoue sur la terre");
+  assert.equal(st.hullH, 75, "−25 % au premier échouement");
+  assert.equal(st.groundHitArmed, false, "avarie désarmée");
+  for (let i = 0; i < 10; i++) tick(st, 1, w);
+  assert.equal(st.hullH, 75, "aucune ré-avarie tant que le contact tient");
+  st.headingOrder = (st.heading + 180) % 360;
+  let armed = false;
+  for (let i = 0; i < 60 && !armed; i++) { tick(st, 1, w); armed = st.groundHitArmed === true; }
+  assert.ok(armed, "ré-armement une fois à 100 m de toute terre");
+  assert.equal(st.hullH, 75, "l'éloignement ne coûte rien");
+  st.headingOrder = bearingTo(st.x, st.y, spot.lx, spot.ly);
+  for (let i = 0; i < 60 && !st.grounded; i++) tick(st, 1, w);
+  assert.equal(st.grounded, true, "second échouement");
+  assert.equal(st.hullH, 50, "−25 % encore une fois — et une seule");
 });

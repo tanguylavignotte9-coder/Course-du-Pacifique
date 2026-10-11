@@ -223,8 +223,9 @@ export default function App() {
           <div className="w-full max-w-sm space-y-3 rounded-xl border-2 border-[#241a0e] p-5 shadow-[0_6px_16px_rgba(0,0,0,0.55)]"
             style={{ background: "linear-gradient(180deg, #4a3421, #33230f)" }} onClick={(e) => e.stopPropagation()}>
             <h2 className="plate rounded px-2.5 py-1 text-center text-[12px] font-bold uppercase tracking-[0.14em]">🛒 Avitaillement</h2>
-            <p className="engrave text-[9px] uppercase tracking-[0.14em]">Navire à quai : plein de carburant et de vivres.</p>
+            <p className="engrave text-[9px] uppercase tracking-[0.14em]">Navire à quai : plein, vivres et radoub gratuits.</p>
             <button onClick={() => { cmd({ refuel: true }); setShopOpen(false); }} className="w-full rounded border border-[#5c3a1a] bg-gradient-to-b from-[#b87333] to-[#7c4a1a] px-2.5 py-2 text-[10px] font-bold uppercase tracking-wide text-[#1c130a] hover:from-[#d08a4a]">✅ Plein complet</button>
+            <button onClick={() => { cmd({ repair: true }); setShopOpen(false); }} className="w-full rounded border border-[#5c3a1a] bg-gradient-to-b from-[#b87333] to-[#7c4a1a] px-2.5 py-2 text-[10px] font-bold uppercase tracking-wide text-[#1c130a] hover:from-[#d08a4a]">🛠️ Réparation complète</button>
             <button onClick={() => setShopOpen(false)} className="plate rounded w-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:brightness-110">Reprendre la mer</button>
           </div>
         </div>
