@@ -20,29 +20,166 @@ const PERSIST_MS = MS_PER_MIN; // persistance disque : 1 min réelle
 // Bafouillage des pêcheurs (diffusion) : petites phrases de la vie à bord.
 // JAMAIS de coordonnées dans le texte (règle : pas de position vraie dans
 // les messages NPC — la position ne se révèle que par le geste du joueur).
-// Mélange de tons : classiques, humour et petits ennuis de bord (matériel,
-// mer, fatigue) — JAMAIS l'attaque de la Bête : ça, c'est le SOS, un
-// message long en famille longue, émis au moment de l'attaque.
-const FISHER_CHAT_LINES = [
-  "Filets remontés, pas grand-chose dedans…",
-  "Banc de maquereaux au nord, ça donne espoir.",
-  "La mer est belle ce soir, ça sent la bonne journée.",
-  "…et encore un qui a filé avec l'appât, ces bestioles apprennent.",
-  "Moteur qui chauffe, on rentre doucement.",
-  "Du poisson, du poisson, du poisson !",
-  "Par ici la brume, on garde les yeux ouverts.",
-  "Ce soir, soupe de poisson pour tout le monde.",
-  "Remontée des filets dans un quart d'heure, silence radio après.",
-  "Bonne pêche à toutes les unités de la zone.",
-  "Patience et malice — la pêche, c'est tout un art.",
-  "La mouette a piqué mon casse-croûte, la journée commence bien.",
-  "Ma femme dit que je parle plus aux poissons qu'à elle. Elle n'a pas tort.",
-  "Question du jour : le café d'hier, ça se boit encore ?",
-  "Le filet s'est déchiré sur un haut-fond, journée fichue.",
-  "Le treuil grippe encore — bricolage ce soir.",
-  "Une lame nous a emporté deux caisses, la mer ne rend rien.",
-  "La pompe de cale fatigue, on écope à la main.",
-];
+// JAMAIS l'attaque de la Bête : ça, c'est le SOS, un message long en
+// famille longue, émis au moment de l'attaque.
+//
+// PERSONNALITÉS : chaque pêcheur a un ARCHÉTYPE stable — humour, routine,
+// lassitude, problème ou suspicion — dérivé de son code radio (déterministe :
+// pas de migration, survit aux redémarrages, cohérent d'un message à l'autre).
+// 130 phrases uniques. Les 18 phrases historiques sont conservées,
+// redistribuées dans leur archétype.
+// SUSPENSION : la « suspicion » décrit des PHÉNOMÈNES ÉTRANGES, jamais la
+// bête vue explicitement — et elle n'est JAMAIS corrélée à la présence
+// réelle de la créature (sinon la radio deviendrait un détecteur). Le SOS
+// reste l'unique message qui dit l'attaque, en famille longue.
+const FISHER_CHAT_LIBRARY = {
+  humour: [
+    "…et encore un qui a filé avec l'appât, ces bestioles apprennent.",
+    "Du poisson, du poisson, du poisson !",
+    "La mouette a piqué mon casse-croûte, la journée commence bien.",
+    "Ma femme dit que je parle plus aux poissons qu'à elle. Elle n'a pas tort.",
+    "Question du jour : le café d'hier, ça se boit encore ?",
+    "Un poisson m'a regardé de travers, je l'ai relâché par principe.",
+    "Ici on ne pêche pas, on fait de la thérapie à la moulinette.",
+    "Mon copain trouve la mer romantique. Il n'a jamais viré une caisse à 4 h du matin.",
+    "Le poisson doit rigoler, on lui fait la même blague depuis vingt ans.",
+    "Si le poisson prenait le café, on ne ferait pas le poids.",
+    "J'ai nommé ma bouée Dorothée. Elle s'accroche bien, Dorothée.",
+    "Le vrai poisson, c'est celui qui mange l'appât et s'en va. Respect.",
+    "La mer m'a pris mon chapeau. Je le récupérerai au prochain port.",
+    "Mon chat de bord a le mal de mer. Le chat, pas moi. Ça change.",
+    "On a pêché une botte. Demain l'autre, et on fera la paire.",
+    "Le poisson du jour ment : il nous a menti toute la journée.",
+    "La mer me doit de l'argent, mais elle paie en poisson.",
+    "Ici l'ambiance est comme le café du bord : trop chaude.",
+    "Mon moteur ronronne mieux que mon beau-frère chante, et c'est peu dire.",
+    "Deuxième canne cassée du jour. Le record du magasin tient bon.",
+    "Le poisson ne répond pas. Je laisse un message, il rappellera peut-être.",
+    "Le café de bord est si fort que les mouettes tournent en sens inverse.",
+    "La pêche du jour : trois poissons et un tabouret. Le tabouret a l'air frais.",
+    "Un jour je prendrai ma retraite et j'ouvrirai un musée des cannes cassées.",
+    "Ici le capitaine, le cuisinier et le mousse, c'est le même homme. Le mousse obéit bien.",
+  ],
+  routine: [
+    "Filets remontés, pas grand-chose dedans…",
+    "Banc de maquereaux au nord, ça donne espoir.",
+    "La mer est belle ce soir, ça sent la bonne journée.",
+    "Remontée des filets dans un quart d'heure, silence radio après.",
+    "Bonne pêche à toutes les unités de la zone.",
+    "Patience et malice — la pêche, c'est tout un art.",
+    "Ce soir, soupe de poisson pour tout le monde.",
+    "Deux caisses triées, le reste part à la cale.",
+    "Le café du bord est prêt, qui vient en chercher ?",
+    "Petit à petit, la soute se remplit. Bonne journée.",
+    "Vérification des lignes de traîne, tout est en ordre.",
+    "On tient le cap, la mer fait le reste.",
+    "Marée du matin correcte, on repart pour la seconde.",
+    "Le thermos est plein, la journée peut commencer.",
+    "Changement de zone, ici c'était du désert.",
+    "Fin de poste pour moi, mon frère prend la barre.",
+    "On attend la météo du soir avant de décider.",
+    "Le filet du fond remonte propre, du bon travail.",
+    "J'ai remis de l'ordre dans la cale, on respire mieux.",
+    "Trois heures de traîne, quatre maquereaux. On continue.",
+    "Tout le monde à ses postes, on relève.",
+    "L'appât est frais, la journée part bien.",
+    "Un coup de balayage sur le pont et on déjeune.",
+    "Ça mord par petites touches, on y va mollo.",
+    "On marque la bouée, on garde la zone en mémoire.",
+  ],
+  lassitude: [
+    "Douze heures de mer, les bras ne suivent plus.",
+    "Encore une journée pareille, on dirait hier.",
+    "Je compte les jours avant la pause.",
+    "La cabine sent le gasoil et la fatigue.",
+    "Le dos me tue, la mer me tient.",
+    "Trop de quarts, pas assez d'oreillers.",
+    "La mer est un métier pour les jeunes. J'étais jeune aussi.",
+    "Trente ans de filets, ça laisse des marques aux mains.",
+    "Ici les journées se ressemblent, seule la météo change.",
+    "J'ai laissé la radio allumée pour la compagnie.",
+    "Mon lit à terre me manque, ma couchette me tient chaud.",
+    "On salue le lever du jour, on salue encore le café.",
+    "La brume du jour me colle au moral.",
+    "Je parle à mes filets comme à de vieux amis. Eux au moins, ils écoutent.",
+    "Retour au port, retour à la vraie vie.",
+    "Les genoux lâchent avant le moteur, heureusement.",
+    "Café, filet, café, filet. Voilà ma culture générale.",
+    "Personne ne dit merci quand les caisses sont pleines.",
+    "Je ne me plains pas, je décris.",
+    "Encore un coucher de soleil magnifique que je n'ai pas le temps de regarder.",
+    "Les années passent, la mer reste identique.",
+    "La nuit, seul le moteur me tient compagnie.",
+    "Fatigué comme un chien, et je ne suis même pas un chien de mer.",
+    "Un jour de plus, une vague de plus.",
+    "Je rêve d'un banc de poissons et je me réveille sur un banc de brume.",
+  ],
+  probleme: [
+    "Moteur qui chauffe, on rentre doucement.",
+    "Par ici la brume, on garde les yeux ouverts.",
+    "Le filet s'est déchiré sur un haut-fond, journée fichue.",
+    "Le treuil grippe encore — bricolage ce soir.",
+    "Une lame nous a emporté deux caisses, la mer ne rend rien.",
+    "La pompe de cale fatigue, on écope à la main.",
+    "La barre tire d'un côté, il faut que je regarde ça.",
+    "Le sonar grésille, on pêche à l'instinct.",
+    "Le générateur cale au ralenti, on croise les doigts.",
+    "Filet emmêlé sur le fond, deux heures de tri en perspective.",
+    "L'ancre a dérapé cette nuit, on a dérivé en silence.",
+    "La lampe de pont a rendu l'âme, bricolage au scotch.",
+    "Bouée de signalisation perdue, on refait le parcours de mémoire.",
+    "Deux gilets à changer, le sel a fait son œuvre.",
+    "Le tangage a renversé la gamelle, midi prend l'eau.",
+    "Le réservoir d'eau douce fuit, rationnement à bord.",
+    "Un requin a goûté le filet, on raccommode.",
+    "La VHF crachote, si vous m'entendez, tant mieux.",
+    "Trop de vent pour lever, on attend que ça tombe.",
+    "L'hélice a pris un bout de filet, plongée à prévoir.",
+    "La cale sent le gasoil, on cherche la fuite.",
+    "Le treuil grince à la manœuvre, on ne force pas.",
+    "Le vent de secteur tourne, on adapte la route.",
+    "Le filet remonte chargé d'algues, tri ce soir.",
+    "Une voie d'eau bouchée à la poix, on surveille la cale.",
+  ],
+  suspicion: [
+    "Un silence de cathédrale ici. Même les mouettes n'osent plus.",
+    "Un banc entier a viré d'un coup, tous en même temps. Jamais vu ça.",
+    "Le sondeur a montré quelque chose de large sous la coque. Je n'ai pas insisté pour voir.",
+    "Il y a un remous qui me suit depuis ce matin. Je ne lui ai pas demandé son cap.",
+    "Les baleines ont arrêté de chanter d'un coup. Le silence, ça s'entend.",
+    "J'ai remonté des poissons à moitié croqués. Pas l'œuvre d'un cormoran.",
+    "Une odeur de vase profonde, ici qu'on est à plein large. Ça n'a pas de sens.",
+    "Le filet a tremblé tout seul, sans rien dedans. J'ai changé de poste.",
+    "Une ombre a glissé sous la quille. De ces ombres qu'on ne commente pas au dîner.",
+    "Tous les oiseaux ont quitté le secteur d'un coup. Ils savent des choses, les oiseaux.",
+    "Une nappe de mousse large comme une route, qui ne suit pas le courant.",
+    "Un chant très grave dans les basses fréquences. Aucune baleine connue ne chante ça.",
+    "Les prises ont disparu du secteur en une nuit. L'océan s'est vidé, ici.",
+    "L'eau a chuté de quatre degrés d'un seul coup, à cet endroit précis.",
+    "Une grosse houle de fond, sans vent, sans navire, sans raison.",
+    "Le compas a tourné tout seul dix secondes. Le moteur tournait bien, lui.",
+    "Ici, même les requins ne se baignent pas.",
+    "J'ai sorti un poisson avec une marque que la dent d'aucun loup n'explique.",
+    "Le sondeur affiche un double fond qui bouge. Les cartes marines n'en parlent pas.",
+    "Des bulles remontent par gros paquets, et aucun navire au-dessus.",
+    "La ligne de traîne s'est tendue comme un cordage de piano. Puis plus rien.",
+    "Un long souffle le long de la coque, dans la brume. Personne n'a regardé par-dessus bord.",
+    "Le chum n'attire plus rien depuis hier. Même les appâts font grève.",
+    "Une écaille dans un filet vide. Une écaille de la taille de ma main.",
+    "Une bosse mobile à l'échosondeur, trente mètres sous la quille. Elle descend quand je m'arrête, remonte quand je repars.",
+    "Note sans commentaire : 4 h du matin, mer d'huile, et trois plongeons de quelque chose que je ne nommerai pas.",
+    "Un grésillement de très basse fréquence sur la radio. La météo dit qu'il n'y a rien.",
+    "Le bateau tangue dans un ressac qui n'existe pas, à 300 mètres de fond.",
+    "J'ai décroché une masse qui n'a même pas essayé de fuir. C'est ça qui me travaille.",
+    "Si vous pêchez ici cette nuit, gardez le moteur chaud. C'est tout ce que je dis, et je ne dis rien.",
+  ],
+};
+
+const FISHER_CHAT_KINDS = ["humour", "routine", "lassitude", "probleme", "suspicion"];
+
+// Archétype stable d'un pêcheur : somme des caractères de son code radio.
+const fisherChatKind = (code) =>
+  FISHER_CHAT_KINDS[[...code].reduce((s, c) => s + c.charCodeAt(0), 0) % FISHER_CHAT_KINDS.length];
 const clamp01 = (v) => clamp(v, 0, 1);
 
 // ---------- Persistance & comptes ----------
@@ -457,7 +594,14 @@ function npcPass(now) {
   for (const f of npcs.fishermen) {
     if (now < f.nextChatMin) continue;
     f.nextChatMin = nextNpcEventMin(now, FISHER_CHAT_MEAN_MIN);
-    const line = FISHER_CHAT_LINES[Math.floor(Math.random() * FISHER_CHAT_LINES.length)];
+    // Le pêcheur pioche dans SA banque (archétype stable) — jamais deux
+    // fois la même phrase d'affilée.
+    const pool = FISHER_CHAT_LIBRARY[fisherChatKind(f.code)];
+    let idx = Math.floor(Math.random() * pool.length);
+    if (idx === f.lastChatIdx)
+      idx = (idx + 1 + Math.floor(Math.random() * (pool.length - 1))) % pool.length;
+    f.lastChatIdx = idx;
+    const line = pool[idx];
     radioSend(f.x, f.y, (ost, cap) => {
       ost.notifSeq = (ost.notifSeq || 0) + 1;
       ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: `📻 Navire ${f.code} : « ${line} »`, kind: "info", cat: "radio" });

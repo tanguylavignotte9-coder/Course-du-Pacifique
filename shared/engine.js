@@ -857,7 +857,7 @@ export const WHALE_BOUNCE_JITTER_DEG = 45; // dispersion du rebond terre/bord
 export const NPC_EDGE_DEG = 0.5;        // marge de bord de carte (baleines, cargos)
 export const NPC_TICK_MAX_MIN = 120;    // garde-fou : dt max par passe serveur
 export const NPC_SUBSTEP_MIN = 5;       // sous-pas (rebonds sans tunneling)
-export const FISHER_CHAT_MEAN_MIN = 90;  // cadence moyenne du bafouillage (diffusion)
+export const FISHER_CHAT_MEAN_MIN = 120; // cadence moyenne du bafouillage (diffusion, 2 h)
 export const CARGO_MSG_MEAN_MIN = 240;   // cadence moyenne des messages privés
 export const WHALE_SONG_MEAN_MIN = 120;  // cadence moyenne du chant (sonar passif)
 
