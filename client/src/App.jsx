@@ -130,7 +130,6 @@ export default function App() {
         onManual={() => setManualOpen(true)}
         onShop={() => setShopOpen(true)}
         onNetwork={() => setNetOpen(true)}
-        onWx={() => { setWxOpen(true); setWxH(0); }}
         canShop={atDock}
       />
 

@@ -167,8 +167,15 @@ function PortholeScene({ hour, w, dive, peri, regard, heading, snap }) {
           const isleW = 2 * Math.atan(radKm / Math.max(0.1, e.km)) * (180 / Math.PI) * PXD;
           const isleH = e.beyond ? 5 : Math.max(10, Math.atan(radKm / Math.max(0.1, e.km)) * (180 / Math.PI) * PXD);
           if (Math.abs(at(e.az)) > 1100 + isleW) return null;
+          // La flottaison est a 26 px du bas de l'element ; le viewBox "0 0 100 40" est
+          // etire sur isleH + 26 px, donc 1 unite = (isleH + 26) / 40 px. La flottaison
+          // tombe a y = 40 * isleH / (isleH + 26) ; le pic (centre de l'ile) a y = 0.
+          const vbWl = (40 * isleH) / (isleH + 26);
           const polyPts = verts
-            .map(([vx, vy]) => `${(50 + wrap180(azTo(vx, vy) - e.az) * PXD / (isleW / 100 || 1)).toFixed(1)},${(36 - 30 * (1 - Math.hypot(vx - cx, vy - cy) / (radDeg || 1))).toFixed(1)}`)
+            .map(([vx, vy]) => {
+              const d = Math.hypot(vx - cx, vy - cy) / (radDeg || 1);
+              return `${(50 + wrap180(azTo(vx, vy) - e.az) * PXD / (isleW / 100 || 1)).toFixed(1)},${(vbWl * d).toFixed(1)}`;
+            })
             .join(" ");
           return (
             <svg key={idx} viewBox="0 0 100 40" preserveAspectRatio="none" className="absolute -translate-x-1/2"
@@ -444,6 +451,10 @@ function Wheel({ order, heading, disabled, onOrder }) {
   const ref = useRef(null);
   const drag = useRef(null);
   const lastSent = useRef(0);
+  const [live, setLive] = useState(null);
+  useEffect(() => {
+    if (live != null && Math.abs(wrap180(order - live)) < 1.5) setLive(null);
+  }, [order]);
   const angFrom = (e) => {
     const r = ref.current.getBoundingClientRect();
     const cx = r.left + r.width / 2;
@@ -452,7 +463,7 @@ function Wheel({ order, heading, disabled, onOrder }) {
   };
   const onDown = (e) => {
     if (disabled) return;
-    drag.current = { start: angFrom(e), startOrder: order };
+    drag.current = { start: angFrom(e), startOrder: live != null ? live : order };
     e.currentTarget.setPointerCapture(e.pointerId);
   };
   const onMove = (e) => {
@@ -460,25 +471,29 @@ function Wheel({ order, heading, disabled, onOrder }) {
     let d = angFrom(e) - drag.current.start;
     if (d > 180) d -= 360;
     if (d < -180) d += 360;
-    const v = ((drag.current.startOrder + Math.round(d)) % 360 + 360) % 360;
+    const v = wrap360(drag.current.startOrder + d);
+    setLive(v);
     const t = performance.now();
-    if (t - lastSent.current > 100) { lastSent.current = t; onOrder(v); }
+    if (t - lastSent.current > 100) { lastSent.current = t; onOrder(Math.round(v)); }
   };
   const onUp = (e) => {
     if (!drag.current) return;
     let d = angFrom(e) - drag.current.start;
     if (d > 180) d -= 360;
     if (d < -180) d += 360;
-    onOrder(((drag.current.startOrder + Math.round(d)) % 360 + 360) % 360);
+    const v = wrap360(drag.current.startOrder + d);
+    setLive(v);
+    onOrder(Math.round(v));
     drag.current = null;
   };
+  const shown = live != null ? live : order;
   return (
     <svg ref={ref} viewBox="0 0 200 200" className={`w-[185px] select-none touch-none ${disabled ? "cursor-not-allowed opacity-50" : "cursor-grab"}`}
       onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
       <circle cx="100" cy="100" r="92" fill="none" stroke="#2c1f11" strokeWidth="16" />
       <circle cx="100" cy="100" r="92" fill="none" stroke="#8a5a2b" strokeWidth="11" />
       <circle cx="100" cy="100" r="92" fill="none" stroke="#b87333" strokeWidth="2" />
-      <g transform={`rotate(${(order * 3) % 360} 100 100)`}>
+      <g transform={`rotate(${(shown * 3) % 360} 100 100)`}>
         {[0, 45, 90, 135, 180, 225, 270, 315].map((d) => {
           const rr = (d * Math.PI) / 180;
           return (
@@ -602,7 +617,7 @@ function RopeHandle({ value, onCommit }) {
         {[20, 50, 80, 110, 140].map((k) => (
           <div key={k} className="absolute left-[9px] h-[2px] w-[6px] rounded bg-[#4a3820]" style={{ top: k }} />
         ))}
-        <div className="absolute left-1/2 -translate-x-1/2 transition-[top] duration-75"
+        <div className={`absolute left-1/2 -translate-x-1/2 ${live == null ? "transition-[top] duration-75" : ""}`}
           style={{ top: `${18 + v * 1.14}px` }}>
           <div className="h-8 w-11 rounded-md border-2 border-[#5c3a1a] shadow-[0_2px_5px_rgba(0,0,0,0.7)]"
             style={{ background: "linear-gradient(180deg, #f0d089, #b08d4a 45%, #7c5a2b), repeating-linear-gradient(90deg, rgba(0,0,0,0.35) 0 3px, transparent 3px 7px)" }} />
@@ -1137,7 +1152,7 @@ function WeatherBoard({ snap }) {
   );
 }
 
-export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, onWx, superBlock, canShop }) {
+export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, superBlock, canShop }) {
   const cmd = (data) => sock && sock.command(data);
   const player = snap.player;
   const weather = snap.weather;
@@ -1185,7 +1200,6 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
           <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
             {canShop && <button onClick={onShop} className="plate rounded px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider hover:brightness-110">📦 Avitaillement</button>}
             {snap.networkZone && <button onClick={onNetwork} className="plate rounded px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider hover:brightness-110">📡 NETWORK</button>}
-            <button onClick={onWx} className="plate rounded px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider hover:brightness-110">🌦️ Prévisions météo</button>
           </div>
         </div>
 
@@ -1262,7 +1276,7 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
                     : "border-[#3a2c18] bg-[#1a140c] opacity-50 cursor-not-allowed"}`}>
                   <span className="flex h-7 w-7 items-center justify-center rounded-full border-2 border-[#78350f] text-[12px]
                     bg-gradient-to-b from-[#ef4444] to-[#7f1d1d] shadow-[0_0_8px_rgba(239,68,68,0.5)]">📦</span>
-                  <span className="engrave text-[8.5px] font-bold uppercase tracking-[0.12em]">Arger la balise — {Math.round(CAPTURE_R_KM * 1000)} m</span>
+                  <span className="engrave text-[8.5px] font-bold uppercase tracking-[0.12em]">Amarrer la balise — {Math.round(CAPTURE_R_KM * 1000)} m</span>
                 </button>
               </div>
             </div>
