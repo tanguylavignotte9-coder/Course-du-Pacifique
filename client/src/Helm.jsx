@@ -98,9 +98,14 @@ function PortholeScene({ hour, w, dive, peri, regard, heading, snap }) {
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
       {!deep && (<>
+        {/* Ciel STATIQUE plein cadre : le lointain ne tangue pas ; toute zone
+            découverte par le tangage montre du ciel cohérent — plus aucune
+            plaque sombre possible. Bande d'eau sombre sous la flottaison
+            moyenne (~28 % du cadre) pour les découvertes basses. */}
+        <div className="absolute inset-0"
+          style={{ background: `linear-gradient(180deg, ${skyTop} 0%, ${skyBot} 28%, #061527 28.6%, #04101e 100%)` }} />
         <div className="pcScene absolute -inset-[15%]"
           style={{ "--rollAmp": `${rollAmp}deg`, "--rollDur": `${Math.max(4, w.period)}s`, "--bobAmp": `${bobAmp}px` }}>
-        <div className="absolute inset-x-0" style={{ top: "-45%", bottom: 0, background: `linear-gradient(${skyTop}, ${skyBot})` }} />
         <div className="absolute inset-0" style={{ opacity: starOpacity }}>
           {STARS.map((st, i) => {
             const dx = at(st.x * 3.6);
@@ -234,27 +239,33 @@ function PortholeScene({ hour, w, dive, peri, regard, heading, snap }) {
 
         {/* Navires détectés (snap.ships — détection serveur) :
             silhouette le jour ; nuit = silhouette sombre atténuée si sans phare,
-            silhouette + feu clignotant si phare allumé. */}
-        {(snap.ships || []).map((s) => {
-          if (Math.abs(at(s.az)) > 1100) return null;
-          const sw = shipW(s.km);
-          const sh = Math.round(sw * 0.875);
-          return (
-            <div key={s.id} className={`absolute -translate-x-1/2 ${night && !s.light ? "" : "opacity-70"}`}
-              style={{ left: `calc(50% + ${at(s.az)}px)`, bottom: "calc(33% - 2px)" }}>
-              <svg width={sw} height={sh} viewBox="0 0 16 14">
-                <path d="M2 9 L14 9 L12 13 L4 13 Z" fill={night && !s.light ? "#1e293b" : "#0c2233"}
-                  stroke={night && !s.light ? "#94a3b8" : "none"} strokeWidth={night && !s.light ? 0.8 : 0} />
-                <line x1="8" y1="9" x2="8" y2="2" stroke={night && !s.light ? "#94a3b8" : "#0c2233"} strokeWidth="1.2" />
-                <line x1="8" y1="4" x2="12" y2="4" stroke={night && !s.light ? "#94a3b8" : "#0c2233"} strokeWidth="1" />
-              </svg>
-              {night && s.light && (
-                <span className="pcBlink absolute left-1/2 top-0 h-[5px] w-[5px] -translate-x-1/2 rounded-full bg-amber-200"
-                  style={{ boxShadow: "0 0 9px 3px rgba(252,211,77,0.75)" }} />
-              )}
-            </div>
-          );
-        })}
+            silhouette + feu clignotant si phare allumé. Navires au même
+            endroit = même gisement écran : on les empile en cascade verticale
+            (perspective), sinon ils se superposent exactement. */}
+        {(snap.ships || [])
+          .filter((s) => Math.abs(at(s.az)) <= 1100)
+          .sort((a, b) => b.km - a.km) // du plus LOINTAIN au plus PROCHE : le proche se rend devant
+          .map((s, i, arr) => {
+            const x = at(s.az);
+            const dup = arr.slice(0, i).filter((o) => Math.abs(at(o.az) - x) < 26).length;
+            const sw = shipW(s.km);
+            const sh = Math.round(sw * 0.875);
+            return (
+              <div key={s.id} className={`absolute -translate-x-1/2 ${night && !s.light ? "" : "opacity-70"}`}
+                style={{ left: `calc(50% + ${x}px)`, bottom: `calc(33% - 2px + ${dup * Math.round(sh * 0.75)}px)` }}>
+                <svg width={sw} height={sh} viewBox="0 0 16 14">
+                  <path d="M2 9 L14 9 L12 13 L4 13 Z" fill={night && !s.light ? "#263447" : "#0c2233"}
+                    stroke={night && !s.light ? "#cbd5e1" : "none"} strokeWidth={night && !s.light ? 1.1 : 0} />
+                  <line x1="8" y1="9" x2="8" y2="2" stroke={night && !s.light ? "#cbd5e1" : "#0c2233"} strokeWidth="1.2" />
+                  <line x1="8" y1="4" x2="12" y2="4" stroke={night && !s.light ? "#cbd5e1" : "#0c2233"} strokeWidth="1" />
+                </svg>
+                {night && s.light && (
+                  <span className="pcBlink absolute left-1/2 top-0 h-[5px] w-[5px] -translate-x-1/2 rounded-full bg-amber-200"
+                    style={{ boxShadow: "0 0 9px 3px rgba(252,211,77,0.75)" }} />
+                )}
+              </div>
+            );
+          })}
 
         {/* Traces de la Bête (view.traces) : marqueurs discrets au gisement */}
         {(view.traces || []).map((e, idx) => {
@@ -288,14 +299,14 @@ function PortholeScene({ hour, w, dive, peri, regard, heading, snap }) {
         </div>
         {/* brouillard : voile + bancs dérivants */}
         {w.fog && (
-          <div className="absolute inset-0">
+          <div className="absolute -inset-[15%]">
             <div className="absolute inset-0" style={{ background: `linear-gradient(rgba(${fogTint([203, 213, 225])},0.55), rgba(${fogTint([148, 163, 184])},0.5))` }} />
             <div className="pcFog absolute left-[-15%] top-[8%] h-[55%] w-[130%] blur-3xl" style={{ background: `rgba(${fogTint([203, 213, 225])},0.75)`, animationDuration: "40s" }} />
           </div>
         )}
         {/* tempête : assombrissement + éclairs */}
         {w.storm && (<>
-          <div className="absolute inset-0" style={{ background: "rgba(2,6,23,0.5)" }} />
+          <div className="absolute -inset-[15%]" style={{ background: "rgba(2,6,23,0.5)" }} />
           <div className="pcFlash absolute inset-0" style={{ background: "radial-gradient(ellipse at 50% -10%, rgba(224,242,254,0.9), transparent 55%)" }} />
         </>)}
         </div>
@@ -1244,8 +1255,8 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
                   </div>
                 </div>
                 <div>
-                  <HandleLever label="Moteur électrique" value={Math.round((player.engine || 0) * 100)} cyan
-                    onChange={(v) => cmd({ engine: v / 100 })} />
+                  <HandleLever label="Moteur électrique" value={Math.round((player.electric ?? player.engine ?? 0) * 100)} cyan
+                    onChange={(v) => cmd({ electric: v / 100 })} />
                   <div className="mt-1 flex items-center gap-1.5">
                     <button onClick={() => cmd({ electricOn: !player.electricOn })}
                       className={`rounded border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide ${player.electricOn

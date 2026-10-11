@@ -935,6 +935,7 @@ function publicSnapshot(id) {
     isSuper: isSuper(id),
     player: {
       heading: st.heading, headingOrder: st.headingOrder ?? st.heading, sail: st.sail ?? SAIL_DEFAULT, engine: st.engine,
+      electric: st.electric ?? st.engine,
       location: st.location, mast: st.mast, engineOn: st.engineOn,
       electricOn: st.electricOn, periscope: st.periscope, vkmh: st.vkmh,
       fuel: st.fuel, battery: st.battery, food: st.food,
@@ -1167,6 +1168,7 @@ wss.on("connection", (ws, req) => {
       }
       if (typeof c.sail === "number") st.sail = clamp01(c.sail);
       if (typeof c.engine === "number") st.engine = clamp01(c.engine);
+      if (typeof c.electric === "number") st.electric = clamp01(c.electric);
       if (typeof c.antBeam === "number") st.antBeam = Math.round(clamp(c.antBeam, 1, 180));
       if (typeof c.antOrient === "number") st.antOrient = Math.round(clamp(c.antOrient, -180, 180));
       if (typeof c.mast === "boolean") st.mast = c.mast;

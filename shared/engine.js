@@ -1619,7 +1619,7 @@ function speedKmh(st, w) {
     if (st.engineOn && st.fuel > 0) v += DIESEL_SPD_KMH * st.engine;
     v = Math.min(v, VMAX_KMH);
   } else {
-    if (st.electricOn && st.battery > 0) v += (st.periscope ? SCOPE_SPD_KMH : SUB_SPD_KMH) * st.engine;
+    if (st.electricOn && st.battery > 0) v += (st.periscope ? SCOPE_SPD_KMH : SUB_SPD_KMH) * (st.electric ?? st.engine);
   }
   return v;
 }
@@ -1659,7 +1659,7 @@ export function tick(st, dtMin, world) {
   // Consommations
   if (st.location === "surface" && st.engineOn) st.fuel = Math.max(0, st.fuel - FUEL_RATE_PCT_H * st.engine * (dtMin / 60));
   if (st.location === "underwater" && st.electricOn)
-    st.battery = Math.max(0, st.battery - (st.periscope ? BATT_PERISCOPE_PCT_H : BATT_SUB_PCT_H) * st.engine * (dtMin / 60));
+    st.battery = Math.max(0, st.battery - (st.periscope ? BATT_PERISCOPE_PCT_H : BATT_SUB_PCT_H) * (st.electric ?? st.engine) * (dtMin / 60));
   if (st.location === "surface" && daylight)
     st.battery = Math.min(100, st.battery + SOLAR_PCT_H * (1 - w.clouds / 130) * (dtMin / 60));
   st.food = Math.max(0, st.food - FOOD_PCT_H * (dtMin / 60));

@@ -25,6 +25,7 @@ import {
   PATROL_DETECT_COOLDOWN_MIN, PATROL_DETECT_R_KM, PATROL_TICK_MAX_MIN,
   CANNON_DECAY_KM, findStation, coastReflect, coastStep, COAST_PROBE_KM,
   PATROL_BERTH_KM,
+  SUB_SPD_KMH, BATT_SUB_PCT_H,
 } from "./engine.js";
 
 // Navire de test en pleine eau (loin du port et des terres), pleine vitesse.
@@ -1446,4 +1447,37 @@ test("tracePush : trace de route serveur — seuil 0,5 km, plafond FIFO, paires 
   assert.ok(tr.every((p) => Array.isArray(p) && p.length === 2), "points = paires [x, y]");
   const tr2 = tracePush(tr, tr[tr.length - 1][0], tr[tr.length - 1][1]);
   assert.equal(tr2, tr, "aucun mouvement : la trace est renvoyée telle quelle");
+});
+
+// ---------- Correctif 4 : consigne électrique séparée ----------
+test("propulsion : la vitesse électrique suit la CONSIGNE ÉLECTRIQUE, pas le thermique", () => {
+  const w = buildWorld(42);
+  const run = (electric) => {
+    const st = subAt(w);
+    st.anchored = false; st.electricOn = true; st.engine = 0.2; st.electric = electric;
+    for (let i = 0; i < 10; i++) tick(st, 1, w);
+    return st.vkmh;
+  };
+  const v09 = run(0.9), v02 = run(0.2);
+  assert.ok(v09 > v02 * 3, `0,9 doit pousser bien plus fort que 0,2 (obtenu : ${v09} vs ${v02})`);
+  assert.ok(Math.abs(v09 - SUB_SPD_KMH * 0.9) < 1e-6, `convergence vers SUB_SPD_KMH × 0,9 (obtenu ${v09})`);
+});
+
+test("propulsion : la décharge des batteries suit la consigne ÉLECTRIQUE", () => {
+  const w = buildWorld(42);
+  const st = subAt(w);
+  st.anchored = false; st.electricOn = true; st.engine = 1; st.electric = 0.5; st.periscope = false;
+  const bat0 = st.battery;
+  for (let i = 0; i < 60; i++) tick(st, 1, w); // 1 h de jeu
+  assert.ok(Math.abs((bat0 - st.battery) - BATT_SUB_PCT_H * 0.5) < 1e-6,
+    `décharge = BATT_SUB_PCT_H × 0,5 (obtenu ${bat0 - st.battery})`);
+});
+
+test("migration : état ancien sans consigne électrique → repli sur engine", () => {
+  const w = buildWorld(42);
+  const st = subAt(w);
+  st.anchored = false; st.electricOn = true; st.engine = 0.6;
+  delete st.electric;
+  for (let i = 0; i < 10; i++) tick(st, 1, w);
+  assert.ok(Math.abs(st.vkmh - SUB_SPD_KMH * 0.6) < 1e-6, `repli sur engine (obtenu ${st.vkmh})`);
 });

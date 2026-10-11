@@ -74,7 +74,7 @@ body {
 .pcBubble { animation: pcBubble linear infinite; }
 @keyframes pcScene { 0%, 100% { transform: rotate(calc(-1 * var(--rollAmp, 0deg))) translateY(0); }
   50% { transform: rotate(var(--rollAmp, 0deg)) translateY(var(--bobAmp, 0px)); } }
-.pcScene { animation: pcScene var(--rollDur, 6s) ease-in-out infinite; }
+.pcScene { animation: pcScene var(--rollDur, 6s) ease-in-out infinite; will-change: transform; }
 /* --- poignées laiton --- */
 .hnd { -webkit-appearance: none; appearance: none; height: 12px; border-radius: 6px;
   background: linear-gradient(180deg, #241a0e, #0d0a06); outline: none; border: 1px solid #4a3820;
