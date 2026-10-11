@@ -42,8 +42,22 @@ function WindowsBand({ hour, w, dive, peri, snap }) {
               style={{ background: "linear-gradient(180deg, #6b4a20, #3a2a16)", boxShadow: "0 2px 5px rgba(0,0,0,0.65)" }} />
           </>
         )}
+        {dive && peri && (
+          <>
+            <div className="pointer-events-none absolute inset-0" style={{
+              background: "radial-gradient(circle closest-side at 50% 50%, transparent 0 74%, rgba(1,4,10,0.55) 74.5%, rgba(10,8,4,0.9) 76%, #b87333 78%, #8a5a2b 79.5%, #3a2a16 81.5%, #02060c 83%, #01040a 100%)"
+            }} />
+            <div className="pointer-events-none absolute inset-0" style={{
+              background: "radial-gradient(circle closest-side at 50% 50%, rgba(103,232,249,0.08) 0 72%, transparent 74%)"
+            }} />
+            <div className="pointer-events-none absolute inset-0">
+              <div className="absolute left-1/2 h-full w-px -translate-x-1/2 bg-emerald-300/25" />
+              <div className="absolute top-1/2 h-px w-full -translate-y-1/2 bg-emerald-300/25" />
+              <div className="absolute left-1/2 top-1/2 h-[3px] w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-emerald-300/70" />
+            </div>
+          </>
+        )}
         <div className="pointer-events-none absolute inset-0">
-          <div className="absolute left-1/2 top-0 h-full w-[14px] -translate-x-1/2 border-x-2 border-[#2c1f11] bg-gradient-to-b from-[#a9834a] via-[#7c5a2b] to-[#4a3820]" />
           <div className="absolute inset-x-0 top-0 h-2 bg-gradient-to-b from-[#0d0a06]/60 to-transparent" />
           <div className="absolute inset-x-0 bottom-0 h-2 bg-gradient-to-t from-[#0d0a06]/60 to-transparent" />
         </div>
@@ -637,7 +651,7 @@ function LogBook({ snap, filter, setFilter }) {
           </button>
         ))}
       </div>
-      <div className="paperbg mx-auto flex h-[470px] max-w-[640px] flex-col overflow-hidden rounded-sm px-5 py-3 shadow-[0_0_18px_rgba(0,0,0,0.5)]">
+      <div className="paperbg mx-auto flex h-[300px] max-w-[640px] flex-col overflow-hidden rounded-sm px-5 py-3 shadow-[0_0_18px_rgba(0,0,0,0.5)]">
         <h3 className="mb-0.5 font-serif text-base font-bold tracking-wide text-[#3a2c14]">Journal de bord</h3>
         <p className="mb-2 border-b border-[#8a6d3b]/40 pb-1 font-serif text-[10px] italic text-[#6b5a35]">
           navire {player.code} — course du Pacifique — {fmtT(snap.t, snap.epoch)}
@@ -818,10 +832,10 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
             </div>
           </div>
           <div className="flex flex-col items-center gap-3 xl:flex-row">
-            <div className="w-full xl:w-1/2">
+            <div className="w-full xl:w-[30%]">
               <WindowsBand hour={hour} w={weather} dive={uw} peri={player.periscope} snap={snap} />
             </div>
-            <div className="w-full xl:w-1/2">
+            <div className="w-full xl:flex-1">
               <div className="flex items-center justify-center gap-2">
                 <span className="plate rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em]">Vue de dessus — horizon 20 km</span>
                 <Gear size={16} />
@@ -834,6 +848,9 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
               <p className="engrave mt-2 text-center text-[7.5px] uppercase tracking-[0.18em]">
                 {uw && !player.periscope ? "🕳️ périscope rentré — aucune observation visuelle" : "molette / pincement : zoom ×1 à ×16 · voile gris = visibilité météo"}
               </p>
+            </div>
+            <div className="w-full xl:w-[34%]">
+              <LogBook snap={snap} filter={logFilter} setFilter={setLogFilter} />
             </div>
           </div>
           <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
@@ -928,19 +945,10 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
             </div>
           </div>
 
-          {/* RADIO + SONAR */}
+          {/* RADIO + SONAR + INSTRUMENTS DE PONT */}
           <div className="col-span-12 space-y-3 xl:col-span-4">
             <RadioSet snap={snap} cmd={cmd} dial={dial} setDial={setDial} radioMode={radioMode} setRadioMode={setRadioMode} />
             <SonarScope snap={snap} cmd={cmd} />
-          </div>
-
-          {/* JOURNAL DE BORD */}
-          <div className="col-span-12 xl:col-span-8">
-            <LogBook snap={snap} filter={logFilter} setFilter={setLogFilter} />
-          </div>
-
-          {/* INSTRUMENTS DE PONT */}
-          <div className="col-span-12 xl:col-span-4">
             <WeatherBoard snap={snap} />
           </div>
         </div>
