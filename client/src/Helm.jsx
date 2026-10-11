@@ -100,7 +100,7 @@ function PortholeScene({ hour, w, dive, peri, regard, heading, snap }) {
       {!deep && (<>
         <div className="pcScene absolute -inset-[15%]"
           style={{ "--rollAmp": `${rollAmp}deg`, "--rollDur": `${Math.max(4, w.period)}s`, "--bobAmp": `${bobAmp}px` }}>
-        <div className="absolute inset-0" style={{ background: `linear-gradient(${skyTop}, ${skyBot})` }} />
+        <div className="absolute inset-x-0" style={{ top: "-45%", bottom: 0, background: `linear-gradient(${skyTop}, ${skyBot})` }} />
         <div className="absolute inset-0" style={{ opacity: starOpacity }}>
           {STARS.map((st, i) => {
             const dx = at(st.x * 3.6);
@@ -132,26 +132,29 @@ function PortholeScene({ hour, w, dive, peri, regard, heading, snap }) {
         </div>
         </div>
 
-        {/* Côte du continent (view.coast) : silhouette basse sur les azimuts couverts.
-            continentVerts = sommets RELATIFS à la position vraie (degrés). */}
+        {/* Côte du continent (view.coast) : silhouette basse par SEGMENTS entre
+            sommets consécutifs — au continent la terre envoie des tronçons sur tous
+            les azimuts couverts (l'ancien rendu monobloc abandonnait si la côte
+            entourait le navire). continentVerts = sommets RELATIFS à la position
+            vraie (degrés). */}
         {view.coast && view.continentVerts && (() => {
-          const pts = view.continentVerts.map(([vx, vy]) => {
-            const az = (Math.atan2(vx, vy) * 180) / Math.PI;
-            const km = Math.hypot(vx, vy) * DEG_KM;
-            return { az: wrap360(az), km };
-          }).filter((p) => p.km > 0.01);
-          if (pts.length < 2) return null;
-          const minAz = pts[0].az, maxAz = pts[pts.length - 1].az;
-          let span = wrap180(maxAz - minAz);
-          if (span <= 0) span += 360;
-          if (span > 140) return null; // sommets qui contournent : pas une silhouette en face
-          const cx = (at(minAz) + at(maxAz)) / 2;
-          return (
-            <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="absolute -translate-x-1/2"
-              style={{ left: `calc(50% + ${cx}px)`, bottom: "calc(33% - 22px)", width: Math.max(40, span * PXD), height: 34 }}>
-              <path d="M 0 40 L 8 22 L 26 28 L 44 14 L 62 24 L 80 18 L 100 40 Z" fill="#0d3040" opacity="0.92" />
-            </svg>
-          );
+          const pts = (view.continentVerts || [])
+            .map(([vx, vy]) => ({ az: wrap360((Math.atan2(vx, vy) * 180) / Math.PI), km: Math.hypot(vx, vy) * DEG_KM }))
+            .filter((p) => p.km > 0.01);
+          const segs = [];
+          for (let i = 0; i + 1 < pts.length; i++) {
+            const d = wrap180(pts[i + 1].az - pts[i].az);
+            if (d > 0 && d < 45) segs.push({ mid: wrap360(pts[i].az + d / 2), d });
+          }
+          return segs.map((s, i) => {
+            if (Math.abs(at(s.mid)) > 1100 + s.d * PXD) return null;
+            return (
+              <svg key={i} viewBox="0 0 100 40" preserveAspectRatio="none" className="absolute -translate-x-1/2"
+                style={{ left: `calc(50% + ${at(s.mid)}px)`, bottom: "calc(33% - 22px)", width: Math.max(40, s.d * PXD), height: 34 }}>
+                <path d="M 0 40 L 8 22 L 26 28 L 44 14 L 62 24 L 80 18 L 100 40 Z" fill="#0d3040" opacity="0.92" />
+              </svg>
+            );
+          });
         })()}
 
         {/* Îles détectées (view.islands) : TAILLE ANGULAIRE RÉELLE depuis les
@@ -230,19 +233,24 @@ function PortholeScene({ hour, w, dive, peri, regard, heading, snap }) {
         ))}
 
         {/* Navires détectés (snap.ships — détection serveur) :
-            silhouette le jour (grossit à l'approche), feu clignotant la nuit si light. */}
+            silhouette le jour ; nuit = silhouette sombre atténuée si sans phare,
+            silhouette + feu clignotant si phare allumé. */}
         {(snap.ships || []).map((s) => {
           if (Math.abs(at(s.az)) > 1100) return null;
-          return night ? (s.light ? (
-            <div key={s.id} className="pcBlink absolute -translate-x-1/2 rounded-full bg-amber-200"
-              style={{ left: `calc(50% + ${at(s.az)}px)`, bottom: "calc(33% - 3px)", width: 5, height: 5, boxShadow: "0 0 9px 3px rgba(252,211,77,0.75)" }} />
-          ) : null) : (
-            <div key={s.id} className="absolute -translate-x-1/2 opacity-70" style={{ left: `calc(50% + ${at(s.az)}px)`, bottom: "calc(33% - 2px)" }}>
-              <svg width={shipW(s.km)} height={Math.round(shipW(s.km) * 0.875)} viewBox="0 0 16 14">
+          const sw = shipW(s.km);
+          const sh = Math.round(sw * 0.875);
+          return (
+            <div key={s.id} className={`absolute -translate-x-1/2 ${night && !s.light ? "opacity-40" : "opacity-70"}`}
+              style={{ left: `calc(50% + ${at(s.az)}px)`, bottom: "calc(33% - 2px)" }}>
+              <svg width={sw} height={sh} viewBox="0 0 16 14">
                 <path d="M2 9 L14 9 L12 13 L4 13 Z" fill="#0c2233" />
                 <line x1="8" y1="9" x2="8" y2="2" stroke="#0c2233" strokeWidth="1.2" />
                 <line x1="8" y1="4" x2="12" y2="4" stroke="#0c2233" strokeWidth="1" />
               </svg>
+              {night && s.light && (
+                <span className="pcBlink absolute left-1/2 top-0 h-[5px] w-[5px] -translate-x-1/2 rounded-full bg-amber-200"
+                  style={{ boxShadow: "0 0 9px 3px rgba(252,211,77,0.75)" }} />
+              )}
             </div>
           );
         })}
@@ -1233,14 +1241,11 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
                   </div>
                 </div>
                 <div>
-                  <div className="flex items-center gap-2">
-                    <span className="engrave w-[86px] shrink-0 text-[9px] uppercase leading-tight tracking-wider">Moteur électrique</span>
-                    <button onClick={() => cmd({ electricOn: !player.electricOn })}
-                      className={`flex-1 rounded border py-1 text-[9px] font-bold uppercase tracking-wide ${player.electricOn
-                        ? "border-cyan-300 bg-gradient-to-b from-[#0e7490] to-[#155e75] text-[#e0f2fe]" : "border-[#3a2410] bg-gradient-to-b from-[#6b4a26] to-[#4a3218] text-[#c9b48a]"}`}>
-                      {player.electricOn ? "■ 100 %" : "□ 0 %"}
-                    </button>
-                    <span className="w-9 text-right font-mono text-[11px] text-cyan-300">{player.electricOn ? 100 : 0} %</span>
+                  <HandleLever label="Moteur électrique" value={player.electricOn ? 100 : 0} cyan
+                    onChange={(v) => cmd({ electricOn: v >= 50 })} />
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <span className={`h-2 w-2 rounded-full ${player.electricOn ? "bg-cyan-300 shadow-[0_0_7px_2px_rgba(103,232,249,0.8)]" : "bg-[#151515] border border-[#333]"}`} />
+                    <span className="engrave text-[7.5px] uppercase tracking-widest">électrique {player.electricOn ? "en marche" : "coupé"}</span>
                   </div>
                 </div>
               </div>
