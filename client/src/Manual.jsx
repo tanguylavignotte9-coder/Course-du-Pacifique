@@ -485,6 +485,7 @@ export default function Manual({ onClose }) {
               ["Volets anti-pression", "en plongée périscope rentré, lamelles cuivre ; la colonne d'eau et les bulles restent visibles à ~50 % entre les lames"],
               ["Drisse", "haler la poignée vers le BAS hisse la voile (sens physique) — proportionnel, poignée en haut = 0 %"],
               ["Levier d'immersion", "BINAIRE, sans crans : SURFACE = faire surface, PLONGÉE = plonger"],
+              ["Manette électrique", `MODULABLE 0–100 % — consigne de machine PARTAGÉE avec la manette thermique (une seule machine, deux moteurs) ; le bouton « contact » enclenche l'électrique. Le dosage module la vitesse (${fmt(SCOPE_SPD_KMH)} km/h max en périscope, ${fmt(SUB_SPD_KMH)} km/h en plongée) et la décharge des batteries`],
               ["Consignes continues", "roue, manettes, drisse, antennes : envoi throttlé à 10 Hz pendant le glissement + envoi final au relâchement"],
               ["Compas de route", "repère rouge = cap réel, ambre = consigne, cyan à pointe creuse = regard de la cabine"],
               ["Portées visuelles", `jour : ile ${fmt(VIS_BASE.ile)} km · nuit : ile ${fmt(VIS_NUIT.ile)} km (le client n'applique que la taille apparente ∝ 1/distance et la silhouette le jour / feu la nuit)`],

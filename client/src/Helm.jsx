@@ -80,7 +80,7 @@ function PortholeScene({ hour, w, dive, peri, regard, heading, snap }) {
   const sunY = 60 - Math.sin(sunF * Math.PI) * 48;
   const at = (az) => wrap180(az - regard) * PXD;
 
-  const rollAmp = dive ? 0.2 : Math.min(4.5, 0.45 * w.douglas);
+  const rollAmp = dive ? 0.2 : Math.min(2.2, 0.45 * w.douglas);
   const bobAmp = dive ? 0 : Math.min(22, 3.5 * w.douglas);
   const waveAmp = 0.25 + 0.26 * Math.pow(w.douglas, 1.25);
   const starOpacity = (hour < 5 ? 1 : hour < 7 ? (7 - hour) / 2 : hour >= 19 ? Math.min(1, (hour - 19) / 2) : 0) * (1 - (w.clouds / 100) * 0.85);
@@ -150,8 +150,8 @@ function PortholeScene({ hour, w, dive, peri, regard, heading, snap }) {
             if (Math.abs(at(s.mid)) > 1100 + s.d * PXD) return null;
             return (
               <svg key={i} viewBox="0 0 100 40" preserveAspectRatio="none" className="absolute -translate-x-1/2"
-                style={{ left: `calc(50% + ${at(s.mid)}px)`, bottom: "calc(33% - 22px)", width: Math.max(40, s.d * PXD), height: 34 }}>
-                <path d="M 0 40 L 8 22 L 26 28 L 44 14 L 62 24 L 80 18 L 100 40 Z" fill="#0d3040" opacity="0.92" />
+                style={{ left: `calc(50% + ${at(s.mid)}px)`, bottom: "calc(33% - 22px)", width: Math.max(40, s.d * PXD), height: 48 }}>
+                <path d="M 0 40 L 10 14 L 28 21 L 46 7 L 64 17 L 82 10 L 100 40 Z" fill="#0d3040" opacity="0.92" />
               </svg>
             );
           });
@@ -168,7 +168,7 @@ function PortholeScene({ hour, w, dive, peri, regard, heading, snap }) {
           const radKm = radDeg * DEG_KM;
           const azTo = (vx, vy) => wrap360((Math.atan2(vx - cx, vy - cy) * 180) / Math.PI);
           const isleW = 2 * Math.atan(radKm / Math.max(0.1, e.km)) * (180 / Math.PI) * PXD;
-          const isleH = e.beyond ? 5 : Math.max(10, Math.atan(radKm / Math.max(0.1, e.km)) * (180 / Math.PI) * PXD);
+          const isleH = e.beyond ? 8 : Math.max(10, Math.atan(radKm / Math.max(0.1, e.km)) * (180 / Math.PI) * PXD);
           if (Math.abs(at(e.az)) > 1100 + isleW) return null;
           // La flottaison est a 26 px du bas de l'element ; le viewBox "0 0 100 40" est
           // etire sur isleH + 26 px, donc 1 unite = (isleH + 26) / 40 px. La flottaison
@@ -240,12 +240,13 @@ function PortholeScene({ hour, w, dive, peri, regard, heading, snap }) {
           const sw = shipW(s.km);
           const sh = Math.round(sw * 0.875);
           return (
-            <div key={s.id} className={`absolute -translate-x-1/2 ${night && !s.light ? "opacity-40" : "opacity-70"}`}
+            <div key={s.id} className={`absolute -translate-x-1/2 ${night && !s.light ? "" : "opacity-70"}`}
               style={{ left: `calc(50% + ${at(s.az)}px)`, bottom: "calc(33% - 2px)" }}>
               <svg width={sw} height={sh} viewBox="0 0 16 14">
-                <path d="M2 9 L14 9 L12 13 L4 13 Z" fill="#0c2233" />
-                <line x1="8" y1="9" x2="8" y2="2" stroke="#0c2233" strokeWidth="1.2" />
-                <line x1="8" y1="4" x2="12" y2="4" stroke="#0c2233" strokeWidth="1" />
+                <path d="M2 9 L14 9 L12 13 L4 13 Z" fill={night && !s.light ? "#1e293b" : "#0c2233"}
+                  stroke={night && !s.light ? "#94a3b8" : "none"} strokeWidth={night && !s.light ? 0.8 : 0} />
+                <line x1="8" y1="9" x2="8" y2="2" stroke={night && !s.light ? "#94a3b8" : "#0c2233"} strokeWidth="1.2" />
+                <line x1="8" y1="4" x2="12" y2="4" stroke={night && !s.light ? "#94a3b8" : "#0c2233"} strokeWidth="1" />
               </svg>
               {night && s.light && (
                 <span className="pcBlink absolute left-1/2 top-0 h-[5px] w-[5px] -translate-x-1/2 rounded-full bg-amber-200"
@@ -536,7 +537,7 @@ function Binnacle({ heading, order, regard }) {
       <svg viewBox="0 0 140 140" className="w-[128px]">
         <circle cx="70" cy="70" r="67" fill="#0d1420" stroke="#8a5a2b" strokeWidth="3.5" />
         <circle cx="70" cy="70" r="67" fill="none" stroke="#b87333" strokeWidth="1" />
-        <g transform={`rotate(${-heading} 70 70)`}>
+        {/* Rose FIXE : nord en haut — ce sont les marqueurs qui tournent. */}
           <circle cx="70" cy="70" r="57" fill="#0f2331" stroke="#1f3a52" strokeWidth="1" />
           {ticks}
           {[["N", 0], ["E", 90], ["S", 180], ["O", 270]].map(([c, d]) => {
@@ -552,8 +553,10 @@ function Binnacle({ heading, order, regard }) {
             <line x1="70" y1="70" x2="70" y2="16" stroke="#22d3ee" strokeWidth="1" strokeDasharray="2 2" />
             <polygon points="70,10 66.8,16.5 73.2,16.5" fill="#0d1420" stroke="#22d3ee" strokeWidth="1.2" />
           </g>
-        </g>
-        <polygon points="70,7 65.5,17 74.5,17" fill="#ef4444" />
+          <g transform={`rotate(${heading} 70 70)`}>
+            <line x1="70" y1="70" x2="70" y2="20" stroke="#ef4444" strokeWidth="1.2" />
+            <polygon points="70,7 65.5,17 74.5,17" fill="#ef4444" />
+          </g>
         <circle cx="70" cy="70" r="4.5" fill="#d4a24e" stroke="#5c3a1a" />
       </svg>
       <div className="mt-0.5 flex gap-3 text-center">
@@ -1241,9 +1244,12 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
                   </div>
                 </div>
                 <div>
-                  <HandleLever label="Moteur électrique" value={player.electricOn ? 100 : 0} cyan
-                    onChange={(v) => cmd({ electricOn: v >= 50 })} />
+                  <HandleLever label="Moteur électrique" value={Math.round((player.engine || 0) * 100)} cyan
+                    onChange={(v) => cmd({ engine: v / 100 })} />
                   <div className="mt-1 flex items-center gap-1.5">
+                    <button onClick={() => cmd({ electricOn: !player.electricOn })}
+                      className={`rounded border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide ${player.electricOn
+                        ? "border-cyan-300 bg-[#155e75] text-[#e0f2fe]" : "border-[#3a2410] bg-[#4a3218] text-[#c9b48a]"}`}>contact</button>
                     <span className={`h-2 w-2 rounded-full ${player.electricOn ? "bg-cyan-300 shadow-[0_0_7px_2px_rgba(103,232,249,0.8)]" : "bg-[#151515] border border-[#333]"}`} />
                     <span className="engrave text-[7.5px] uppercase tracking-widest">électrique {player.electricOn ? "en marche" : "coupé"}</span>
                   </div>
