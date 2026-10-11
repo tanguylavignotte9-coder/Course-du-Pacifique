@@ -434,6 +434,26 @@ function RadioSet({ snap, cmd, dial, setDial, radioMode, setRadioMode }) {
     if (cur) cur.n++;
     else by.set(sg.beaconId, { sg, n: 1 });
   }
+  // ---------- Bandeau LED : clignote à chaque ping capté ET à chaque émission ----------
+  // Réception : le journal `player.signals` garde les 10 derniers pings, chacun
+  // horodaté (t = minute de jeu). Toute NOUVELLE entrée en queue de journal
+  // déclenche une impulsion. Montage : pas d'implosion du bandeau au premier
+  // rendu (seenSig démarre à null et s'initialise sans clignoter).
+  const sigs = player.signals || [];
+  const lastSig = sigs.length ? sigs[sigs.length - 1] : null;
+  const sigKey = lastSig ? `${lastSig.t}|${lastSig.beaconId}|${lastSig.kind}` : "";
+  const seenSig = useRef(null);
+  const [ledUntil, setLedUntil] = useState(0);
+  useEffect(() => {
+    if (seenSig.current === null) { seenSig.current = sigKey; return; }
+    if (sigKey && sigKey !== seenSig.current) {
+      seenSig.current = sigKey;
+      setLedUntil(Date.now() + 2000);
+    }
+  }, [sigKey]);
+  // Émission : chaque bouton appelle tx() avant d'émettre.
+  const tx = () => setLedUntil(Date.now() + 2000);
+  const ledOn = Date.now() < ledUntil;
   return (
     <div className="instrument rivets p-3">
       <div className="mb-2 flex items-center justify-between">
@@ -442,7 +462,11 @@ function RadioSet({ snap, cmd, dial, setDial, radioMode, setRadioMode }) {
           <span className={`h-1.5 w-1.5 rounded-full ${radioOn ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.9)]" : "bg-rose-500"}`} /> {radioOn ? "écoute" : "muette"}
         </span>
       </div>
-      <div className="mb-2 h-8 rounded border border-[#244a2f] bg-[#0a1410]"
+      <style>{`
+        @keyframes pcRadioLed { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0.12 } }
+        .pcRadioLedOn { animation: pcRadioLed 0.45s steps(1, end) infinite; }
+      `}</style>
+      <div className={`mb-2 h-8 rounded border border-[#244a2f] bg-[#0a1410] ${ledOn ? "pcRadioLedOn" : "opacity-40"}`}
         style={{ backgroundImage: "radial-gradient(rgba(94,234,212,0.35) 1.1px, transparent 1.3px)", backgroundSize: "6px 6px" }} />
       <div className="flex gap-2.5">
         <div className="flex-1">
@@ -464,10 +488,10 @@ function RadioSet({ snap, cmd, dial, setDial, radioMode, setRadioMode }) {
             ))}
           </div>
           <div className="mt-1.5 grid grid-cols-2 gap-1">
-            <button disabled={!ready || !radioOn} onClick={() => { cmd({ shipMsg: { kind: "posq", to: dial } }); setDial(""); }}
+            <button disabled={!ready || !radioOn} onClick={() => { tx(); cmd({ shipMsg: { kind: "posq", to: dial } }); setDial(""); }}
               className={`rounded py-1 text-[9.5px] font-bold uppercase tracking-wide ${ready && radioOn
                 ? "bg-gradient-to-b from-[#b87333] to-[#7c4a1a] text-[#1c130a]" : "bg-[#1a2430] text-slate-600 cursor-not-allowed"}`}>❓ Position ?</button>
-            <button disabled={!ready || !radioOn} onClick={() => { cmd({ shipMsg: { kind: "mypos", to: dial } }); setDial(""); }}
+            <button disabled={!ready || !radioOn} onClick={() => { tx(); cmd({ shipMsg: { kind: "mypos", to: dial } }); setDial(""); }}
               className={`rounded py-1 text-[9.5px] font-bold uppercase tracking-wide ${ready && radioOn
                 ? "bg-gradient-to-b from-[#b87333] to-[#7c4a1a] text-[#1c130a]" : "bg-[#1a2430] text-slate-600 cursor-not-allowed"}`}>📍 Ma position</button>
           </div>
@@ -501,12 +525,12 @@ function RadioSet({ snap, cmd, dial, setDial, radioMode, setRadioMode }) {
       </div>
       {radioMode === "diffusion" && (
         <div className="mt-1.5 grid grid-cols-2 gap-1.5">
-          <button disabled={!radioOn} onClick={() => cmd({ shipMsg: { kind: "mypos" } })}
+          <button disabled={!radioOn} onClick={() => { tx(); cmd({ shipMsg: { kind: "mypos" } }); }}
             className={`rounded border py-1 text-[9px] font-bold uppercase tracking-wide ${radioOn
               ? "border-emerald-700 bg-emerald-900/50 text-emerald-200 hover:bg-emerald-800/60" : "border-emerald-950 bg-[#0a1410] text-emerald-900 cursor-not-allowed"}`}>
             📍 Diffuser ma position
           </button>
-          <button disabled={!radioOn} onClick={() => cmd({ sos: true })}
+          <button disabled={!radioOn} onClick={() => { tx(); cmd({ sos: true }); }}
             className={`rounded border py-1 text-[9px] font-bold uppercase tracking-wide ${radioOn
               ? "border-rose-700 bg-rose-900/50 text-rose-200 hover:bg-rose-800/60" : "border-rose-950 bg-[#140a0a] text-rose-900 cursor-not-allowed"}`}>
             🆘 Émettre un SOS
@@ -526,9 +550,19 @@ function RadioSet({ snap, cmd, dial, setDial, radioMode, setRadioMode }) {
             </button>
           ))}
         </div>
-        {player.beaconLock && (
-          <p className="engrave mt-1 text-center text-[8px] uppercase tracking-widest">🔒 verrou engagé : balise {player.beaconLock}</p>
-        )}
+        <p className={`mt-1 rounded border px-1.5 py-1 text-center text-[8px] font-bold uppercase tracking-widest ${
+          player.beaconLock
+            ? "border-emerald-600 bg-emerald-900/50 text-emerald-200"
+            : (player.autoguide || AUTOGUIDE_DEFAULT) !== "off"
+              ? "border-amber-500 bg-amber-900/40 text-amber-200"
+              : "border-[#3a2410] bg-[#241a0e] text-[#c9b48a]"
+        }`}>
+          {player.beaconLock
+            ? `🔒 autoguidage engagé — verrou balise ${player.beaconLock} : la barre suit`
+            : (player.autoguide || AUTOGUIDE_DEFAULT) !== "off"
+              ? `🤖 autoguidage enclenché — cible : balises ${AUTOGUIDE_LABEL[player.autoguide || AUTOGUIDE_DEFAULT].toLowerCase()}`
+              : "autoguidage coupé — sélectionner une cible ci-dessus"}
+        </p>
       </div>
       <div className="mt-2 rounded border border-[#4a3820] p-1.5">
         <div className="paperbg rounded-sm px-2 py-1.5 font-mono text-[9px] leading-relaxed text-[#3a2c14]">
