@@ -113,7 +113,7 @@ const ANNEX = [
       ["Vitesse de coque max", fmt(VMAX_KMH) + " km/h"],
       ["Voile (pleine puissance)", fmt(SAIL_SPD_KMH) + " km/h au facteur 1"],
       ["Moteur thermique", fmt(DIESEL_SPD_KMH) + " km/h"],
-      ["Électrique en périscope", fmt(SCOPE_SPD_KMH) + " km/h"],
+      ["Électrique en surface / périscope", fmt(SCOPE_SPD_KMH) + " km/h"],
       ["Électrique en plongée", fmt(SUB_SPD_KMH) + " km/h (plus rapide qu'au périscope)"],
       ["Vent de référence voile", fmt(WIND_REF_KMH) + " km/h"],
       ["Voilure par défaut", Math.round(SAIL_DEFAULT * 100) + " %"],
@@ -175,7 +175,7 @@ const ANNEX = [
     rows: [
       ["Carburant (moteur plein)", fmt(FUEL_RATE_PCT_H) + " %/h"],
       ["Batteries en plongée", fmt(BATT_SUB_PCT_H) + " %/h"],
-      ["Batteries en périscope", fmt(BATT_PERISCOPE_PCT_H) + " %/h"],
+      ["Batteries en surface / périscope", fmt(BATT_PERISCOPE_PCT_H) + " %/h"],
       ["Solaire (de jour)", "+ " + fmt(SOLAR_PCT_H) + " %/h, atténué par la couverture nuageuse, nul à " + fmt(SOLAR_CLOUD_REF_PCT) + " %"],
       ["Vivres", fmt(FOOD_PCT_H) + " %/h"],
       ["Alerte ressources", fmt(RES_WARN_PCT) + " % — réarmée au-dessus de " + fmt(RES_WARN_RESET_PCT) + " %"],
@@ -317,14 +317,19 @@ export default function Manual({ onClose }) {
             <Kv rows={[
               ["Voile (mât levé)", fmt(SAIL_SPD_KMH) + " km/h au facteur 1"],
               ["Moteur thermique", fmt(DIESEL_SPD_KMH) + " km/h"],
-              ["Électrique en périscope", fmt(SCOPE_SPD_KMH) + " km/h"],
+              ["Électrique en surface / périscope", fmt(SCOPE_SPD_KMH) + " km/h"],
               ["Électrique en plongée", fmt(SUB_SPD_KMH) + " km/h"],
               ["Vitesse de coque maximale", fmt(VMAX_KMH) + " km/h"],
             ]} />
             <P>
-              La plongée est volontairement plus rapide que le périscope. L'inertie est simulée :
+              En surface, les DEUX moteurs sont disponibles et S'ADDITIONNENT
+              ({" "}{fmt(DIESEL_SPD_KMH)} + {fmt(SCOPE_SPD_KMH)} = {fmt(VMAX_KMH)} km/h pile),
+              en plus de la voile si elle est déployée. En plongée, seul le moteur
+              électrique pousse (le thermique est coupé) — et la plongée est
+              volontairement plus rapide que le périscope. L'inertie est simulée :
               {" "}{fmt(ACCEL_SURF)} km/h gagnés par minute en surface ({fmt(ACCEL_SUB)} en plongée),
-              décélération de {fmt(DECEL_SURF)} km/h par minute en surface ({fmt(DECEL_SUB)} en plongée).
+              décélération de {fmt(DECEL_SURF)} km/h par minute en surface ({fmt(DECEL_SUB)} en plongée),
+              en même temps que la giration.
             </P>
             <P>
               Giration : jusqu'à {fmt(TURN_MAX_SURF)}°/min en surface, {fmt(TURN_MAX_SUB)}°/min en
@@ -531,7 +536,7 @@ export default function Manual({ onClose }) {
             <Kv rows={[
               ["Carburant (moteur plein)", fmt(FUEL_RATE_PCT_H) + " %/h"],
               ["Batteries en plongée", fmt(BATT_SUB_PCT_H) + " %/h"],
-              ["Batteries en périscope", fmt(BATT_PERISCOPE_PCT_H) + " %/h"],
+              ["Batteries en surface / périscope", fmt(BATT_PERISCOPE_PCT_H) + " %/h"],
               ["Solaire (de jour)", "+ " + fmt(SOLAR_PCT_H) + " %/h, atténué par la couverture nuageuse, nul à " + fmt(SOLAR_CLOUD_REF_PCT) + " %"],
               ["Vivres", fmt(FOOD_PCT_H) + " %/h"],
               ["Appel / message radio", fmt(CALL_BATTERY_COST) + " %"],
@@ -679,7 +684,7 @@ export default function Manual({ onClose }) {
               ["Œilleton du périscope", "en plongée périscope sorti : masque radial laiton + réticule croix + teinte cyan sur la fenêtre d'ambiance — habillage pur, aucune détection n'y est calculée"],
               ["Drisse", "haler la poignée vers le BAS hisse la voile (sens physique) — proportionnel, poignée en haut = 0 %"],
               ["Levier d'immersion", "BINAIRE, sans crans : SURFACE = faire surface, PLONGÉE = plonger"],
-              ["Manette électrique", `MODULABLE 0–100 % — consigne de machine PARTAGÉE avec la manette thermique (une seule machine, deux moteurs) ; le bouton « contact » enclenche l'électrique. Le dosage module la vitesse (${fmt(SCOPE_SPD_KMH)} km/h max en périscope, ${fmt(SUB_SPD_KMH)} km/h en plongée) et la décharge des batteries`],
+              ["Manette électrique", `MODULABLE 0–100 % — consigne INDÉPENDANTE de la manette thermique ; le bouton « contact » enclenche l'électrique. En SURFACE, le moteur électrique pousse ET s'additionne au thermique et à la voile (${fmt(DIESEL_SPD_KMH)} + ${fmt(SCOPE_SPD_KMH)} = ${fmt(VMAX_KMH)} km/h pile) ; en plongée, il est seul (${fmt(SCOPE_SPD_KMH)} km/h au périscope, ${fmt(SUB_SPD_KMH)} km/h en plongée). Il décharge les batteries partout où il pousse`],
               ["Consigne électrique indépendante", "la manette électrique règle la consigne du moteur ÉLECTRIQUE, indépendante de la consigne du moteur thermique : bouger l'une ne bouge pas l'autre"],
               ["Consignes continues", "roue, manettes, drisse, antennes : envoi throttlé à 10 Hz pendant le glissement + envoi final au relâchement"],
               ["Compas de route", "repère rouge = cap réel, ambre = consigne"],

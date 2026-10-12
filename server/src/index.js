@@ -1272,7 +1272,7 @@ function publicSnapshot(id) {
     isSuper: isSuper(id),
     player: {
       heading: st.heading, headingOrder: st.headingOrder ?? st.heading, sail: st.sail ?? SAIL_DEFAULT, engine: st.engine,
-      electric: st.electric ?? st.engine,
+      electric: st.electric ?? 0,
       location: st.location, mast: st.mast, engineOn: st.engineOn,
       electricOn: st.electricOn, periscope: st.periscope, vkmh: st.vkmh,
       fuel: st.fuel, battery: st.battery, food: st.food,

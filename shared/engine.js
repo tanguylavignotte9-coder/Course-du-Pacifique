@@ -2130,7 +2130,7 @@ export function newPlayerState(world, opts = {}) {
   return {
     kind: "player", // la Bête teste eaten.kind — un navire joueur est une cible à part entière
     t: 0, x: sp.x, y: sp.y, heading: eastCoast ? 90 : 270, headingOrder: eastCoast ? 90 : 270,
-    sail: SAIL_DEFAULT, engine: 0.8,
+    sail: SAIL_DEFAULT, engine: 0.8, electric: 0,
     estX: sp.x, estY: sp.y, unc: 0,
     navFix: { active: false, startT: 0, doneNight: null, lastTryT: null },
     location: "surface", mast: false, engineOn: false, electricOn: false, periscope: false, vkmh: 0, light: false,
@@ -2201,9 +2201,13 @@ function speedKmh(st, w) {
       v += SAIL_SPD_KMH * wf * drive * st.sail * condFactor(st.sailH); // santé voilure : poussée réduite (−50 % max)
     }
     if (st.engineOn && st.fuel > 0) v += DIESEL_SPD_KMH * st.engine;
+    // En SURFACE, le moteur électrique pousse AUSSI (régime périscope) et
+    // S'ADDITIONNE au thermique et à la voile, sous le plafond de coque
+    // VMAX_KMH (plein thermique 30 + plein électrique 15 = 45 = VMAX pile).
+    if (st.electricOn && st.battery > 0) v += SCOPE_SPD_KMH * st.electric;
     v = Math.min(v, VMAX_KMH);
   } else {
-    if (st.electricOn && st.battery > 0) v += (st.periscope ? SCOPE_SPD_KMH : SUB_SPD_KMH) * (st.electric ?? st.engine);
+    if (st.electricOn && st.battery > 0) v += (st.periscope ? SCOPE_SPD_KMH : SUB_SPD_KMH) * st.electric;
   }
   return v * condFactor(st.hullH); // santé coque : malus global sur TOUTE la propulsion (−50 % max)
 }
@@ -2240,10 +2244,17 @@ export function tick(st, dtMin, world) {
   const hour = (st.t / 60) % 24;
   const daylight = hour >= 6 && hour < 20;
 
-  // Consommations
+  // Migration : les états créés avant la consigne électrique séparée n'ont
+  // pas de champ `electric` — repli sur 0 (l'ancien repli sur `engine`
+  // LIAIT les deux manettes : la électrique suivait la thermique). Le
+  // joueur règle sa manette au premier usage.
+  if (typeof st.electric !== "number") st.electric = 0;
+  // Consommations : thermique = carburant (surface) ; électrique =
+  // batteries PARTOUT où il pousse — régime périscope en surface et au
+  // périscope, régime plongée en immersion profonde.
   if (st.location === "surface" && st.engineOn) st.fuel = Math.max(0, st.fuel - FUEL_RATE_PCT_H * st.engine * (dtMin / 60));
-  if (st.location === "underwater" && st.electricOn)
-    st.battery = Math.max(0, st.battery - (st.periscope ? BATT_PERISCOPE_PCT_H : BATT_SUB_PCT_H) * (st.electric ?? st.engine) * (dtMin / 60));
+  if (st.electricOn)
+    st.battery = Math.max(0, st.battery - (st.location === "underwater" && !st.periscope ? BATT_SUB_PCT_H : BATT_PERISCOPE_PCT_H) * st.electric * (dtMin / 60));
   if (st.location === "surface" && daylight)
     st.battery = Math.min(100, st.battery + SOLAR_PCT_H * (1 - w.clouds / SOLAR_CLOUD_REF_PCT) * (dtMin / 60));
   st.food = Math.max(0, st.food - FOOD_PCT_H * (dtMin / 60));
@@ -2264,18 +2275,36 @@ export function tick(st, dtMin, world) {
   // du scan du verrou, jamais affichée). La poursuite ne dépend plus de la
   // cadence des pings — elle tient aussi pendant les sauts de temps.
   beaconLockSteer(st, world);
+  // Inertie de vitesse : la convergence (accélération comme décélération)
+  // se fait sur TOUT le pas, AVANT la giration — les deux sont SIMULTANÉS.
+  // Historique : la convergence vivait après les sous-pas de giration sur
+  // le seul temps restant du pas ; or un virage en cours consommait tout
+  // le pas (reste = 0) → AUCUNE accélération ni décélération tant que le
+  // navire virait (un drag de roue continu figeait la vitesse, moteur
+  // coupé compris — « vitesse fantôme » au portant).
+  const surface = st.location === "surface";
+  const v0 = st.vkmh; // vitesse d'ENTRÉE de pas : base du taux de giration
+  if (st.anchored) st.vkmh = 0;
+  const target = st.anchored ? 0 : speedKmh(st, w);
+  const accel = surface ? ACCEL_SURF : ACCEL_SUB;
+  const decel = surface ? DECEL_SURF : DECEL_SUB;
+  if (st.vkmh < target) st.vkmh = Math.min(target, st.vkmh + accel * dtMin);
+  else st.vkmh = Math.max(target, st.vkmh - decel * dtMin);
+  st.travelledKm += st.vkmh * (dtMin / 60);
+  const day = Math.floor(st.t / 1440);
+  if (day !== st.dayIdx) { st.dayIdx = day; st.dailyKm = 0; }
+  st.dailyKm += st.vkmh * (dtMin / 60);
   // Giration : le navire converge de son cap réel (heading) vers la
   // CONSIGNE (headingOrder) à un taux borné. À pleine vitesse en surface,
   // 270 °/min : un virage de 90° prend ~20 s de jeu. À l'arrêt, une part de
   // la giration reste disponible (barre/hélice) — un navire échoué ou en
   // collision (vkmh = 0) peut toujours virer pour se dégager.
-  const surface = st.location === "surface";
   {
     const order = st.headingOrder ?? st.heading; // migration des états anciens
     const TURN_MAX = surface ? TURN_MAX_SURF : TURN_MAX_SUB; // °/min
     const STEER_AT_REST = surface ? STEER_AT_REST_SURF : STEER_AT_REST_SUB;
     const vRef = surface ? VMAX_KMH : SCOPE_SPD_KMH;
-    const rate = TURN_MAX * (STEER_AT_REST + (1 - STEER_AT_REST) * clamp(st.vkmh / vRef, 0, 1));
+    const rate = TURN_MAX * (STEER_AT_REST + (1 - STEER_AT_REST) * clamp(v0 / vRef, 0, 1));
     // SOUS-DÉCOUPAGE : à haut taux, un grand pas de rattrapage ne doit pas
     // intégrer 1350° d'un coup. Tant que la rotation restante du pas dépasse
     // 45°, on avance par sous-pas (~10 s de jeu), en intégrant la POSITION
@@ -2327,16 +2356,11 @@ export function tick(st, dtMin, world) {
     st.headingOrder = ((order % 360) + 360) % 360;
     dtMin -= integrated; // le bloc mouvement ci-dessous couvre le reste
   }
-  // Mouvement + inertie (sur le temps restant du pas : la position des
-  // sous-pas de giration a déjà été intégrée physiquement ci-dessus ; ce
-  // bloc gère l'inertie de vitesse, l'estime et l'échouement au cap final)
+  // Mouvement (sur le temps restant du pas : la position des sous-pas de
+  // giration a déjà été intégrée physiquement ci-dessus, et l'inertie a
+  // déjà convergé sur TOUT le pas dans le bloc précédent ; ce bloc intègre
+  // la position, l'estime et l'échouement au cap final)
   // Ancre : position figée — vitesse nulle, AUCUNE intégration (courant inclus)
-  if (st.anchored) st.vkmh = 0;
-  const target = st.anchored ? 0 : speedKmh(st, w);
-  const accel = surface ? ACCEL_SURF : ACCEL_SUB;
-  const decel = surface ? DECEL_SURF : DECEL_SUB;
-  if (st.vkmh < target) st.vkmh = Math.min(target, st.vkmh + accel * dtMin);
-  else st.vkmh = Math.max(target, st.vkmh - decel * dtMin);
   const rad = (st.heading * Math.PI) / 180;
   const radT = ((st.heading + st.compDev) * Math.PI) / 180;
   const cdr = (w.curDir * Math.PI) / 180;
@@ -2352,10 +2376,6 @@ export function tick(st, dtMin, world) {
   const anchored = !!st.anchored;
   const nx = st.x + (anchored ? 0 : Math.sin(radT) * throughT + Math.sin(cdr) * driftEff + Math.sin(lwr) * (moored ? 0 : lwDrift));
   const ny = st.y + (anchored ? 0 : Math.cos(radT) * throughT + Math.cos(cdr) * driftEff + Math.cos(lwr) * (moored ? 0 : lwDrift));
-  st.travelledKm += st.vkmh * (dtMin / 60);
-  const day = Math.floor(st.t / 1440);
-  if (day !== st.dayIdx) { st.dayIdx = day; st.dailyKm = 0; }
-  st.dailyKm += st.vkmh * (dtMin / 60);
   if (nx < 0.2 || nx > MAP - 0.2 || ny < 0.2 || ny > MAP - 0.2) {
     if (!st.grounded) {
       notify(st, "Limite de la zone de course — cap bloqué.", "warn", "alertes");

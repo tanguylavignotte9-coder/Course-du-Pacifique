@@ -27,7 +27,7 @@ import {
   PATROL_DETECT_COOLDOWN_MIN, PATROL_DETECT_R_KM, PATROL_TICK_MAX_MIN,
   CANNON_DECAY_KM, findStation, coastReflect, coastStep, COAST_PROBE_KM,
   PATROL_BERTH_KM,
-  SUB_SPD_KMH, BATT_SUB_PCT_H,
+  SUB_SPD_KMH, BATT_SUB_PCT_H, SCOPE_SPD_KMH, BATT_PERISCOPE_PCT_H, DECEL_SURF,
 } from "./engine.js";
 
 // Navire de test en pleine eau (loin du port et des terres), pleine vitesse.
@@ -317,14 +317,45 @@ test("giration : consigne +90° à pleine vitesse atteinte en ~20 s, sans dépas
   st.vkmh = VMAX_KMH; // pleine vitesse pour le taux plein
   let ticks = 0;
   let maxH = 0;
-  while (st.heading !== 90 && ticks < 60) {
+  let d = ((90 - st.heading + 540) % 360) - 180; // écart wrap-aware (epsilon flottant)
+  while (Math.abs(d) > 1e-6 && ticks < 60) {
     tick(st, 1 / 60, w);
     ticks++;
     maxH = Math.max(maxH, st.heading);
+    d = ((90 - st.heading + 540) % 360) - 180;
   }
-  assert.equal(st.heading, 90);
-  assert.equal(ticks, 20, `90° à 270°/min = 20 s (actuel: ${ticks})`);
-  assert.ok(maxH <= 90, "jamais de dépassement");
+  assert.ok(Math.abs(st.heading - 90) < 1e-6, `cap final = 90° (actuel: ${st.heading})`);
+  // 20 s à taux plein PILE — mais l'inertie est désormais SIMULTANÉE à la
+  // giration : le navire décélère (45 → cible thermique 30) en virant, le
+  // taux suit la vitesse d'entrée de pas → 1 s de plus, jamais moins.
+  assert.ok(ticks >= 20 && ticks <= 22, `90° à ~270°/min = ~20 s (actuel: ${ticks})`);
+  assert.ok(maxH <= 90 + 1e-6, "jamais de dépassement");
+});
+
+test("giration et inertie SIMULTANÉES : le navire accélère EN VIRANT", () => {
+  const w = buildWorld(42);
+  const st = shipAtSea(w, { heading: 0, order: 90 }); // cible thermique 30
+  st.vkmh = 0; // départ à l'arrêt
+  for (let i = 0; i < 60; i++) { // 1 minute de jeu, virage de 90° en cours
+    st.headingOrder = (st.heading + 90) % 360; // consigne maintenue devant : le virage ne finit jamais
+    tick(st, 1, w);
+  }
+  // Ancien bug : tant que la giration consommait tout le pas, la vitesse
+  // ne convergeait PAS (0 km/h indéfiniment). Maintenant : 11 km/h/min.
+  assert.ok(st.vkmh >= 30 - 1e-6, `le navire atteint sa vitesse cible même en virage (actuel: ${st.vkmh})`);
+  assert.ok(st.heading > 0, "et il a bien viré");
+});
+
+test("giration et inertie SIMULTANÉES : le navire DÉCÉLÈRE en virant (plus de vitesse fantôme)", () => {
+  const w = buildWorld(42);
+  const st = shipAtSea(w, { heading: 0, order: 90 });
+  st.engineOn = false; st.engine = 0; // moteur coupé : cible 0
+  st.vkmh = 40; // vitesse héritée d'une Navigation à la voile
+  for (let i = 0; i < 60; i++) {
+    st.headingOrder = (st.heading + 90) % 360;
+    tick(st, 1, w);
+  }
+  assert.ok(st.vkmh <= DECEL_SURF + 1e-6, `40 → ~0 en 1 min de virage continu (actuel: ${st.vkmh})`);
 });
 
 test("giration : plus court chemin à travers le nord (10° → 350° = −20°)", () => {
@@ -1593,13 +1624,36 @@ test("propulsion : la décharge des batteries suit la consigne ÉLECTRIQUE", () 
     `décharge = BATT_SUB_PCT_H × 0,5 (obtenu ${bat0 - st.battery})`);
 });
 
-test("migration : état ancien sans consigne électrique → repli sur engine", () => {
+test("migration : état ancien sans consigne électrique → consigne 0 (manettes DÉLIÉES)", () => {
   const w = buildWorld(42);
   const st = subAt(w);
   st.anchored = false; st.electricOn = true; st.engine = 0.6;
   delete st.electric;
   for (let i = 0; i < 10; i++) tick(st, 1, w);
-  assert.ok(Math.abs(st.vkmh - SUB_SPD_KMH * 0.6) < 1e-6, `repli sur engine (obtenu ${st.vkmh})`);
+  assert.equal(st.electric, 0, "la consigne électrique migre vers 0, PAS vers la consigne thermique");
+  assert.ok(Math.abs(st.vkmh - 0) < 1e-6, `consigne 0 : le navire s'arrête (actuel ${st.vkmh})`);
+});
+
+test("surface : le moteur ÉLECTRIQUE pousse en surface (régime périscope) et S'ADDITIONNE au thermique", () => {
+  const w = buildWorld(42);
+  const st = shipAtSea(w, {}); // surface, moteur thermique plein (30 km/h)
+  st.mast = false; st.electricOn = true; st.electric = 1; st.engineOn = false;
+  for (let i = 0; i < 20; i++) tick(st, 1, w);
+  assert.ok(Math.abs(st.vkmh - SCOPE_SPD_KMH) < 1e-6, `électrique seul en surface = SCOPE_SPD_KMH (obtenu ${st.vkmh})`);
+  st.engineOn = true; st.engine = 1; // thermique plein + électrique plein
+  for (let i = 0; i < 20; i++) tick(st, 1, w);
+  assert.ok(Math.abs(st.vkmh - VMAX_KMH) < 1e-6,
+    `thermique (30) + électrique (15) = 45 = VMAX pile (obtenu ${st.vkmh})`);
+});
+
+test("surface : le moteur ÉLECTRIQUE consomme les batteries en surface (régime périscope)", () => {
+  const w = buildWorld(42);
+  const st = shipAtSea(w, {});
+  st.mast = false; st.engineOn = false; st.electricOn = true; st.electric = 0.5;
+  const b0 = st.battery;
+  for (let i = 0; i < 60; i++) tick(st, 1, w); // 1 h de jeu, de nuit pour isoler la décharge
+  assert.ok((b0 - st.battery) >= BATT_PERISCOPE_PCT_H * 0.5 - 1e-6,
+    `décharge ≥ BATT_PERISCOPE_PCT_H × 0,5 en surface (obtenu ${b0 - st.battery})`);
 });
 
 test("saut de temps (rejeu moteur) : 6 h par pas de 5 min → les 6 pulsations horaires, aucune manquée", () => {

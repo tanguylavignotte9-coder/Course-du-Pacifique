@@ -990,8 +990,15 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
                     : "glisser la roue pour barrer — repère ambre = consigne sur la rose"}
               </p>
 
-              <div className="mt-2.5 flex justify-center">
+              {/* Rangée navigation de base : vitesse · drisse de voile ·
+                  interrupteurs voile et ancre (l'un au-dessus de l'autre) */}
+              <div className="mt-2.5 flex items-center justify-center gap-2.5">
                 <Dial label="Vitesse" value={player.vkmh} max={VMAX_KMH} unit="km/h" color="#38bdf8" />
+                <RopeHandle value={player.sail} onCommit={(v) => cmd({ sail: v })} />
+                <div className="flex flex-col items-center gap-1.5">
+                  <BrassSwitch on={player.mast} label="Mât" onClick={() => cmd({ mast: !player.mast })} />
+                  <BrassSwitch on={player.anchored} label="Ancre" onClick={() => cmd({ anchor: !player.anchored })} />
+                </div>
               </div>
 
               <div className="mt-3 space-y-2.5 rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 p-2.5">
@@ -1006,7 +1013,7 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
                   </div>
                 </div>
                 <div>
-                  <HandleLever label="Moteur électrique" value={Math.round((player.electric ?? player.engine ?? 0) * 100)} cyan
+                  <HandleLever label="Moteur électrique" value={Math.round((player.electric ?? 0) * 100)} cyan
                     onChange={(v) => cmd({ electric: v / 100 })} />
                   <div className="mt-1 flex items-center gap-1.5">
                     <button onClick={() => cmd({ electricOn: !player.electricOn })}
@@ -1018,9 +1025,9 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
                 </div>
               </div>
 
-              <div className="mt-2.5 flex items-stretch justify-center gap-2">
-                <RopeHandle value={player.sail} onCommit={(v) => cmd({ sail: v })} />
-                <DiveLever dive={uw} onSet={(down) => cmd(down ? { dive: true } : { surface: true })} />
+              <div className="mt-2 grid grid-cols-2 gap-1.5 rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 p-2">
+                <BrassSwitch on={uw && player.periscope} label="Périscope" onClick={() => cmd({ periscope: !player.periscope })} />
+                <BrassSwitch on={player.light} label="Phare" onClick={() => cmd({ light: !player.light })} />
               </div>
 
               <div className="mt-2.5 flex items-end justify-center gap-1">
@@ -1034,13 +1041,6 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
                 <Counter label="distance km" value={Math.round(player.travelledKm)} />
               </div>
 
-              <div className="mt-2 grid grid-cols-2 gap-1.5 rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 p-2">
-                <BrassSwitch on={player.mast} label="Mât" onClick={() => cmd({ mast: !player.mast })} />
-                <BrassSwitch on={uw && player.periscope} label="Périscope" onClick={() => cmd({ periscope: !player.periscope })} />
-                <BrassSwitch on={player.light} label="Phare" onClick={() => cmd({ light: !player.light })} />
-                <BrassSwitch on={player.anchored} label="Ancre" onClick={() => cmd({ anchor: !player.anchored })} />
-              </div>
-
               <div className="mt-2.5 flex justify-center">
                 <button onClick={() => cmd({ capture: true })} disabled={!canCapture}
                   className={`flex items-center gap-2 rounded-full border-2 py-1 pl-1.5 pr-3 transition-transform hover:scale-[1.03] ${canCapture
@@ -1050,6 +1050,11 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
                     bg-gradient-to-b from-[#ef4444] to-[#7f1d1d] shadow-[0_0_8px_rgba(239,68,68,0.5)]">📦</span>
                   <span className="engrave text-[8.5px] font-bold uppercase tracking-[0.12em]">Amarrer la balise — {Math.round(CAPTURE_R_KM * 1000)} m</span>
                 </button>
+              </div>
+
+              {/* Levier d'immersion : TOUT EN BAS du poste de barre */}
+              <div className="mt-3 flex justify-center border-t border-[#4a3820] pt-3">
+                <DiveLever dive={uw} onSet={(down) => cmd(down ? { dive: true } : { surface: true })} />
               </div>
             </div>
           </div>
