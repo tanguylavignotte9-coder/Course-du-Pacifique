@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { login, GameSocket } from "./net.js";
 import Manual from "./Manual.jsx";
 import Helm from "./Helm.jsx";
@@ -75,6 +76,22 @@ export default function App() {
     return () => { cancel.dead = true; };
   }, [wxOpen, wxH, snap && Math.floor(snap.t / 60)]);
 
+  // SONDE v2 (PROVISOIRE — à retirer une fois le diagnostic bouclé) :
+  // battements de cœur pour localiser la couche qui fige. L'intervalle
+  // écrit DIRECTEMENT dans le DOM (test de la file de timers + du paint)
+  // ET passe par setState (test du pipeline de commit React). Le strip
+  // visible en bas à droite croise ces témoins avec t = dernier snapshot
+  // réellement APPLIQUÉ par setSnap (chaîne complète).
+  const [beat, setBeat] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => {
+      const el = document.getElementById("pc-dom-beat");
+      if (el) el.textContent = String(Date.now()).slice(-6);
+      setBeat((b) => b + 1);
+    }, 400);
+    return () => clearInterval(id);
+  }, []);
+
   // Anti-gel + fluidité : le serveur COALESCÉ désormais ses réponses de
   // commande (au plus 1 snapshot par 250 ms et par socket, voir index.js),
   // donc le flux entrant reste raisonnable (~5/s en plein drag, 1/s au
@@ -90,7 +107,13 @@ export default function App() {
       snapTimer.current = 0;
       const d = snapBuf.current;
       snapBuf.current = null;
-      if (d) setSnap(d); // rend le PLUS RÉCENT — les intermédiaires sont jetés
+      // SONDE v2 — flushSync : rend SYNCHRONEMENT, en court-circuitant
+      // l'ordonnanceur de React (MessageChannel). Si l'ordonnanceur est la
+      // couche coincée, t continue d'avancer pendant le gel (grâce à ce
+      // chemin) alors que les setState « normaux » — aiguille locale de la
+      // roue, ♥ du strip — restent figés. Si le gel disparaît entièrement,
+      // flushSync DEVIENT le correctif (léger : ≤ 6 snapshots/s).
+      if (d) flushSync(() => setSnap(d));
     }, 80);
   }, []);
 
@@ -138,6 +161,13 @@ export default function App() {
 
   return (
     <>
+      {/* SONDE v2 (PROVISOIRE) — strip de battements en bas à droite :
+          DOM = texte écrit DIRECTEMENT dans le DOM par setInterval (hors
+          React) ; ♥ = compteur rendu PAR React (pipeline de commit) ;
+          t = heure de jeu du dernier snapshot APPLIQUÉ (chaîne complète). */}
+      <div className="fixed bottom-1 right-2 z-[999] select-none pointer-events-none rounded bg-black/50 px-1 font-mono text-[9px] text-emerald-300/90">
+        DOM <span id="pc-dom-beat">—</span> · ♥{beat} · t={snap.t.toFixed(1)}
+      </div>
       <Helm
         snap={snap}
         sock={sock}
