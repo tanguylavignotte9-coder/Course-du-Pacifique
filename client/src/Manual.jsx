@@ -21,7 +21,7 @@ import {
   NAVFIX_CLOUD_KM, NAVFIX_SEA_KM, NAVFIX_VIS_KM, NAVFIX_VIS_REF_KM,
   HORIZON_KM, SAIL_DEFAULT, SHIP_VIS_LIGHT,
   SAIL_EFF_CURVE, SAIL_FURL_DEG, STORM_SAIL_MAX, WIND_FACTOR_CAP,
-  WIND_FLOOR_KMH, GEN_HORIZON_H, SWELL_KMH, LEEWAY_K, CUR_EKMAN_DEG,
+  WIND_FLOOR_KMH, GEN_HORIZON_H, SWELL_KMH, SQUALL_GUST_KMH, SQUALL_DRIFT_KMH, LEEWAY_K, CUR_EKMAN_DEG,
   VISFIX_ISLE_KM, VISFIX_BEACON_KM, VISFIX_PORT_KM, VISFIX_COAST_KM, SOLAR_CLOUD_REF_PCT,
   DAMAGE_HIT_PCT, DAMAGE_ROLL_MIN, DAMAGE_ROLL_PCT, DAMAGE_WIND_KMH, DAMAGE_SPEED_KMH, DAMAGE_SEA_MIN,
   BEAST_SPD_KMH, BEAST_DIGEST_MIN, BEAST_DIGEST_MAX, BEAST_STRIKE_KM,
@@ -228,6 +228,8 @@ const ANNEX = [
       ["Houle propagée", fmt(SWELL_KMH) + " km/h — la mer se dégrade avant le vent local"],
       ["Leeway (dérive de coque)", "≈ " + fmt(LEEWAY_K * 100) + " % de la vitesse du vent, jamais intégré à l'estime"],
       ["Courant — offset d'Ekman", fmt(CUR_EKMAN_DEG) + "° sur la direction du régime (prévisible)"],
+      ["Rafale d'un grain mûr", "jusqu'à +" + fmt(SQUALL_GUST_KMH) + " km/h au-delà du vent de fond"],
+      ["Ligne de grains — dérive", fmt(SQUALL_DRIFT_KMH) + " km/h vers l'ouest (ondes alizées)"],
       ["Histoire météo par graine", fmt(GEN_HORIZON_H / 24) + " jours"],
       ["Horizon des prévisions", fmt(WX_HORIZON_H) + " h (port, avant-postes, NETWORK)"],
     ],
@@ -395,6 +397,17 @@ export default function Manual({ onClose }) {
               Chaque graine porte {fmt(GEN_HORIZON_H / 24)} jours d'histoire météo. Les prévisions
               sont parfaites sur {fmt(WX_HORIZON_H)} h et accessibles via le service météo du
               NETWORK, en zone (port, avant-poste ou balise).
+            </P>
+            <P>
+              Le service météo du NETWORK affiche deux cartes pilotées par le même curseur
+              « maintenant → 48 h » : la carte des vents (flèches par régime, pointillés =
+              empreinte des systèmes) et la carte des CONDITIONS — des quantités continues,
+              pas des plaques par nom. La teinte suit la couverture nuageuse, la pluie
+              s'ajoute en bleu translucide, le violet cerne un orage, le gris signale la
+              brume, les points orange marquent un grain actif et le pointillé rouge trace
+              la ligne de convergence. Survoler une cellule donne le relevé complet (nom,
+              vent, rafales, nuages, pluie, visibilité, température) ; la ligne
+              « à votre position » répète le relevé du navire, rafale ⚡ comprise.
             </P>
             <P>
               La météo agit sur : la vitesse à la voile (vent), le point aux étoiles (nuages, houle,
