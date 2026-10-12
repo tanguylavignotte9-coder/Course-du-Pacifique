@@ -1518,7 +1518,14 @@ wss.on("connection", (ws, req) => {
     const st = ensureState(id);
     if (msg.type === "command") {
       const nowMs = Date.now();
-      if (nowMs > ws._budgetReset) { ws._cmdBudget = 20; ws._budgetReset = nowMs + 1000; }
+      // CAUSE RACINE du gel historique : à la connexion _budgetReset vaut
+      // undefined et `nowMs > undefined` est TOUJOURS faux (comparaison à
+      // NaN) — la remise à zéro ne s'exécutait donc jamais. Le budget
+      // décomptait 20 → 0 puis TOUTES les commandes suivantes étaient
+      // ignorées en silence, pour toujours (jusqu'à la reconnexion) :
+      // « plus rien n'est pris en compte » ~10 s après la connexion,
+      // uniquement en jouant, page et monde vivants, seul F5 guérissait.
+      if (!ws._budgetReset || nowMs > ws._budgetReset) { ws._cmdBudget = 20; ws._budgetReset = nowMs + 1000; }
       if ((ws._cmdBudget ?? 20) <= 0) return; // rafale : ignorée, le snapshot suivant rétablit la vérité
       ws._cmdBudget = (ws._cmdBudget ?? 20) - 1;
       const c = msg.data || {};
