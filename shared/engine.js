@@ -31,6 +31,11 @@ export const RADIO_EDGE_MALUS = 0.2;    // malus de bord faisceau (réception)
 export const RADIO_MIN_STRENGTH = 1;    // sous 1 % : silence radio total (écoute des stations)
 export const OMNI_DETECT_PCT = 75;      // canal omni de réception : capte à ≥ 75 % (sans azimut)
 
+// Radio opérationnelle : surface, ou immersion avec périscope sorti, et
+// des batteries. LOI UNIQUE, utilisée par le moteur, le serveur et le client.
+export const radioOk = (st) =>
+  (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
+
 // Balise-vigie — signal de proximité (famille courte)
 export const PROX_PING_MAX_KM = 100;   // ancrage haut de la courbe d'accélération
 export const PROX_PING_MAX_S = 30;     // intervalle à ≥ 100 km
@@ -71,6 +76,7 @@ export const FUEL_RATE_PCT_H = 1.2;       // moteur thermique : carburant %/h à
 export const BATT_PERISCOPE_PCT_H = 2.0;  // électrique en périscope : batteries %/h
 export const BATT_SUB_PCT_H = 1.4;        // électrique en plongée : batteries %/h
 export const SOLAR_PCT_H = 5;             // recharge solaire de jour : %/h (avant couverture nuageuse)
+export const SOLAR_CLOUD_REF_PCT = 130;  // couverture nuageuse annulant la recharge solaire (%)
 export const FOOD_PCT_H = 0.22;           // vivres : %/h
 export const UNC_PER_KM = 0.025;          // incertitude gagnée par km parcouru
 export const UNC_PER_H = 0.278;           // incertitude gagnée par heure (dérives lentes)
@@ -81,8 +87,13 @@ export const NAVFIX_CLOUD_KM = 0.2;       // pénalité par % de couverture nuag
 export const NAVFIX_SEA_KM = 1.5;         // pénalité par mètre de houle (km)
 export const NAVFIX_VIS_KM = 0.4;         // pénalité par km de visibilité sous la référence (km)
 export const NAVFIX_VIS_REF_KM = 10;      // visibilité de référence (km)
+export const NAVFIX_CLOUD_MAX = 50;      // couverture max pour tenter un point aux étoiles (%)
 export const NOTIF_MAX = 200;             // journal de bord : les 200 derniers événements par navire (arbitrage 2026-10-11)
 export const PINS_MAX = 26;               // punaises manuelles
+export const VISFIX_ISLE_KM = 8;       // plancher d'incertitude après point visuel sur une île (km)
+export const VISFIX_BEACON_KM = 3.7;   // idem sur une balise ou un avant-poste (km)
+export const VISFIX_PORT_KM = 0.9;     // idem sur le port (km)
+export const VISFIX_COAST_KM = 10;     // idem sur la côte (km)
 export const SAIL_DEFAULT = 0.8;          // voilure par défaut (nouveau navire, états migrés)
 export const HORIZON_KM = 20;              // horizon géographique depuis le pont (km)
 export const SPAWN_SEP_KM = 0.5;          // anti-chevauchement des spawns au port (km)
@@ -122,6 +133,15 @@ export const distKm = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by) * DEG_KM;
 export const bearingTo = (ax, ay, bx, by) =>
   ((Math.atan2(bx - ax, by - ay) * 180) / Math.PI + 360) % 360;
 export const angDiff = (a, b) => ((a - b + 540) % 360) - 180;
+
+// Minutes à simuler pour atteindre la prochaine heure cible (0-23) du jeu.
+// Pile sur l'heure cible : prochaine occurrence = demain (delta = 24 h).
+export function nextPhase(tMin, targetHour) {
+  const cur = tMin / 60;
+  let delta = (targetHour - (cur % 24) + 24) % 24;
+  if (delta === 0) delta = 24;
+  return delta * 60;
+}
 // Distance (km) d'un point P au segment [A,B] — évite de traverser une zone
 // (capture, livraison) lors d'un grand pas de simulation.
 export function segDistKm(px, py, ax, ay, bx, by) {
@@ -934,8 +954,7 @@ export const CALL_BATTERY_COST = 0.5;
 // ondes (tiers brouillés) — ou null (silence, mauvais numéro, hors de
 // portée). Le contenu privé reste inchangé.
 export function callPosition(st, code, world, noCost = false) {
-  const radioOk = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
-  if (!radioOk) return null;
+  if (!radioOk(st)) return null;
   if (!noCost) st.battery = Math.max(0, st.battery - CALL_BATTERY_COST);
   const target = findStation(world, code); // balise, port ou avant-poste : la station répond toujours
   if (!target) return null;
@@ -1982,7 +2001,7 @@ export function newPlayerState(world, opts = {}) {
     antBeam: 45, antOrient: 0, signals: [], notifications: [], notifSeq: 0,
     grounded: false, warnedFood: false, warnedFuel: false, warnedBatt: false,
     groundHitArmed: true, needsRescue: false, // avarie d'échouement armée / remorquage requis (coque 0 %)
-    ffEvents: [], travelledKm: 0, dailyKm: 0, dayIdx: 0,
+    travelledKm: 0, dailyKm: 0, dayIdx: 0,
     weatherSeed: opts.weatherSeed ?? Math.floor(Math.random() * 1000), weatherName: null,
     code: opts.shipCode ?? randomCode(),
     sawIsland: false, sawBeaconId: null, sawPort: false, sawCont: false, sawOutpostIds: [], pins: [], measures: [],
@@ -1997,6 +2016,9 @@ export function newPlayerState(world, opts = {}) {
 export const DAMAGE_HIT_PCT = 25;   // dégât par événement (% appliqué à l'élément)
 export const DAMAGE_ROLL_MIN = 5;  // période de tirage des avaries de mer (minutes DE JEU)
 export const DAMAGE_ROLL_PCT = 2;   // probabilité d'avarie par tirage (%)
+export const DAMAGE_WIND_KMH = 50;   // vent à partir duquel la voilure hissée risque l'avarie (≥, km/h)
+export const DAMAGE_SPEED_KMH = 30;   // vitesse à partir de laquelle la coque fatigue dans la mer forte (km/h)
+export const DAMAGE_SEA_MIN = 5;      // état de mer (Douglas) déclencheur de l'avarie de coque à pleine vitesse
 
 // Facteur d'efficacité d'un élément selon sa santé : 100 % → 1 ; 0 % → 0,5.
 // Malus linéaire identique pour tous les éléments (coque, voilure, antenne).
@@ -2019,13 +2041,12 @@ export function damagePart(st, key, pct, text) {
   }
 }
 
-function notify(st, text, kind, cat) {
+export function notify(st, text, kind, cat) {
   st.notifSeq = (st.notifSeq || 0) + 1;
   st.notifications.unshift({ id: st.notifSeq, t: st.t, text, kind, cat: cat || "navire" });
   if (st.notifications.length > NOTIF_MAX) st.notifications.pop();
 }
 function ev(st, kind, text, cat) {
-  st.ffEvents.push({ kind, text });
   notify(st, text, kind === "signal" ? "info" : "warn", cat);
 }
 
@@ -2082,7 +2103,7 @@ export function tick(st, dtMin, world) {
   if (st.location === "underwater" && st.electricOn)
     st.battery = Math.max(0, st.battery - (st.periscope ? BATT_PERISCOPE_PCT_H : BATT_SUB_PCT_H) * (st.electric ?? st.engine) * (dtMin / 60));
   if (st.location === "surface" && daylight)
-    st.battery = Math.min(100, st.battery + SOLAR_PCT_H * (1 - w.clouds / 130) * (dtMin / 60));
+    st.battery = Math.min(100, st.battery + SOLAR_PCT_H * (1 - w.clouds / SOLAR_CLOUD_REF_PCT) * (dtMin / 60));
   st.food = Math.max(0, st.food - FOOD_PCT_H * (dtMin / 60));
 
   // Pilote automatique : la consigne est RECALCULÉE à chaque tick depuis
@@ -2252,9 +2273,9 @@ export function tick(st, dtMin, world) {
   // dangereuses durent, le risque revient à chaque tirage.
   const nRolls = Math.floor(st.t / DAMAGE_ROLL_MIN) - Math.floor(prevT / DAMAGE_ROLL_MIN);
   for (let i = 0; i < nRolls; i++) {
-    if (st.mast && st.sail > 0.5 && (w.windSpd >= 50 || w.storm) && Math.random() < DAMAGE_ROLL_PCT / 100)
+    if (st.mast && st.sail > 0.5 && (w.windSpd >= DAMAGE_WIND_KMH || w.storm) && Math.random() < DAMAGE_ROLL_PCT / 100)
       damagePart(st, "sailH", DAMAGE_HIT_PCT, "🧵 Coup de vent dans la voilure : toile endommagée (−25 %). Réelez la voilure ou entrez au port pour réparer.");
-    if (st.vkmh >= 30 && w.douglas >= 5 && Math.random() < DAMAGE_ROLL_PCT / 100)
+    if (st.vkmh >= DAMAGE_SPEED_KMH && w.douglas >= DAMAGE_SEA_MIN && Math.random() < DAMAGE_ROLL_PCT / 100)
       damagePart(st, "hullH", DAMAGE_HIT_PCT, "🔩 Coup de mer brutal à pleine vitesse : la coque fatigue (−25 %).");
     if (w.storm && Math.random() < DAMAGE_ROLL_PCT / 100)
       damagePart(st, "antH", DAMAGE_HIT_PCT, "📡 La foudre secoue l'antenne : le matériel radio souffre (−25 %) — émissions et réceptions affaiblies.");
@@ -2289,7 +2310,7 @@ export function tick(st, dtMin, world) {
   const night = hour < 6 || hour >= 20;
   const dayIdx = Math.floor(st.t / 1440);
   const nightIdx = (st.t % 1440) >= 20 * 60 ? dayIdx : dayIdx - 1;
-  const navOk = st.location === "surface" && !w.storm && !w.fog && w.clouds <= 50;
+  const navOk = st.location === "surface" && !w.storm && !w.fog && w.clouds <= NAVFIX_CLOUD_MAX;
   if (st.navFix.active) {
     if (st.t - st.navFix.startT >= NAVFIX_MIN) {
       if (navOk) {
@@ -2303,13 +2324,13 @@ export function tick(st, dtMin, world) {
         st.navFix = { active: false, doneNight: nightIdx, lastTryT: st.t };
       } else {
         st.navFix = { active: false, doneNight: st.navFix.doneNight, lastTryT: st.t };
-        notify(st, "🔭 Point aux étoiles échoué — nouvel essai dans 2 h.", "warn", "nav");
+        notify(st, `🔭 Point aux étoiles échoué — nouvel essai dans ${NAVFIX_RETRY_MIN / 60} h.`, "warn", "nav");
       }
     }
   } else if (night && navOk && st.navFix.doneNight !== nightIdx
     && (st.navFix.lastTryT == null || st.t - st.navFix.lastTryT >= NAVFIX_RETRY_MIN)) {
     st.navFix = { active: true, startT: st.t, doneNight: st.navFix.doneNight, lastTryT: st.navFix.lastTryT };
-    notify(st, "🔭 Le navigateur commence un point aux étoiles (durée : 2 h).", "info", "nav");
+    notify(st, `🔭 Le navigateur commence un point aux étoiles (durée : ${NAVFIX_MIN / 60} h).`, "info", "nav");
   }
 
   // Alertes ressources
@@ -2321,8 +2342,7 @@ export function tick(st, dtMin, world) {
   if (st.battery > RES_WARN_RESET_PCT) st.warnedBatt = false;
 
   // Radio : pulsations par balise (phase aléatoire propre à chaque balise)
-  const radioOk = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
-  if (radioOk) {
+  if (radioOk(st)) {
     for (const b of world.BEACONS) {
       // Une balise CAPTURÉE (désactivée) continue d'exister et d'émettre :
       // son ping est identique, seule la mention « désactivé » est ajoutée.
@@ -2356,7 +2376,7 @@ export function tick(st, dtMin, world) {
   const islandVis = canSee && nearIsl.c <= detectKm("ile", visKm, night2);
   if (islandVis && !st.sawIsland) {
     notify(st, `🏝️ Île en vue : ~${Math.round(nearIsl.c)} km, azimut ${azTo(nearIsl.i.x, nearIsl.i.y)}°.`, "info", "vision");
-    if (st.unc > 8) { recenterEst(st, 8); notify(st, "🔭 Point visuel sur l'île : incertitude ± 8 km.", "good", "nav"); }
+    if (st.unc > VISFIX_ISLE_KM) { recenterEst(st, VISFIX_ISLE_KM); notify(st, `🔭 Point visuel sur l'île : incertitude ± ${VISFIX_ISLE_KM} km.`, "good", "nav"); }
   }
   st.sawIsland = islandVis;
   const bVis = canSee ? world.BEACONS.map((b) => ({ b, km: kmOf(b.x, b.y) })).find((e) => e.km <= detectKm("balise", visKm, night2)) : null; // capturée ou non : l'objet physique existe
@@ -2364,21 +2384,21 @@ export function tick(st, dtMin, world) {
     notify(st, night2
       ? `🔦 Feu de balise en vue (${bVis.b.id}) : ${Math.round(bVis.km)} km, azimut ${azTo(bVis.b.x, bVis.b.y)}°.`
       : `📍 Balise en vue (${bVis.b.id}) : ${Math.round(bVis.km)} km, azimut ${azTo(bVis.b.x, bVis.b.y)}°.`, "info", "vision");
-    if (st.unc > 3.7) { recenterEst(st, 3.7); notify(st, "🔭 Point visuel sur la balise : incertitude ± 3,7 km.", "good", "nav"); }
+    if (st.unc > VISFIX_BEACON_KM) { recenterEst(st, VISFIX_BEACON_KM); notify(st, `🔭 Point visuel sur la balise : incertitude ± ${VISFIX_BEACON_KM.toString().replace(".", ",")} km.`, "good", "nav"); }
   }
   st.sawBeaconId = bVis ? bVis.b.id : null;
   const portKm = kmOf(world.PORT.x, world.PORT.y);
   const portVis = canSee && portKm <= detectKm("port", visKm, night2);
   if (portVis && !st.sawPort) {
     notify(st, `🏛️ Port en vue : ${Math.round(portKm)} km, azimut ${azTo(world.PORT.x, world.PORT.y)}°.`, "info", "vision");
-    if (st.unc > 0.9) { recenterEst(st, 0.9); notify(st, "🔭 Point visuel sur le port : incertitude ± 0,9 km.", "good", "nav"); }
+    if (st.unc > VISFIX_PORT_KM) { recenterEst(st, VISFIX_PORT_KM); notify(st, `🔭 Point visuel sur le port : incertitude ± ${VISFIX_PORT_KM.toString().replace(".", ",")} km.`, "good", "nav"); }
   }
   st.sawPort = portVis;
   const contKm = distToLine(st.x, st.y, world.COAST) * DEG_KM;
   const contVis = canSee && contKm <= detectKm("continent", visKm, night2);
   if (contVis && !st.sawCont) {
     notify(st, `🏞️ Côte en vue : ~${Math.round(contKm)} km.`, "info", "vision");
-    if (st.unc > 10) { recenterEst(st, 10); notify(st, "🔭 Point visuel sur la côte : incertitude ± 10 km.", "good", "nav"); }
+    if (st.unc > VISFIX_COAST_KM) { recenterEst(st, VISFIX_COAST_KM); notify(st, `🔭 Point visuel sur la côte : incertitude ± ${VISFIX_COAST_KM} km.`, "good", "nav"); }
   }
   st.sawCont = contVis;
   world.OUTPOSTS.forEach((o, idx) => {
@@ -2386,7 +2406,7 @@ export function tick(st, dtMin, world) {
     if (canSee && km <= detectKm("poste", visKm, night2) && !st.sawOutpostIds.includes(idx)) {
       st.sawOutpostIds.push(idx);
       notify(st, `🏕️ Avant-poste en vue : ${Math.round(km)} km, azimut ${azTo(o.x, o.y)}°.`, "info", "vision");
-      if (st.unc > 3.7) { recenterEst(st, 3.7); notify(st, "🔭 Point visuel sur l'avant-poste : incertitude ± 3,7 km.", "good", "nav"); }
+      if (st.unc > VISFIX_BEACON_KM) { recenterEst(st, VISFIX_BEACON_KM); notify(st, `🔭 Point visuel sur l'avant-poste : incertitude ± ${VISFIX_BEACON_KM.toString().replace(".", ",")} km.`, "good", "nav"); }
     }
   });
 
