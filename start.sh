@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Pacific Chase — démarrage en un clic (macOS / Linux)
 # Installe et build si nécessaire, lance le serveur, ouvre le navigateur.
+
 set -e
 cd "$(dirname "$0")"
 
@@ -20,7 +21,8 @@ if [ ! -f client/dist/index.html ]; then
 fi
 
 echo "Démarrage du serveur sur http://localhost:8080 ..."
-( sleep 2
+(
+  sleep 2
   if command -v open >/dev/null 2>&1; then open http://localhost:8080
   elif command -v xdg-open >/dev/null 2>&1; then xdg-open http://localhost:8080
   fi
