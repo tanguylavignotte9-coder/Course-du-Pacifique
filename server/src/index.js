@@ -16,6 +16,7 @@ const TIME_MULT = process.env.TIME_MULT ? Number(process.env.TIME_MULT) : 1;
 const TICK_MS = 1000; // tick serveur : 1 s réelle
 const MAX_STEP_MIN = 5; // pas de simulation max 5 min de jeu (design)
 const PERSIST_MS = MS_PER_MIN; // persistance disque : 1 min réelle
+const SNAP_FLUSH_MS = 250; // flush des snapshots de réponse aux commandes (coalescence anti-tempête, voir boucle en fin de fichier)
 
 // Bafouillage des pêcheurs (diffusion) : petites phrases de la vie à bord.
 // JAMAIS de coordonnées dans le texte (règle : pas de position vraie dans
@@ -1507,6 +1508,7 @@ wss.on("connection", (ws, req) => {
   ensureState(id);
   if (!sockets.has(id)) sockets.set(id, new Set());
   sockets.get(id).add(ws);
+  ws._snapDirty = false; // réponse de commande en attente de flush (coalescence anti-tempête)
 
   ws.send(JSON.stringify({ type: "snapshot", data: publicSnapshot(id) }));
 
@@ -1854,7 +1856,7 @@ wss.on("connection", (ws, req) => {
         }
       }
       persistPlayer(id);
-      ws.send(JSON.stringify({ type: "snapshot", data: publicSnapshot(id) }));
+      ws._snapDirty = true; // COALESCÉ : le flush SNAP_FLUSH_MS répondra (dernier état gagne, jamais de file)
     } else if (msg.type === "snapshot") {
       ws.send(JSON.stringify({ type: "snapshot", data: publicSnapshot(id) }));
     }
@@ -1876,3 +1878,24 @@ setInterval(() => {
     for (const ws of set) if (ws.readyState === 1) ws.send(msg);
   }
 }, TICK_MS);
+
+// Réponses aux COMMANDES — coalescence anti-tempête. Pendant un drag (roue,
+// manettes : ~10 commandes/s), le serveur répondait à CHAQUE commande par un
+// snapshot complet (~8 Ko) : une rafale de ~11 trames/s, ininterrompue tant
+// que le joueur manipule. Or ce flux massif est le SEUL élément qui
+// distingue « jouer » (gel de l'interface ~10 s après la connexion) de
+// « rester connecté sans rien faire » (aucun gel) — on le plafonne. Une
+// commande marque simplement la socket sale ; ce flush envoie AU PLUS UN
+// snapshot par socket et par SNAP_FLUSH_MS (dernier état gagne, jamais de
+// file d'attente). Le broadcast 1 Hz ci-dessus reste la vérité de fond :
+// pire cas, l'écho d'une commande arrive 250 ms plus tard — invisible sur
+// des mécaniques à convergence lente (giration, voile).
+setInterval(() => {
+  for (const [id, set] of sockets) {
+    for (const ws of set) {
+      if (!ws._snapDirty || ws.readyState !== 1) continue;
+      ws._snapDirty = false;
+      ws.send(JSON.stringify({ type: "snapshot", data: publicSnapshot(id) }));
+    }
+  }
+}, SNAP_FLUSH_MS);

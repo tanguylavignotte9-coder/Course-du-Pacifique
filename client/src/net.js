@@ -22,7 +22,21 @@ export class GameSocket {
     this.ws.onopen = () => this.onStatus("connected");
     this.ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
-      if (msg.type === "snapshot") this.onSnapshot(msg.data);
+      if (msg.type === "snapshot") {
+        // SONDE ANTI-GEL (PROVISOIRE — à retirer une fois le diagnostic
+        // bouclé) : le titre de l'onglet affiche en continu l'heure de jeu
+        // du dernier snapshot reçu + un compteur qui alterne ●/○ à CHAQUE
+        // message. Le titre vit HORS de la page : il bouge même si le
+        // rendu React ou le paint de l'onglet est gelé. Pendant un gel :
+        //  - titre qui alterne + t qui avance → les messages ATTEIGNENT
+        //    le JS → le bug est côté rendu/paint du client ;
+        //  - titre figé alors que DevTools (Network → WS → Messages) montre
+        //    encore des trames → les trames n'atteignent plus le JS ;
+        //  - titre qui alterne mais t figé → monde figé côté serveur.
+        this._n = (this._n || 0) + 1;
+        document.title = `${this._n % 2 ? "●" : "○"} PC t=${msg.data.t.toFixed(1)} · #${this._n}`;
+        this.onSnapshot(msg.data);
+      }
     };
     this.ws.onclose = () => {
       this.onStatus("disconnected");

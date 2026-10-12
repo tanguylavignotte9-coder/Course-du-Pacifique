@@ -75,14 +75,12 @@ export default function App() {
     return () => { cancel.dead = true; };
   }, [wxOpen, wxH, snap && Math.floor(snap.t / 60)]);
 
-  // Anti-gel : pendant un drag (roue, manettes ~10 commandes/s), le serveur
-  // répond à CHAQUE commande par un snapshot complet → jusqu'à 10 re-rendus
-  // de TOUTE la console par seconde. Quand un rendu coûte plus cher que
-  // l'intervalle, la boucle d'événements ne se vide plus : l'interface fige
-  // (les animations CSS tournent, plus rien n'est traité) et seul F5 la
-  // dégèle, en jetant la file. Correctif : ne garder QUE le dernier
-  // snapshot reçu et plafonner les re-rendus à un toutes les 200 ms —
-  // jamais de file d'attente, donc jamais de dette à rembourser.
+  // Anti-gel + fluidité : le serveur COALESCÉ désormais ses réponses de
+  // commande (au plus 1 snapshot par 250 ms et par socket, voir index.js),
+  // donc le flux entrant reste raisonnable (~5/s en plein drag, 1/s au
+  // repos). On garde le mécanisme « dernier snapshot gagne » — re-rendu
+  // plafonné à un toutes les 80 ms, jamais de file d'attente — mais le
+  // plafond remonté de 200 à 80 ms rend la console réactive au drag.
   const snapBuf = useRef(null); // dernier snapshot non encore rendu
   const snapTimer = useRef(0);
   const pushSnap = useCallback((data) => {
@@ -93,7 +91,7 @@ export default function App() {
       const d = snapBuf.current;
       snapBuf.current = null;
       if (d) setSnap(d); // rend le PLUS RÉCENT — les intermédiaires sont jetés
-    }, 200);
+    }, 80);
   }, []);
 
   useEffect(() => {
