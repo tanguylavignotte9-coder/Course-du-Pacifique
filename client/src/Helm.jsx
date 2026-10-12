@@ -3,12 +3,12 @@ import NavMap from "./NavMap.jsx";
 import TopView from "./TopView.jsx";
 import Ambiance from "./Ambiance.jsx";
 import {
-  CAPTURE_R_KM, DOUGLAS_LABEL, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT,
+  CAPTURE_R_KM, DOUGLAS_LABEL, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, VMAX_KMH,
   SONAR_RANGE_KM, SONAR_PING_BATTERY_COST, SONAR_ECHO_PERSIST_S, radioOk, angDiff,
 } from "../../shared/engine.js";
 import { gameHour, fmtT, fmtTime } from "./time.js";
 
-const AUTOGUIDE_LABEL = { off: "Aucun", active: "Actives", disabled: "Déjà capturées", all: "Toutes" };
+const AUTOGUIDE_LABEL = { off: "Aucun", active: "Balises actives", beacons: "Toutes balises", stations: "Port et avant-postes" };
 
 const wrap360 = (d) => ((d % 360) + 360) % 360;
 
@@ -178,9 +178,9 @@ function Binnacle({ heading, order }) {
           </g>
         <circle cx="70" cy="70" r="4.5" fill="#d4a24e" stroke="#5c3a1a" />
       </svg>
-      <div className="mt-0.5 flex gap-3 text-center">
-        <p className="engrave text-[9px] uppercase tracking-widest">cap <b className="font-mono text-[11px] text-red-300">{Math.round(heading)}°</b></p>
-        <p className="engrave text-[9px] uppercase tracking-widest">consigne <b className="font-mono text-[11px] text-amber-300">{Math.round(order)}°</b></p>
+      <div className="mt-0.5 flex justify-center gap-3 text-center">
+        <p className="engrave w-[64px] text-[9px] uppercase tracking-widest">cap <b className="font-mono text-[11px] text-red-300 tabular-nums">{Math.round(heading)}°</b></p>
+        <p className="engrave w-[96px] text-[9px] uppercase tracking-widest">consigne <b className="font-mono text-[11px] text-amber-300 tabular-nums">{Math.round(order)}°</b></p>
       </div>
     </div>
   );
@@ -546,14 +546,6 @@ function RadioSet({ snap, cmd, dial, setDial, radioMode, setRadioMode }) {
               </button>
             ))}
           </div>
-          <div className="mt-1.5 grid grid-cols-2 gap-1">
-            <button disabled={!ready || !radioOn} onClick={() => { tx(); cmd({ shipMsg: { kind: "posq", to: dial } }); setDial(""); }}
-              className={`rounded py-1 text-[9.5px] font-bold uppercase tracking-wide ${ready && radioOn
-                ? "bg-gradient-to-b from-[#b87333] to-[#7c4a1a] text-[#1c130a]" : "bg-[#1a2430] text-slate-600 cursor-not-allowed"}`}>❓ Position ?</button>
-            <button disabled={!ready || !radioOn} onClick={() => { tx(); cmd({ shipMsg: { kind: "mypos", to: dial } }); setDial(""); }}
-              className={`rounded py-1 text-[9.5px] font-bold uppercase tracking-wide ${ready && radioOn
-                ? "bg-gradient-to-b from-[#b87333] to-[#7c4a1a] text-[#1c130a]" : "bg-[#1a2430] text-slate-600 cursor-not-allowed"}`}>📍 Ma position</button>
-          </div>
         </div>
         <div className="w-[104px] shrink-0">
           <svg viewBox="0 0 100 100" className="w-[98px]">
@@ -572,7 +564,8 @@ function RadioSet({ snap, cmd, dial, setDial, radioMode, setRadioMode }) {
         <AntennaLever label="Azimut" value={player.antOrient} min={-180} max={180} unit="°" onCommit={(v) => cmd({ antOrient: v })} />
       </div>
 
-      <div className="mt-2.5 flex gap-1.5">
+      <p className="engrave mt-2.5 text-center text-[8px] uppercase tracking-[0.18em]">Type de signal</p>
+      <div className="mt-1 flex gap-1.5">
         {["prive", "diffusion"].map((m) => (
           <button key={m} onClick={() => setRadioMode(m)}
             className={`flex-1 rounded border px-2 py-1.5 text-[9.5px] font-bold uppercase tracking-wide transition-transform hover:scale-[1.02] ${radioMode === m
@@ -582,6 +575,21 @@ function RadioSet({ snap, cmd, dial, setDial, radioMode, setRadioMode }) {
           </button>
         ))}
       </div>
+      {radioMode === "prive" && (
+        <div className="mt-1.5">
+          <p className="engrave text-center text-[7.5px] uppercase tracking-widest">
+            {ready ? `destinataire : ${dial}` : "composer le code du destinataire au clavier"}
+          </p>
+          <div className="mt-1 grid grid-cols-2 gap-1">
+            <button disabled={!ready || !radioOn} onClick={() => { tx(); cmd({ shipMsg: { kind: "posq", to: dial } }); setDial(""); }}
+              className={`rounded py-1 text-[9.5px] font-bold uppercase tracking-wide ${ready && radioOn
+                ? "bg-gradient-to-b from-[#b87333] to-[#7c4a1a] text-[#1c130a]" : "bg-[#1a2430] text-slate-600 cursor-not-allowed"}`}>❓ Position ?</button>
+            <button disabled={!ready || !radioOn} onClick={() => { tx(); cmd({ shipMsg: { kind: "mypos", to: dial } }); setDial(""); }}
+              className={`rounded py-1 text-[9.5px] font-bold uppercase tracking-wide ${ready && radioOn
+                ? "bg-gradient-to-b from-[#b87333] to-[#7c4a1a] text-[#1c130a]" : "bg-[#1a2430] text-slate-600 cursor-not-allowed"}`}>📍 Ma position</button>
+          </div>
+        </div>
+      )}
       {radioMode === "diffusion" && (
         <div className="mt-1.5 grid grid-cols-2 gap-1.5">
           <button disabled={!radioOn} onClick={() => { tx(); cmd({ shipMsg: { kind: "mypos" } }); }}
@@ -619,7 +627,7 @@ function RadioSet({ snap, cmd, dial, setDial, radioMode, setRadioMode }) {
           {player.beaconLock
             ? `🔒 autoguidage engagé — verrou balise ${player.beaconLock} : la barre suit`
             : (player.autoguide || AUTOGUIDE_DEFAULT) !== "off"
-              ? `🤖 autoguidage enclenché — cible : balises ${AUTOGUIDE_LABEL[player.autoguide || AUTOGUIDE_DEFAULT].toLowerCase()}`
+              ? `🤖 autoguidage enclenché — cible : ${AUTOGUIDE_LABEL[player.autoguide || AUTOGUIDE_DEFAULT].toLowerCase()}`
               : "autoguidage coupé — sélectionner une cible ci-dessus"}
         </p>
       </div>
@@ -891,7 +899,7 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
   const [radioMode, setRadioMode] = useState("prive");
   const [logFilter, setLogFilter] = useState("tout");
   const uw = player.location === "underwater";
-  const wheelLocked = player.autopilot || !!player.beaconLock;
+  const wheelLocked = !!player.autopilot; // le verrou balise ne gèle plus la roue : barrer reprend la main (le serveur coupe le verrou sur une consigne)
   const canCapture = (view.beacons || []).some((b) => b.km <= CAPTURE_R_KM);
 
   return (
@@ -972,8 +980,16 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
                 <Binnacle heading={player.heading} order={player.headingOrder} />
               </div>
               <p className="engrave mt-1 text-center text-[7.5px] uppercase tracking-[0.2em]">
-                {wheelLocked ? "barre verrouillée — pilote ou verrou balise" : "glisser la roue pour barrer — repère ambre = consigne sur la rose"}
+                {player.autopilot
+                  ? "barre verrouillée — pilote de route actif"
+                  : player.beaconLock
+                    ? `verrou balise ${player.beaconLock} — barrer pour reprendre la main`
+                    : "glisser la roue pour barrer — repère ambre = consigne sur la rose"}
               </p>
+
+              <div className="mt-2.5 flex justify-center">
+                <Dial label="Vitesse" value={player.vkmh} max={VMAX_KMH} unit="km/h" color="#38bdf8" />
+              </div>
 
               <div className="mt-3 space-y-2.5 rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 p-2.5">
                 <div>
@@ -1011,7 +1027,6 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
               </div>
 
               <div className="mt-2 flex flex-wrap items-center justify-center gap-2 rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 px-2 py-2">
-                <Counter label="vitesse km/h" value={player.vkmh.toFixed(1)} />
                 <Counter label="incertitude km" value={player.unc.toFixed(1)} />
                 <Counter label="distance km" value={Math.round(player.travelledKm)} />
               </div>

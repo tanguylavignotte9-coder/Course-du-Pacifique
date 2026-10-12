@@ -476,8 +476,9 @@ export default function Manual({ onClose }) {
               ou plus, jusqu'à {fmt(PROX_PING_MIN_S)} s à {fmt(PROX_PING_MIN_KM)} km et moins.
             </P>
             <P>
-              Autoguidage (interrupteur de l'onglet radio, défaut « {AUTOGUIDE_DEFAULT === "off" ? "Aucun" : AUTOGUIDE_DEFAULT} ») :
-              au premier ping fort, le pilote s'engage et l'ordinateur oriente l'antenne sur la source,
+              Autoguidage (interrupteur 4 positions de l'onglet radio, défaut « {AUTOGUIDE_DEFAULT === "off" ? "Aucun" : AUTOGUIDE_DEFAULT} ») :
+              Aucun, Balises actives, Toutes balises, ou Port et avant-postes. Au premier ping fort d'une
+              station visée par le mode, le pilote s'engage et l'ordinateur oriente l'antenne sur la source,
               puis corrige le cap ping après ping. À {fmt(ANCHOR_DROP_KM * 1000)} m, le verrou coupe et
               l'ancre tombe automatiquement. La capture reste toujours manuelle.
             </P>

@@ -57,10 +57,22 @@ export const CODE_POOL = 10000;           // pool codes radio (0000-9999)
 export const MS_PER_MIN = 60000;          // millisecondes réelles par minute de jeu
 export const WX_HORIZON_H = 48;           // horizon des prévisions météo (h) — port, avant-postes et NETWORK
 
-// Autoguidage balise-vigie : quelles balises peuvent ENGAGER le verrou du
+// Autoguidage balise-vigie : quelles stations peuvent ENGAGER le verrou du
 // pilote. Filtre à l'engagement uniquement — un verrou déjà engagé tient.
-export const AUTOGUIDE_MODES = ["off", "active", "disabled", "all"];
+// Modes : off (aucun), active (balises actives), beacons (toutes balises),
+// stations (port et avant-postes).
+export const AUTOGUIDE_MODES = ["off", "active", "beacons", "stations"];
 export const AUTOGUIDE_DEFAULT = "off"; // défaut : AUCUN verrou — l'autoguidage s'engage à la main (calme au port)
+
+// Mode d'autoguidage normalisé d'un état : migre les anciennes valeurs
+// (« disabled » / « all » couvraient toutes les balises → « beacons ») et
+// rabat toute valeur inconnue sur le défaut.
+export function autoguideMode(st) {
+  const m = st && st.autoguide;
+  if (m === "active" || m === "beacons" || m === "stations") return m;
+  if (m === "disabled" || m === "all") return "beacons";
+  return AUTOGUIDE_DEFAULT;
+}
 
 // Navigation à l'estime — défauts d'instruments et courant (équilibrage validé)
 export const COMP_DEV_MIN_DEG = 0.15;  // déviation de compas min (°)
@@ -1892,9 +1904,11 @@ export function onProximityPing(st, b, cap) {
     // AUTOGUIDAGE (4 positions) : filtre AU MOMENT DE L'ENGAGEMENT
     // uniquement — un verrou déjà engagé tient jusqu'au bout, même si
     // l'interrupteur change ou si la balise est capturée en cours de poursuite.
-    const mode = st.autoguide || AUTOGUIDE_DEFAULT;
+    const mode = autoguideMode(st);
     if (mode === "off") return; // interrupteur sur AUCUN : journal seul, jamais de verrou
-    if (mode !== "all" && (mode === "active") !== b.active) return; // hors mode : journal seul
+    const isBeacon = b.rarity != null; // balise : elle porte une rareté ; port/avant-postes non
+    if (mode === "stations" ? isBeacon : !isBeacon) return; // hors cible du mode : journal seul
+    if (mode === "active" && !b.active) return; // mode balises actives : les capturées ne verrouillent pas
   }
   const brg = Math.round(bearingTo(st.x, st.y, b.x, b.y));
   const engaged = !st.beaconLock;

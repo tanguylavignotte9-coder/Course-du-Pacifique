@@ -17,10 +17,33 @@ export class Store {
       }
     }
   }
+  // Sauvegarde ASYNCHRONE COALESCÉE — save() ne bloque plus l'event loop.
+  // Avant : chaque commande joueur (~10/s pendant un drag de roue ou de
+  // manette) déclenchait un writeFileSync + renameSync de TOUTE la base.
+  // Sur un disque scanné par un antivirus, chaque écriture bloque des
+  // dizaines de ms : l'event loop sature, la file de commandes WS grossit
+  // sans fin et l'interface entière paraît figée (socket ouvert, mais plus
+  // rien n'est traité). Ici : au plus UNE écriture en vol ; les appels
+  // pendant l'écriture marquent la base sale et la boucle la re-flushe
+  // (l'état le plus récent gagne toujours). L'atomicité tmp + rename est
+  // conservée : un arrêt brutal laisse toujours un save.json sain.
   save() {
-    const tmp = this.file + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(this.data));
-    fs.renameSync(tmp, this.file);
+    this._dirty = true;
+    if (this._saving) return; // écriture en vol : la boucle re-flushera
+    this._saving = true;
+    const flush = async () => {
+      while (this._dirty) {
+        this._dirty = false;
+        const tmp = this.file + ".tmp";
+        await fs.promises.writeFile(tmp, JSON.stringify(this.data));
+        await fs.promises.rename(tmp, this.file);
+      }
+      this._saving = false;
+    };
+    flush().catch((err) => {
+      this._saving = false;
+      console.error("[store] échec de sauvegarde :", err);
+    });
   }
 }
 

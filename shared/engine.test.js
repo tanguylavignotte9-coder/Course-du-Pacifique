@@ -7,7 +7,7 @@ import {
   sailAutoDrive, apparentWind, SAIL_SPD_KMH, clamp, callPosition, RARITY_MIN, bearingTo, segDistKm,
   longStrengthKm, strengthKm, SHORT_DECAY_KM, recvCapture, detectBeacon, onProximityPing,
   proxPingIntervalS, captureBeacon, beaconLockTick, beaconLockSteer, pushBeaconSignal, SIGNAL_LOG_MAX, PROX_ARM_KM, ANCHOR_DROP_KM,
-  scrambledIntercept, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT,
+  scrambledIntercept, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, autoguideMode,
   sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, nearestOnLine, soundTravelMin,
   tracePush, TRACE_STEP_KM, TRACE_MAX_PTS,
   SOUND_KMH, SOUND_DECAY_KM, SONAR_RANGE_KM, SONAR_PING_BATTERY_COST, SONAR_ECHO_PERSIST_S,
@@ -649,9 +649,15 @@ test("WX_HORIZON_H : horizon des prévisions = 48 h (constante importée, pas fi
   assert.equal(WX_HORIZON_H, 48);
 });
 
-test("autoguidage : 4 positions, défaut = Aucun", () => {
-  assert.deepEqual(AUTOGUIDE_MODES, ["off", "active", "disabled", "all"]);
+test("autoguidage : 4 positions, défaut = Aucun, migration des anciens modes", () => {
+  assert.deepEqual(AUTOGUIDE_MODES, ["off", "active", "beacons", "stations"]);
   assert.equal(AUTOGUIDE_DEFAULT, "off");
+  assert.equal(autoguideMode({ autoguide: "disabled" }), "beacons", "migration : « déjà capturées » → toutes balises");
+  assert.equal(autoguideMode({ autoguide: "all" }), "beacons", "migration : « toutes » → toutes balises");
+  assert.equal(autoguideMode({ autoguide: "active" }), "active", "mode balises actives conservé");
+  assert.equal(autoguideMode({ autoguide: "stations" }), "stations", "mode stations conservé");
+  assert.equal(autoguideMode({ autoguide: "bogus" }), "off", "valeur inconnue → défaut Aucun");
+  assert.equal(autoguideMode({}), "off", "sans champ → défaut Aucun");
 });
 
 test("balise capturée : elle continue d'émettre « ping désactivé » (pulsation horaire)", () => {
@@ -692,10 +698,10 @@ test("verrou : une balise capturée reste pilotable — le verrou survit à la c
   const b = w.BEACONS.find((x) => x.active);
   const st = newPlayerState(w, { weatherSeed: 1 });
   st.x = b.x; st.y = b.y - 40 / DEG_KM;
-  st.autoguide = "all";
+  st.autoguide = "beacons";
   st.anchored = false; // en navigation : le verrou peut s'engager
   onProximityPing(st, b, { strength: 92, source: "dir", bearing: 0, side: "centre" });
-  assert.equal(st.beaconLock, b.code, "verrou engagé sur balise active (mode toutes)");
+  assert.equal(st.beaconLock, b.code, "verrou engagé sur balise active (mode toutes balises)");
   // un TIER capture la balise pendant la poursuite : le verrou tient
   b.active = false;
   beaconLockSteer(st, w);
@@ -723,33 +729,43 @@ test("autoguidage (4 positions) : défaut Aucun, filtre à l'engagement uniqueme
   assert.equal(stDef.beaconLock, null, "défaut (Aucun) : jamais de verrou");
   assert.equal(stDef.headingOrder, 90, "consigne de cap intacte");
   assert.equal(stDef.signals[stDef.signals.length - 1].kind, "prox", "le ping reste journalisé");
-  // mode actives : verrou sur une balise active
+  // mode balises actives : verrou sur une balise active
   const stAct = mk("active");
   onProximityPing(stAct, b, cap);
-  assert.equal(stAct.beaconLock, b.code, "mode actives : verrou sur balise active");
+  assert.equal(stAct.beaconLock, b.code, "mode balises actives : verrou sur balise active");
   assert.equal(stAct.signals[stAct.signals.length - 1].off, false, "flag off absent");
-  // mode désactivées : une balise ACTIVE ne verrouille plus (journal seul)
-  const stOff = mk("disabled");
-  onProximityPing(stOff, b, cap);
-  assert.equal(stOff.beaconLock, null, "mode désactivées : pas de verrou sur une active");
-  assert.equal(stOff.headingOrder, 90, "consigne de cap intacte");
-  assert.equal(stOff.signals[stOff.signals.length - 1].kind, "prox", "le ping reste journalisé");
-  // mode désactivées : une balise CAPTURÉE verrouille
+  // mode toutes balises : une balise CAPTURÉE verrouille aussi
   b.active = false;
-  const stDis = mk("disabled");
-  onProximityPing(stDis, b, cap);
-  assert.equal(stDis.beaconLock, b.code, "mode désactivées : verrou sur balise capturée");
-  assert.equal(stDis.signals[stDis.signals.length - 1].off, true, "flag off dans le journal");
-  // mode actives : une balise CAPTURÉE ne verrouille plus
+  const stBea = mk("beacons");
+  onProximityPing(stBea, b, cap);
+  assert.equal(stBea.beaconLock, b.code, "mode toutes balises : verrou sur balise capturée");
+  assert.equal(stBea.signals[stBea.signals.length - 1].off, true, "flag off dans le journal");
+  // mode balises actives : une balise CAPTURÉE ne verrouille plus
   const stAct2 = mk("active");
   onProximityPing(stAct2, b, cap);
-  assert.equal(stAct2.beaconLock, null, "mode actives : pas de verrou sur une capturée");
+  assert.equal(stAct2.beaconLock, null, "mode balises actives : pas de verrou sur une capturée");
   assert.equal(stAct2.signals[stAct2.signals.length - 1].off, true, "le ping de la capturée reste journalisé");
+  // mode port et avant-postes : une BALISE ne verrouille pas (journal seul)…
+  const stSta = mk("stations");
+  onProximityPing(stSta, b, cap);
+  assert.equal(stSta.beaconLock, null, "mode stations : pas de verrou sur une balise");
+  assert.equal(stSta.headingOrder, 90, "consigne de cap intacte");
+  assert.equal(stSta.signals[stSta.signals.length - 1].kind, "prox", "le ping reste journalisé");
+  // …mais le PORT verrouille (station toujours active)
+  const stPort = mk("stations");
+  stPort.x = w.PORT.x; stPort.y = w.PORT.y - 40 / DEG_KM;
+  onProximityPing(stPort, w.PORT, { strength: 92, source: "dir", bearing: 0, side: "centre" });
+  assert.equal(stPort.beaconLock, w.PORT.code, "mode stations : verrou sur le port");
+  // modes balises : le PORT ne verrouille pas (journal seul)
+  const stPort2 = mk("beacons");
+  stPort2.x = w.PORT.x; stPort2.y = w.PORT.y - 40 / DEG_KM;
+  onProximityPing(stPort2, w.PORT, { strength: 92, source: "dir", bearing: 0, side: "centre" });
+  assert.equal(stPort2.beaconLock, null, "mode toutes balises : pas de verrou sur le port");
   // un verrou déjà engagé survit au changement d'interrupteur
-  onProximityPing(stDis, b, cap);
-  stDis.autoguide = "active";
-  onProximityPing(stDis, b, cap);
-  assert.equal(stDis.beaconLock, b.code, "verrou engagé : insensible au changement de mode");
+  onProximityPing(stBea, b, cap);
+  stBea.autoguide = "active";
+  onProximityPing(stBea, b, cap);
+  assert.equal(stBea.beaconLock, b.code, "verrou engagé : insensible au changement de mode");
 });
 
 test("computeView : une balise capturée reste visible (flag off)", () => {
@@ -1327,7 +1343,7 @@ test("onProximityPing : le ping du port verrouille le pilote comme une balise", 
   const w = buildWorld(42);
   const st = newPlayerState(w);
   st.anchored = false;
-  st.autoguide = "all"; // le port est une station toujours active : mode guidant explicite
+  st.autoguide = "stations"; // le port est une station : mode port et avant-postes
   onProximityPing(st, w.PORT, { strength: 100, bearing: 90 });
   assert.equal(st.beaconLock, w.PORT.code, "verrou sur le code du port");
   assert.equal(st.autopilot, false, "le verrou coupe le pilote de route");
@@ -1375,7 +1391,7 @@ test("onProximityPing : navire échoué — le guidage ne s'engage pas (journal 
   const st = newPlayerState(w);
   st.anchored = false;
   st.grounded = true;
-  st.autoguide = "all"; // mode guidant : on teste bien l'échouement, pas l'interrupteur
+  st.autoguide = "stations"; // mode guidant : on teste bien l'échouement, pas l'interrupteur
   onProximityPing(st, w.PORT, { strength: 100, bearing: 90 });
   assert.equal(st.beaconLock, null, "échoué : le verrou ne pointe pas vers la terre — le joueur se dégage à la main");
   assert.ok(st.signals.length > 0, "le ping est quand même journalisé");

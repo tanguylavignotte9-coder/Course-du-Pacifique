@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, systemsAt, radioOk, notify, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SPAWN_DIGEST_MIN, BEAST_SPAWN_DIGEST_MAX, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, NEWSLETTER_MIN, NEWS_MAX, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, PATROL_BERTH_KM, tracePush, condFactor, damagePart, DAMAGE_HIT_PCT } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, systemsAt, radioOk, notify, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, autoguideMode, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SPAWN_DIGEST_MIN, BEAST_SPAWN_DIGEST_MAX, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, NEWSLETTER_MIN, NEWS_MAX, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, PATROL_BERTH_KM, tracePush, condFactor, damagePart, DAMAGE_HIT_PCT } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -1028,7 +1028,7 @@ const tickTraced = (st, step) => {
 // TIME_MULT=1 : comportement temps réel inchangé) : les pings vivent
 // AUSSI pendant les sauts de temps — avant, cadence Date.now() = silence
 // total d'un saut. Une balise CAPTURÉE (désactivée) émet aussi :
-// l'autoguidage du joueur (3 positions) décide seul si elle peut
+// l'autoguidage du joueur (4 positions) décide seul si elle peut
 // verrouiller son pilote.
 const proxNextMin = new Map(); // code station → prochaine émission (min de jeu)
 function proxPass(now) {
@@ -1286,7 +1286,7 @@ function publicSnapshot(id) {
       light: !!st.light,
       boom: st.boom ?? 0, awSpd: st.awSpd ?? 0, awRel: st.awRel ?? 0,
       beaconLock: st.beaconLock ?? null, anchored: !!st.anchored,
-      autoguide: st.autoguide || AUTOGUIDE_DEFAULT,
+      autoguide: autoguideMode(st), // migration : « disabled »/« all » → « beacons »
       networked: !!st.networked,
       signals: (st.signals || []).slice(-10),
       antBeam: st.antBeam, antOrient: st.antOrient,
@@ -1603,7 +1603,7 @@ wss.on("connection", (ws, req) => {
       }
       if (c.dive === true) { st.location = "underwater"; st.mast = false; st.engineOn = false; }
       if (c.surface === true) st.location = "surface";
-      // Autoguidage balise-vigie (3 positions) : quelles balises peuvent
+      // Autoguidage balise-vigie (4 positions) : quelles stations peuvent
       // engager le verrou du pilote. Filtre à l'engagement uniquement —
       // un verrou en cours tient, même si l'interrupteur change.
       if (typeof c.autoguide === "string" && AUTOGUIDE_MODES.includes(c.autoguide)) {
