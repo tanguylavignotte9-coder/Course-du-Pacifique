@@ -392,28 +392,23 @@ export function buildWorld(seed) {
   return { seed, CONTINENT, PORT, ISLANDS, OUTPOSTS, BEACONS, COAST, isLand };
 }
 
-// ---------- Météo — « Pacifique crédible » : 4 couches + houle propagée ----------
-// Le vent ne vient PLUS des archétypes : ARCHETYPES = CONDITIONS uniquement
-// (nuages/pluie/visibilité/température). Vent total = couche 1 RÉGIME (climat
-// par latitude) × couche 2 PERTURBATION (fBm quantile advecté LE LONG du
-// régime, qui MODULE le régime) × couche 3 DÉTAIL LOCAL, ⊕ couche 4 SYSTÈMES
-// RARES (cyclogenèse déterministe : cyclones, anticyclones). Le MÊME uq
-// advecté pilote en parallèle le vent (7 classes) et les conditions
-// (6 archétypes) : la pluie voyage avec le vent, par construction.
+// ---------- Météo — « Pacifique crédible » : 4 couches + convergence + houle ----------
+// Vent total = couche 1 RÉGIME (climat par latitude) × couche 2 PERTURBATION
+// (fBm quantile advecté LE LONG du régime, qui MODULE le régime) × couche 3
+// DÉTAIL LOCAL, ⊕ couche 4 SYSTÈMES RARES (cyclogenèse déterministe :
+// cyclones, anticyclones), ⊕ RAFALES DE GRAIN sur la ligne de convergence.
+// Les conditions sont ÉMERGENTES PAR BANDE : le même indice convectif cv
+// (perturbation uq ⊕ uplift de convergence) est lu par l'échelier de SA
+// bande climatique — fini les 6 archétypes globaux. La convergence
+// équatoriale (ITCZ) est le point de fusion des deux flux : grains et
+// orages s'y concentrent, molles et brume l'entourent.
 // Houle = mer du vent local ⊕ houle des orages lointains (échantillonnée en
-// amont sur le VENT TOTAL, retardée par la distance) → UN SEUL Douglas lu
-// par tout le monde (affichage, tangage, pénalité du point aux étoiles).
-// Courant couplé au régime (Ekman). Leeway : dérive coque ∝ vent, hors
-// estime. Tout est pur/déterministe, graine en paramètre, robuste aux sauts.
+// amont sur le VENT TOTAL — grain compris, retardée par la distance) → UN
+// SEUL Douglas lu par tout le monde (affichage, tangage, pénalité du point
+// aux étoiles). Courant couplé au régime (Ekman). Leeway : dérive coque ∝
+// vent, hors estime. Tout est pur/déterministe, graine en paramètre, robuste
+// aux sauts.
 
-export const ARCHETYPES = [
-  { name: "Soleil calme",          clouds: 10, rain: 0,   vis: 25,  temp: 4,  storm: false },
-  { name: "Soleil venteux",        clouds: 20, rain: 0,   vis: 20,  temp: 2,  storm: false },
-  { name: "Nuageux",              clouds: 70, rain: 0,   vis: 12,  temp: 0,  storm: false },
-  { name: "Nuageux pluie faible", clouds: 85, rain: 35,  vis: 8,   temp: -2, storm: false },
-  { name: "Pluie forte",          clouds: 95, rain: 80,  vis: 4,   temp: -3, storm: false },
-  { name: "Orage",                clouds: 98, rain: 100, vis: 1.5, temp: -5, storm: true },
-];
 export const DOUGLAS_LABEL = ["calme", "belle", "peu agitée", "agitée", "forte", "très forte", "grosse", "très grosse", "énorme", "monstrueuse"];
 export const douglasOf = (hs) =>
   hs < 0.1 ? 0 : hs < 0.5 ? 1 : hs < 1.25 ? 2 : hs < 2.5 ? 3 : hs < 4 ? 4 : hs < 6 ? 5 : hs < 9 ? 6 : hs < 14 ? 7 : hs < 20 ? 8 : 9;
@@ -448,7 +443,12 @@ const advOf = (y) => (y <= 16 ? 0.8 : y >= 30 ? 1.4 : 0.8 + ((y - 16) / 14) * 0.
 const UBP_PERT = [0, 0.366, 0.387, 0.509, 0.618, 0.689, 0.766]; // 7 classes de vent
 const PERT_SPEED_FAC = [0.75, 0.8, 0.85, 0.95, 1.05, 1.35, 1.9];
 const PERT_DEV_DEG = [4, 6, 10, 14, 18, 26, 40];
-const UBP_COND = [0, 0.387, 0.509, 0.618, 0.689, 0.766]; // 6 archétypes de conditions
+export const CONV_SIGMA = 1.8;      // demi-largeur du cœur convectif (°, ~90 km)
+const CONV_UP_MAX = 0.22;           // uplift max — l'orage exige la perturbation AUSSI
+export const SQUALL_GUST_KMH = 45;  // rafale d'un grain mûr (au-delà du fond)
+const SQUALL_GATE = 0.60;           // seuil d'intermittence (vnoise advecté)
+const SQUALL_CV_MIN = 0.62;         // indice convectif minimal pour lever un grain
+export const SQUALL_DRIFT_KMH = 25; // dérive OUEST des clusters (ondes alizées)
 // couche 4 — systèmes rares : cyclogenèse continue déterministe par graine
 export const GEN_HORIZON_H = 45 * 24; // 45 j d'histoire météo par graine
 const GENESIS = [
@@ -634,9 +634,50 @@ function sysContribution(st, x, y) {
   const fr = ((brgCenter + st.rot - 25) * Math.PI) / 180;
   return { inf, u: Math.sin(fr) * vt + st.du, v: Math.cos(fr) * vt + st.dv };
 }
-// Vent TOTAL : fond (3 couches) ⊕ systèmes, mélange vectoriel pondéré par
-// l'influence. Suit aussi l'influence dominante cyclonique/anticyclonique
-// (pour les conditions et le flag tempête).
+// ---------- CONVERGENCE ÉQUATORIALE (ITCZ) — le point de fusion ----------
+// Là où les deux flux se rencontrent, l'air ne peut que MONTER : c'est la
+// ligne de grains des marins. Méandrante, elle vit (dérive lente → visible
+// et prévisible à 48 h) et VARIE À LA GRAINE : latitude moyenne, méandre
+// principal et ondulation fine — chaque monde a sa géographie de
+// convergence propre. Pur : tout dérive de la graine en paramètre.
+export function convergenceY(x, h, seed) {
+  const ph = phaseOf(seed);
+  return 20.5 + 3 * hash2(seed, 3.3, 7.7)
+    + (2.2 + 3.2 * hash2(seed, 7.1, 2.2)) * Math.sin(x * 0.08 + ph + h * 0.004)
+    + (0.7 + 1.1 * hash2(seed, 11.9, 4.4)) * Math.sin(x * 0.21 + ph * 2 + h * 0.011);
+}
+// Indice convectif cv : la perturbation uq (advectée — voyage avec le flux)
+// ⊕ l'uplift de convergence (cloche autour de la ligne). Un même ciel
+// perturbé ne se lit PAS pareil à 8° de la ligne et dessus.
+function convAt(x, y, h, seed, bg) {
+  const d = y - convergenceY(x, h, seed);
+  const core = Math.exp(-(d / CONV_SIGMA) * (d / CONV_SIGMA));
+  return { d, core, cv: clamp(bg.uq + CONV_UP_MAX * core, 0, 1) };
+}
+
+// Rafales de grain : 40-60 km/h de rafales MALGRÉ les molles de fond —
+// l'identité d'un grain. Actives uniquement dans le cœur convectif, sous
+// un grain mûr. CADRE D'ADVECTION STABLE : tout le cœur convectif vit dans
+// les calmes équatoriaux où la direction locale swingue de ±150° — advecter
+// le grain « avec le flux local » balayait le point d'échantillonnage sur
+// un arc de ~33° de bruit : le grain clignotait (15 allumages/40 h à poste
+// fixe, sauts de 55 km/h entre cellules voisines). Les clusters de la vraie
+// ITCZ dérivent vers l'OUEST avec les ondes alizées : cadre fixe — le grain
+// est un objet cohérent qui passe (porte ~7 h, rampe ~175 km).
+function squallAt(x, y, h, seed, conv) {
+  if (conv.cv < SQUALL_CV_MIN || conv.core < 0.35) return 0;
+  const ax = SQUALL_DRIFT_KMH / DEG_KM; // °/h vers l'ouest → on échantillonne l'amont (est)
+  const g = vnoise((x + ax * h) / 3.5, y / 3.5, seed + 5.3);
+  if (g < SQUALL_GATE) return 0;
+  const sm01 = (a, b) => { const t = clamp((g - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+  return sm01(SQUALL_GATE, 0.92)
+    * clamp((conv.cv - SQUALL_CV_MIN) / 0.25, 0, 1)
+    * clamp(conv.core / 0.7, 0, 1);
+}
+
+// Vent TOTAL : fond (3 couches) ⊕ systèmes ⊕ rafales de grain, mélange
+// vectoriel pondéré par l'influence. Suit aussi l'influence dominante
+// cyclonique/anticyclonique et l'état convectif (pour les conditions).
 function windAt(x, y, h, seed, world) {
   const bg = backgroundWindAt(x, y, h, seed);
   const fv = ((bg.dir + 180) * Math.PI) / 180;
@@ -653,10 +694,21 @@ function windAt(x, y, h, seed, world) {
     if (s.kind === "anticyclone") antiInf = Math.max(antiInf, c.inf);
     else cyclInf = Math.max(cyclInf, c.inf);
   }
+  // grain : la rafale s'AJOUTE au fond, direction erratique autour du flux.
+  // GARDE-FOU (audit) : un système au-dessus = PAS de grain en plus — le
+  // cyclone EST déjà la convection (sinon double-comptage).
+  const conv = convAt(x, y, h, seed, bg);
+  const sq = squallAt(x, y, h, seed, conv) * (1 - Math.max(cyclInf, antiInf));
+  if (sq > 0) {
+    const gf = ((bg.dir + 180 + 33 * Math.sin(x * 0.9 + y * 0.7 + h * 2.1)) * Math.PI) / 180;
+    u += Math.sin(gf) * SQUALL_GUST_KMH * sq;
+    v += Math.cos(gf) * SQUALL_GUST_KMH * sq;
+  }
   return {
     spd: Math.round(Math.hypot(u, v) * 10) / 10,
     dir: ((Math.round((Math.atan2(u, v) * 180) / Math.PI) + 180) % 360 + 360) % 360,
     regime: bg.reg, uq: bg.uq, cyclInf, antiInf,
+    cv: conv.cv, core: conv.core, d: conv.d, squall: sq,
   };
 }
 // Relevé public des systèmes actifs (météo, positions absolues de PHÉNOMÈNES
@@ -667,6 +719,97 @@ export function systemsAt(tMin, seed, world) {
     .map((s) => systemState(s, seed, h, world))
     .filter(Boolean)
     .map((st) => ({ x: st.x, y: st.y, rKm: st.r * DEG_KM, label: st.label, effKmh: Math.round(st.vmax * st.env) }));
+}
+
+// ---------- CONDITIONS ÉMERGENTES — le même champ, interprété par bande ----------
+// Fini les 6 archétypes globaux : chaque bande climatique a SA lecture de la
+// perturbation (la pluie voyage toujours avec le vent). La convergence est
+// le point de fusion : grains et orages se concentrent sur la ligne, molles
+// et brume autour, alizés et westerlies gardent leurs climats propres.
+// Écheliers : [cv, nuages %, pluie %, vis km, Δtemp, orage, nom]
+const sm01b = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const LADDER_ALIZ = [
+  [0, 18, 0, 22, 4, false, "Alizés francs"],
+  [0.55, 18, 0, 22, 4, false, "Alizés francs"],
+  [0.70, 40, 0, 15, 2, false, "Ciel voilé"],
+  [0.82, 70, 35, 8, 1, false, "Averses d'alizés"],
+  [1, 88, 65, 4, 0, false, "Grain d'alizés"],
+];
+const LADDER_CONV = [
+  [0, 45, 0, 9, 2, false, "Molle équatoriale"],
+  [0.35, 45, 0, 9, 2, false, "Molle équatoriale"],
+  [0.62, 80, 45, 5, 1, false, "Grains épars"],
+  [0.85, 95, 85, 2, 0, true, "Ligne de grains"],
+  [1, 98, 100, 1.2, -1, true, "Orage de convergence"],
+];
+const LADDER_SUB = [
+  [0, 12, 0, 20, 5, false, "Calme subtropical"],
+  [0.7, 12, 0, 20, 5, false, "Calme subtropical"],
+  [1, 35, 0, 14, 3, false, "Vents variables"],
+];
+const LADDER_WEST = [
+  [0, 22, 0, 18, 3, false, "Éclaircies"],
+  [0.45, 22, 0, 18, 3, false, "Éclaircies"],
+  [0.65, 55, 0, 12, 1, false, "Ciel voilé"],
+  [0.76, 90, 60, 5, -1, false, "Front pluvieux"],
+  [1, 95, 75, 4, -2, false, "Coup de vent frontal"],
+];
+function ladderAt(cv, pts) {
+  for (let i = 0; i < pts.length - 1; i++) {
+    if (cv <= pts[i + 1][0]) {
+      const f = clamp((cv - pts[i][0]) / (pts[i + 1][0] - pts[i][0]), 0, 1);
+      const a = pts[i], b = pts[i + 1];
+      return {
+        clouds: a[1] + (b[1] - a[1]) * f, rain: a[2] + (b[2] - a[2]) * f,
+        vis: a[3] + (b[3] - a[3]) * f, temp: a[4] + (b[4] - a[4]) * f,
+        storm: f < 0.5 ? a[5] : b[5], name: f < 0.5 ? a[6] : b[6],
+      };
+    }
+  }
+  const l = pts[pts.length - 1];
+  return { clouds: l[1], rain: l[2], vis: l[3], temp: l[4], storm: l[5], name: l[6] };
+}
+// Conditions à (x, y, h) : mélange lisse des écheliers, pondéré par bande —
+// westerlies au nord, calmes subtropicaux entre la ligne et les westerlies,
+// convergence en cloche autour de la ligne, alizés au sud. w = résultat de
+// windAt (cv, d, cyclInf, antiInf, spd y transitent).
+function conditionsAt(x, y, h, seed, w) {
+  const cv = w.cv, d = w.d;
+  const wW = sm01b(29, 32, y);
+  const wS = sm01b(2.8, 5, d) * (1 - wW);
+  const wC = Math.exp(-(d / CONV_SIGMA) * (d / CONV_SIGMA)) * (1 - wW);
+  const wA = Math.max(0, 1 - wW - wS - wC);
+  const tot = wW + wS + wC + wA || 1;
+  const L = {
+    a: ladderAt(cv, LADDER_ALIZ), c: ladderAt(cv, LADDER_CONV),
+    s: ladderAt(cv, LADDER_SUB), w: ladderAt(cv, LADDER_WEST),
+  };
+  const mix = (k) => (L.a[k] * wA + L.c[k] * wC + L.s[k] * wS + L.w[k] * wW) / tot;
+  const dom = [["a", wA], ["c", wC], ["s", wS], ["w", wW]].sort((p, q) => q[1] - p[1])[0][0];
+  let clouds = clamp(mix("clouds") + 6 * Math.sin(x * 0.3 + h * 0.1 + seed), 0, 100);
+  let rain = clamp(mix("rain"), 0, 100);
+  let visibility = Math.max(0.3, mix("vis"));
+  const temp = 22 + 6 * Math.sin(y * 0.1) + mix("temp");
+  let storm = mix("storm") > 0.45;
+  let name = L[dom].name;
+  // systèmes : les conditions suivent la même influence que le vent
+  clouds = Math.min(100, clouds + w.cyclInf * 30);
+  rain = Math.min(100, rain + w.cyclInf * 60);
+  visibility = Math.max(1, visibility - w.cyclInf * 3);
+  clouds = clouds * (1 - w.antiInf) + 10 * w.antiInf;
+  rain = rain * (1 - w.antiInf);
+  visibility = Math.min(25, visibility + w.antiInf * 10);
+  // tempête : orage de convergence OU influence cyclonique forte, JAMAIS sous anticyclone
+  storm = (storm || (w.cyclInf >= 0.35 && w.spd >= 45)) && !(w.antiInf >= 0.5);
+  // brume : UNIQUEMENT en calme anticyclonique ou dans la molle équatoriale
+  // (autour de la ligne) — la brume devient un signal (calme dans le secteur)
+  const calmGate = w.antiInf >= 0.4 || (Math.abs(d) < CONV_SIGMA * 1.4 && w.spd < 15);
+  const fog = !storm && calmGate && vnoise((x + 0.03 * h) / 21, y / 21, seed + 7.7) > 0.6;
+  if (fog) { name = "Brouillard"; clouds = Math.max(clouds, 55); visibility = 0.6; }
+  return {
+    name, clouds: Math.round(clouds), rain: Math.round(rain),
+    visibility: Math.round(visibility * 10) / 10, temp: Math.round(temp), storm, fog,
+  };
 }
 
 // Houle propagée : mer du vent local ⊕ houle des orages lointains. Les
@@ -699,46 +842,24 @@ export function weatherAt(x, y, tMin, seed, world) {
   const h = tMin / 60;
   const sea = seaState(x, y, h, p, world);
   const w = sea.wind;
-  // --- conditions : 6 archétypes sur le MÊME uq (frères jumeaux du vent) ---
-  const uq = clamp(w.uq, 0, 1);
-  let nc = 5;
-  for (let i = 0; i < 5; i++) {
-    if (uq < UBP_COND[i + 1]) { nc = i + (uq - UBP_COND[i]) / (UBP_COND[i + 1] - UBP_COND[i]); break; }
-  }
-  const i0 = Math.floor(nc), f = nc - i0, i1 = Math.min(i0 + 1, ARCHETYPES.length - 1);
-  const A = ARCHETYPES[i0], B = ARCHETYPES[i1];
-  const mix = (a, b) => a + (b - a) * f;
-  let clouds = clamp(mix(A.clouds, B.clouds) + 6 * Math.sin(x * 0.3 + h * 0.1 + p), 0, 100);
-  let rain = clamp(mix(A.rain, B.rain), 0, 100);
-  let visibility = Math.max(0.3, mix(A.vis, B.vis));
-  const temp = 22 + 6 * Math.sin(y * 0.1) + mix(A.temp, B.temp);
-  const condStorm = mix(A.storm ? 1 : 0, B.storm ? 1 : 0) > 0.5;
-  let name = f < 0.5 ? A.name : B.name;
-  // --- conditions des systèmes (suivent la même influence que le vent) ---
-  clouds = Math.min(100, clouds + w.cyclInf * 30);
-  rain = Math.min(100, rain + w.cyclInf * 60);
-  visibility = Math.max(1, visibility - w.cyclInf * 3);
-  clouds = clouds * (1 - w.antiInf) + 10 * w.antiInf;
-  rain = rain * (1 - w.antiInf);
-  visibility = Math.min(25, visibility + w.antiInf * 10);
-  // --- tempête : perturbation d'orage OU cyclone actif, JAMAIS sous anticyclone ---
-  const storm = (condStorm || (w.cyclInf >= 0.35 && w.spd >= 45)) && !(w.antiInf >= 0.5);
-  // --- brume : UNIQUEMENT en calme anticyclonique ou dans la molle
-  //     équatoriale — la brume devient un signal (calme dans le secteur) ---
-  const calmGate = w.antiInf >= 0.4 || (w.regime.varsW >= 0.6 && w.spd < 15);
-  const fog = !storm && calmGate && vnoise((x + 0.03 * h) / 21, y / 21, p + 7.7) > 0.6;
-  if (fog) { name = "Brouillard"; clouds = Math.max(clouds, 55); visibility = 0.6; }
+  // --- conditions émergentes par bande : le même indice convectif cv
+  //     (perturbation uq ⊕ uplift de convergence), lu par l'échelier de
+  //     SA bande — la pluie voyage avec le vent, la convergence est le
+  //     point de fusion des deux hémisphères du flux ---
+  const cond = conditionsAt(x, y, h, p, w);
   // --- courant couplé au régime (offset d'Ekman, plage 1,1-2,05 préservée) ---
   const curDir = (w.regime.dir + CUR_EKMAN_DEG + 12 * Math.sin(h / 72 + x * 0.05) + 360) % 360;
   const curSpd = CUR_SPD_MIN_KMH + clamp((w.regime.spd - 9) / 23, 0, 1) * (CUR_SPD_MAX_KMH - CUR_SPD_MIN_KMH);
   const hs = Math.round(sea.hs * 10) / 10;
   return {
     windSpd: w.spd, windDir: w.dir,
-    clouds: clamp(Math.round(clouds), 0, 100), rain: Math.round(rain),
-    storm, fog, visibility: Math.round(visibility * 10) / 10,
-    temp: Math.round(temp), curDir: Math.round(curDir), curSpd: Math.round(curSpd * 10) / 10,
+    clouds: cond.clouds, rain: cond.rain,
+    storm: cond.storm, fog: cond.fog,
+    visibility: cond.visibility, temp: cond.temp,
+    gust: Math.round(SQUALL_GUST_KMH * w.squall),
+    curDir: Math.round(curDir), curSpd: Math.round(curSpd * 10) / 10,
     hs, period: Math.round(sea.period * 10) / 10, douglas: douglasOf(hs),
-    name, regime: w.regime.name,
+    name: cond.name, regime: w.regime.name,
   };
 }
 

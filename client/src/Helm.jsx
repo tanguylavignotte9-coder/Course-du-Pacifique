@@ -787,6 +787,9 @@ function WeatherBoard({ snap }) {
         <Gear size={18} />
       </div>
       <p className="engrave mb-2 text-center text-[9px] uppercase tracking-[0.18em]">{WX.name}</p>
+      {WX.gust > 0 && (
+        <p className="mb-2 text-center text-[9px] font-bold text-orange-300">⚡ rafale de grain +{WX.gust} km/h</p>
+      )}
       <div className="grid grid-cols-3 gap-2">
         {/* anémomètre = vent APPARENT du navire */}
         <Dial label="Anémomètre" value={player.awSpd} max={60} unit="km/h" color="#7dd3fc" />

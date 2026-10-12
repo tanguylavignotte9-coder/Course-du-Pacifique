@@ -378,7 +378,17 @@ export default function Manual({ onClose }) {
               innavigable.
             </P>
             <P>
-              Tempête = archétype d'orage OU influence cyclonique forte, SAUF sous anticyclone (la
+              Les CONDITIONS sont émergentes par bande : le même champ de perturbation est lu par
+              SA bande climatique — les alizés font des averses franches, les westerlies des fronts
+              pluvieux, et la CONVERGENCE ÉQUATORIALE (la « ligne de grains » des marins, indiquée
+              en pointillé rouge sur la carte) concentre grains et orages. La latitude de cette
+              ligne varie avec la graine du monde et elle dérive lentement : repérable et
+              prévisible sur 48 h. Autour d'elle, les calmes équatoriaux : molles, brume, grains
+              éclair — un grain y lève 40-60 km/h de rafales MALGRÉ le calme (point orange sur la
+              carte, ⚡ au pont et à votre position).
+            </P>
+            <P>
+              Tempête = orage de convergence OU influence cyclonique forte, SAUF sous anticyclone (la
               voile y est plafonnée à × {fmt(STORM_SAIL_MAX)}).
             </P>
             <P>

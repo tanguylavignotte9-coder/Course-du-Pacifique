@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, systemsAt, radioOk, notify, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, autoguideMode, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SPAWN_DIGEST_MIN, BEAST_SPAWN_DIGEST_MAX, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, NEWSLETTER_MIN, NEWS_MAX, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, PATROL_BERTH_KM, tracePush, condFactor, damagePart, DAMAGE_HIT_PCT } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, systemsAt, convergenceY, radioOk, notify, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, autoguideMode, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SPAWN_DIGEST_MIN, BEAST_SPAWN_DIGEST_MAX, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, NEWSLETTER_MIN, NEWS_MAX, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, PATROL_BERTH_KM, tracePush, condFactor, damagePart, DAMAGE_HIT_PCT } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -924,8 +924,9 @@ function nextNewsMin(t) {
 let nextNewsAtMin = nextNewsMin(gameMinutesNow());
 
 // Météo dominante d'un quadrant (grille 5×5 = 25 relevés déterministes
-// weatherAt au centre des cellules) : archétype majoritaire + vent et
-// visibilité moyens. Seed météo = celui de la course (météo uniforme).
+// weatherAt au centre des cellules) : condition dominante (noms par bande,
+// ex. « Coup de vent frontal », « Grains épars ») + vent et visibilité
+// moyens. Seed météo = celui de la course (météo uniforme).
 function quadWeather(x0, y0, now) {
   const counts = new Map();
   let wind = 0, vis = 0;
@@ -1402,11 +1403,19 @@ app.get("/api/wx", (req, res) => {
   for (let gx = 0; gx < 30; gx++)
     for (let gy = 0; gy < 30; gy++) {
       const w = weatherAt(gx * 2 + 1, gy * 2 + 1, st.t + h * 60, st.weatherSeed, world);
-      cells.push({ x: gx * 2 + 1, y: gy * 2 + 1, clouds: w.clouds, rain: w.rain, storm: w.storm, fog: w.fog, windSpd: w.windSpd, windDir: w.windDir });
+      // Les champs additionnels (name, temp, visibility, gust) servent le
+      // RELEVÉ COMPLET au survol de la vue Conditions — la carte affiche des
+      // quantités continues, pas des plaques par nom.
+      cells.push({ x: gx * 2 + 1, y: gy * 2 + 1, clouds: w.clouds, rain: w.rain, storm: w.storm, fog: w.fog, windSpd: w.windSpd, windDir: w.windDir, gust: w.gust, temp: w.temp, visibility: w.visibility, name: w.name });
     }
   const here = weatherAt(st.x, st.y, st.t + h * 60, st.weatherSeed, world);
   const systems = systemsAt(st.t + h * 60, st.weatherSeed, world);
-  res.json({ t: st.t, h, cells, here, systems });
+  // Ligne de convergence (le « serpent » de la graine course) : 31 points,
+  // pour le tracé pointillé de la vue Conditions.
+  const convLine = [];
+  const convH = (st.t + h * 60) / 60;
+  for (let lx = 0; lx <= MAP; lx += 2) convLine.push([lx, Math.round(convergenceY(lx, convH, st.weatherSeed) * 100) / 100]);
+  res.json({ t: st.t, h, cells, here, systems, convLine });
 });
 
 // ---------- API d'administration (interface /admin) ----------

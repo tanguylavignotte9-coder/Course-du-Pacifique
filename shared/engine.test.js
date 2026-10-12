@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildWorld, newPlayerState, tick, weatherAt, computeView, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, HORIZON_KM,
+  convergenceY, SQUALL_GUST_KMH, systemsAt,
   condFactor, damagePart, DAMAGE_HIT_PCT, DAMAGE_ROLL_MIN, DAMAGE_ROLL_PCT,
   distKm, CAPTURE_R_KM, DELIVERY_R_KM, WP_R_KM, DEG_KM, LONG_DECAY_KM, VMAX_KMH, DIESEL_SPD_KMH,
   sailAutoDrive, apparentWind, SAIL_SPD_KMH, clamp, callPosition, RARITY_MIN, bearingTo, segDistKm,
@@ -91,6 +92,108 @@ test("météo déterministe, en km/h et km", () => {
   assert.deepEqual(a, b);
   assert.ok(a.windSpd >= 8 && a.windSpd < 90, "vent en km/h plausible (plancher 8)");
   assert.ok(a.visibility <= 25, "visibilité en km");
+});
+
+// ---------- Météo v3 : convergence + conditions par bande + rafales de grain ----------
+test("météo v3 : le serpent de convergence varie à la graine et vit dans la bande équatoriale", () => {
+  for (const s of [9, 123, 350, 777, 2024, 5150]) {
+    let mn = 99, mx = -99;
+    for (let x = 0; x < 60; x++) for (let h = 0; h <= 168; h += 12) {
+      const y = convergenceY(x, h, s);
+      mn = Math.min(mn, y); mx = Math.max(mx, y);
+    }
+    assert.ok(mn >= 14 && mx <= 34, `la ligne reste dans la bande équatoriale (seed ${s}: [${mn.toFixed(1)}, ${mx.toFixed(1)}])`);
+  }
+  const lignes = new Set();
+  for (const s of [9, 123, 350, 777, 2024, 5150]) lignes.add(Math.round(convergenceY(30, 24, s) * 10) / 10);
+  assert.ok(lignes.size >= 5, "la latitude de la ligne dépend de la graine");
+});
+
+test("météo v3 : les tempêtes vivent sur la ligne de convergence (ou dans le vent d'un système)", () => {
+  let storms = 0, onLine = 0, inSystem = 0;
+  for (const s of [9, 123, 350]) {
+    for (let h = 0; h <= 156; h += 12) {
+      for (let x = 0; x < 60; x += 2) for (let y = 0; y < 60; y += 1) {
+        const w = weatherAt(x, y, h * 60, s);
+        if (!w.storm) continue;
+        storms++;
+        if (Math.abs(y - convergenceY(x, h, s)) <= 4.5) onLine++;
+        else if (w.windSpd >= 45) inSystem++; // flanc d'un cyclone : l'autre source de tempête
+      }
+    }
+  }
+  assert.ok(storms > 100, `des tempêtes existent (${storms} relevées)`);
+  assert.equal(storms, onLine + inSystem, "toute tempête est sur la ligne OU dans un vent ≥ 45 km/h de système");
+  assert.ok(onLine > 0.8 * storms, "la grande majorité des tempêtes vit sur la ligne de convergence (87,7 % mesuré)");
+});
+
+test("météo v3 : conditions par bande — chaque latitude lit SA perturbation", () => {
+  const ALIZ = new Set(["Alizés francs", "Ciel voilé", "Averses d'alizés", "Grain d'alizés"]);
+  const WEST = new Set(["Éclaircies", "Ciel voilé", "Front pluvieux", "Coup de vent frontal", "Brouillard"]);
+  for (const s of [9, 123, 350]) {
+    for (let h = 0; h <= 156; h += 12) {
+      assert.ok(ALIZ.has(weatherAt(30, 8, h * 60, s).name), "au sud : vocabulaire des alizés");
+      assert.ok(WEST.has(weatherAt(30, 50, h * 60, s).name), "au nord : vocabulaire des westerlies");
+    }
+  }
+  // la convergence concentre les orages : il existe une cellule « Ligne de
+  // grains » ou « Orage de convergence » en tempête, sur la ligne
+  let found = null;
+  outer: for (const s of [9, 123, 350]) {
+    for (let h = 0; h <= 156; h += 12) {
+      for (let x = 0; x < 60; x += 2) for (let y = 14; y <= 34; y += 0.5) {
+        const w = weatherAt(x, y, h * 60, s);
+        if ((w.name === "Ligne de grains" || w.name === "Orage de convergence") && w.storm && w.rain >= 60) { found = { s, h, x, y, w }; break outer; }
+      }
+    }
+  }
+  assert.ok(found, "une ligne de grains en tempête existe");
+  assert.ok(Math.abs(found.y - convergenceY(found.x, found.h, found.s)) <= 2.5, "et elle vit sur la ligne de convergence");
+});
+
+test("météo v3 : rafales de grain — dans le cœur convectif uniquement, bornées, verrouillées sous système", () => {
+  let gusts = 0, maxGust = 0;
+  for (const s of [9, 350]) {
+    for (let h = 0; h <= 168; h += 12) {
+      for (let x = 0; x < 60; x += 2) for (let y = 0; y < 60; y += 0.5) {
+        const w = weatherAt(x, y, h * 60, s);
+        assert.ok(w.gust >= 0 && w.gust <= SQUALL_GUST_KMH, "rafale bornée à SQUALL_GUST_KMH");
+        if (w.gust > 0) {
+          gusts++;
+          maxGust = Math.max(maxGust, w.gust);
+          assert.ok(Math.abs(y - convergenceY(x, h, s)) <= 4.5, "une rafale vit près de la ligne de convergence");
+        }
+      }
+    }
+  }
+  assert.ok(gusts > 100, `des grains existent (${gusts} relevés, max +${maxGust} km/h)`);
+  // garde-fou : sous un système installé (cœur pris de contrôle), PAS de grain
+  // en plus — le cyclone EST déjà la convection (sinon double-comptage).
+  let checked = 0;
+  outer: for (let s = 0; s < 60; s++) {
+    for (let t = 0; t <= 700 * 60; t += 12 * 60) {
+      for (const sys of systemsAt(t, s, null)) {
+        if (sys.effKmh < 25 || sys.x < 3 || sys.x > 57 || sys.y < 3 || sys.y > 57) continue;
+        for (let dx = -0.3; dx <= 0.3; dx += 0.15) for (let dy = -0.3; dy <= 0.3; dy += 0.15) {
+          assert.equal(weatherAt(sys.x + dx, sys.y + dy, t, s, null).gust, 0, "aucun grain sous un système installé");
+          checked++;
+        }
+        if (checked > 20) break outer;
+      }
+    }
+  }
+  assert.ok(checked > 20, `des cœurs de systèmes testés (${checked})`);
+});
+
+test("météo v3 : contrat weatherAt inchangé + champ additif gust", () => {
+  const w = weatherAt(30, 21, 600, 42);
+  for (const k of ["windSpd", "windDir", "clouds", "rain", "storm", "fog", "visibility", "temp",
+    "curDir", "curSpd", "hs", "period", "douglas", "name", "regime", "gust"]) {
+    assert.ok(k in w, `champ ${k} présent`);
+  }
+  assert.equal(typeof w.name, "string");
+  assert.equal(typeof w.regime, "string");
+  assert.ok(Number.isInteger(w.gust), "gust = entier km/h");
 });
 
 test("tick : navire au moteur avance et consomme", () => {
@@ -1502,7 +1605,11 @@ test("migration : état ancien sans consigne électrique → repli sur engine", 
 test("saut de temps (rejeu moteur) : 6 h par pas de 5 min → les 6 pulsations horaires, aucune manquée", () => {
   const w = buildWorld(42);
   const b = w.BEACONS[0];
-  const st = newPlayerState(w);
+  // weatherSeed ÉPINGLÉ : la balise est sur la ligne de convergence — sans
+  // cette graine calme, une « Ligne de grains » (storm) y abîme l'antenne et
+  // les pings suivants passent sous le seuil (flaky). logErr/compDev restent
+  // aléatoires mais n'influencent pas la réception à cette distance.
+  const st = newPlayerState(w, { weatherSeed: 0 });
   st.x = b.x; st.y = b.y; st.estX = b.x; st.estY = b.y; // sur la balise : eau libre par construction
   st.anchored = false;
   st.mast = false; st.engineOn = true; st.engine = 1; st.vkmh = DIESEL_SPD_KMH; // s'éloigne (~180 km en 6 h, sous le seuil omni)

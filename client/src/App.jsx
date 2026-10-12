@@ -64,6 +64,7 @@ export default function App() {
   const [manualOpen, setManualOpen] = useState(false);
   const [wxH, setWxH] = useState(0);
   const [wxData, setWxData] = useState(null);
+  const [wxHover, setWxHover] = useState(null); // cellule survolée (relevé complet)
   const sockRef = useRef(null);
 
   useEffect(() => {
@@ -282,10 +283,25 @@ export default function App() {
               {(wxData?.cells || []).map((c) => {
                 const S = 10;
                 const px = (x) => x * S, py = (y) => (MAP - y) * S;
-                const color = c.storm ? "#dc2626" : c.fog ? "#cbd5e1" : c.rain > 55 ? "#3b82f6" : c.rain > 20 ? "#64748b"
-                  : hexLerp("#fde68a", "#94a3b8", clamp(c.clouds / 100, 0, 1));
-                return <rect key={`${c.x}-${c.y}`} x={px(c.x) - S} y={py(c.y) - S} width={S * 2} height={S * 2} fill={color} />;
+                // RENDU SYNOPTIQUE : des QUANTITÉS continues, pas des plaques
+                // par nom — teinte du ciel selon la couverture, pluie en
+                // surcouche d'opacité, orage en contour, brume en gris, grain
+                // en point orange. Le nom reste une étiquette de marine.
+                const sky = hexLerp("#d8e6ee", "#5d6670", clamp(c.clouds / 100, 0, 1));
+                return (
+                  <g key={`${c.x}-${c.y}`} onMouseEnter={() => setWxHover(c)} onMouseLeave={() => setWxHover(null)}>
+                    <rect x={px(c.x) - S} y={py(c.y) - S} width={S * 2} height={S * 2} fill={sky} />
+                    {c.rain > 3 && <rect x={px(c.x) - S} y={py(c.y) - S} width={S * 2} height={S * 2} fill="#3b82f6" opacity={Math.min(0.55, c.rain / 160)} />}
+                    {c.fog && <rect x={px(c.x) - S} y={py(c.y) - S} width={S * 2} height={S * 2} fill="#cbd5e1" opacity="0.5" />}
+                    {c.storm && <rect x={px(c.x) - S + 0.5} y={py(c.y) - S + 0.5} width={S * 2 - 1} height={S * 2 - 1} fill="none" stroke="#a855f7" strokeWidth="1.5" />}
+                    {c.gust > 0 && <circle cx={px(c.x)} cy={py(c.y)} r="1.6" fill="#f97316" />}
+                  </g>
+                );
               })}
+              {/* ligne de convergence (ITCZ de la graine course) : le serpent */}
+              {wxData?.convLine?.length > 1 && (
+                <polyline points={wxData.convLine.map(([lx, ly]) => `${lx * 10},${(MAP - ly) * 10}`).join(" ")} fill="none" stroke="#ef4444" strokeWidth="1.6" strokeDasharray="5 4" opacity="0.9" />
+              )}
               <polygon points={snap.world.continent.map(([vx, vy]) => `${vx * 10},${(MAP - vy) * 10}`).join(" ")} fill="none" stroke="rgba(248,250,252,0.35)" strokeWidth="1" />
               {snap.world.islands.map((verts, i) => (
                 <polygon key={i} points={verts.map(([vx, vy]) => `${vx * 10},${(MAP - vy) * 10}`).join(" ")} fill="none" stroke="rgba(248,250,252,0.35)" strokeWidth="1" />
@@ -295,6 +311,17 @@ export default function App() {
               <circle cx={snap.player.estX * 10} cy={(MAP - snap.player.estY) * 10} r="7" fill="none" stroke="#f8fafc" strokeWidth="2" />
             </svg>
             )}
+            {wxTab === "prev" && (wxHover ? (
+              <div className="rounded-lg border border-[#4a3820] bg-[#0a0f16]/80 p-2.5 text-center text-xs text-amber-100/85">
+                <b className="text-[13px] text-amber-200">{wxHover.name}</b> — {Math.round(wxHover.x)}° E · {Math.round(wxHover.y)}° N<br />
+                vent <b className="text-sky-300">{wxHover.windSpd.toFixed(0)} km/h de {wxHover.windDir.toFixed(0)}°</b>
+                {wxHover.gust > 0 ? <span className="text-orange-300"> · ⚡ rafale de grain +{wxHover.gust} km/h</span> : ""}
+                <br />nuages <b className="text-sky-300">{wxHover.clouds} %</b> · pluie <b className="text-sky-300">{wxHover.rain} %</b> · visibilité <b className="text-sky-300">{wxHover.visibility.toFixed(1)} km</b> · <b className="text-sky-300">{wxHover.temp} °C</b>
+                {wxHover.storm ? " · ⛈️ TEMPÊTE" : wxHover.fog ? " · 🌫️ BROUILLARD" : ""}
+              </div>
+            ) : (
+              <p className="engrave text-center text-[8.5px] uppercase tracking-widest">Survolez une cellule pour le relevé complet — teinte = ciel · bleu = pluie · violet = orage · gris = brume · orange = grain · pointillé rouge = ligne de convergence</p>
+            ))}
             {wxTab === "vent" && (
             <svg viewBox={`0 0 600 600`} className="mx-auto w-full max-w-[440px] rounded-lg border border-[#4a3820] bg-[#0a2033]">
               {(wxData?.cells || []).map((c) => {
@@ -331,7 +358,9 @@ export default function App() {
               <circle cx={snap.player.estX * 10} cy={(MAP - snap.player.estY) * 10} r="7" fill="none" stroke="#f8fafc" strokeWidth="2" />
             </svg>
             )}
+            {wxTab === "vent" && (
             <p className="engrave text-center text-[8.5px] uppercase tracking-widest">calme &lt;15 · brise 15-30 · fort 30-45 · tempête &gt;45 km/h · pointillé = système</p>
+            )}
             <div className="flex items-center gap-3">
               <span className="engrave text-[8.5px] uppercase tracking-widest">Maintenant</span>
               <input type="range" min={0} max={WX_HORIZON_H} step={2} value={Math.min(wxH, WX_HORIZON_H)} onChange={(e) => setWxH(+e.target.value)} className="rng w-full" />
@@ -340,6 +369,8 @@ export default function App() {
             {wxData?.here && (
               <p className="rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 p-2.5 text-center text-xs text-amber-100/85">
                 À votre position à cet instant : vent <b className="text-sky-300">{wxData.here.windSpd.toFixed(0)} km/h de {wxData.here.windDir.toFixed(0)}°</b> · <b className="text-sky-300">{wxData.here.regime}</b> · mer <b className="text-sky-300">{DOUGLAS_LABEL[wxData.here.douglas]}</b> (<b className="text-sky-300">{wxData.here.hs.toFixed(1)} m</b>) · nuages <b className="text-sky-300">{wxData.here.clouds.toFixed(0)} %</b> · pluie <b className="text-sky-300">{wxData.here.rain.toFixed(0)} %</b> · visibilité <b className="text-sky-300">{wxData.here.visibility.toFixed(1)} km</b>
+                {wxData.here.gust > 0 ? " · ⚡ rafale de grain +" : ""}
+                {wxData.here.gust > 0 ? <b className="text-orange-300">{wxData.here.gust} km/h</b> : ""}
                 {wxData.here.storm ? " · ⛈️ TEMPÊTE" : wxData.here.fog ? " · 🌫️ BROUILLARD" : ""}
               </p>
             )}
