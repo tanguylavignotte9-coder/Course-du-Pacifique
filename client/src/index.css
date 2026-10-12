@@ -95,8 +95,6 @@ body {
 .rng::-webkit-slider-thumb { -webkit-appearance: none; width: 15px; height: 15px; border-radius: 50%;
   background: radial-gradient(circle at 35% 30%, #fcd34d, #b45309); border: 1px solid #78350f;
   box-shadow: 0 1px 4px rgba(0,0,0,0.75), inset 0 0 2px rgba(255,255,255,0.4); cursor: pointer; }
-.rng.purple::-webkit-slider-thumb { background: radial-gradient(circle at 35% 30%, #e9d5ff, #7e22ce);
-  border-color: #4c1d95; }
 /* --- manette d'antenne : grande, graduée, moletée (réglage fin) --- */
 .rngbig { -webkit-appearance: none; appearance: none; height: 14px; border-radius: 7px;
   background: linear-gradient(180deg, #17110a, #243444); outline: none; border: 1px solid #4a3820;

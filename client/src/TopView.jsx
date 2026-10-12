@@ -41,7 +41,7 @@ export default function TopView({ snap }) {
   const hr = (player.antBeam / 2) * Math.PI / 180;
   const antHeading = view.antHeading;
 
-  // interactions : molette zoom, pincement tactile, glisser = pan
+  // interactions : molette zoom, pincement tactile (pas de pan : le navire reste au centre)
   useEffect(() => {
     const el = svgRef.current;
     if (!el) return;

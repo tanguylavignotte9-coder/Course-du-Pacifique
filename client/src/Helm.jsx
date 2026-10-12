@@ -3,22 +3,15 @@ import NavMap from "./NavMap.jsx";
 import TopView from "./TopView.jsx";
 import Ambiance from "./Ambiance.jsx";
 import {
-  DEG_KM, MS_PER_MIN, CAPTURE_R_KM, DOUGLAS_LABEL, RARITY_STYLE,
-  AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT,
-  SONAR_RANGE_KM, SONAR_PING_BATTERY_COST, SONAR_ECHO_PERSIST_S,
+  CAPTURE_R_KM, DOUGLAS_LABEL, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT,
+  SONAR_RANGE_KM, SONAR_PING_BATTERY_COST, SONAR_ECHO_PERSIST_S, radioOk, angDiff,
 } from "../../shared/engine.js";
+import { gameHour, fmtT, fmtTime } from "./time.js";
 
 const AUTOGUIDE_LABEL = { off: "Aucun", active: "Actives", disabled: "Déjà capturées", all: "Toutes" };
 
 const wrap360 = (d) => ((d % 360) + 360) % 360;
-const wrap180 = (d) => (((d % 360) + 540) % 360) - 180;
 
-const fmtT = (t, epoch) => {
-  const d = new Date((epoch || 0) + t * MS_PER_MIN);
-  return d.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" }).toUpperCase()
-    + " " + d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-};
-const fmtTime = (t, epoch) => new Date((epoch || 0) + t * MS_PER_MIN).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
 
 // ---------- Vitres : fenêtre d'ambiance (ciel, mer, météo) — aucun gameplay ----------
 function WindowsBand({ hour, w, dive, peri, snap }) {
@@ -92,7 +85,7 @@ function Wheel({ order, heading, disabled, onOrder }) {
   const lastSent = useRef(0);
   const [live, setLive] = useState(null);
   useEffect(() => {
-    if (live != null && Math.abs(wrap180(order - live)) < 1.5) setLive(null);
+    if (live != null && Math.abs(angDiff(order, live)) < 1.5) setLive(null);
   }, [order]);
   const angFrom = (e) => {
     const r = ref.current.getBoundingClientRect();
@@ -194,25 +187,34 @@ function Binnacle({ heading, order }) {
 }
 
 // ---------- Poignée de machine (thermique) : moletée, graduations, throttle 10 Hz ----------
+// ---------- Poignée de machine (thermique) : moletée, graduations, throttle 10 Hz ----------
+// UN SEUL handler (onChange = événement input en React) : envoi throttlé à
+// 10 Hz + envoi final au relâchement. État local `live` : le curseur suit le
+// doigt entre deux snapshots (1 Hz), sans « retour élastique ».
 function HandleLever({ label, value, onChange, cyan }) {
   const lastSent = useRef(0);
-  const onInput = (e) => {
-    const v = +e.target.value;
+  const [live, setLive] = useState(null);
+  const send = (v, final) => {
+    if (final) { lastSent.current = 0; onChange(v); return; }
     const t = performance.now();
-    if (t - lastSent.current > 100) { lastSent.current = t; onChange(v, false); }
+    if (t - lastSent.current > 100) { lastSent.current = t; onChange(v); }
   };
+  const shown = live != null ? live : value;
+  const finish = (e) => { setLive(null); send(+e.target.value, true); };
   return (
     <div>
       <div className="flex items-center gap-2">
         <span className="engrave w-[86px] shrink-0 text-[9px] uppercase leading-tight tracking-wider">{label}</span>
-        <input type="range" min={0} max={100} value={value} onInput={onInput} onChange={(e) => onChange(+e.target.value, true)}
+        <input type="range" min={0} max={100} value={shown}
+          onChange={(e) => { setLive(+e.target.value); send(+e.target.value, false); }}
+          onPointerUp={finish} onPointerCancel={finish} onKeyUp={finish}
           className={`hnd w-full ${cyan ? "cyan" : ""}`} />
-        <span className="w-9 text-right font-mono text-[11px] text-amber-300">{value} %</span>
+        <span className="w-9 text-right font-mono text-[11px] text-amber-300">{shown} %</span>
       </div>
       <div className="ml-[94px] mr-[52px] mt-[3px] flex justify-between">
         {[0, 25, 50, 75, 100].map((k) => (
           <span key={k} className="flex flex-col items-center gap-px">
-            <span className={`w-px h-[5px] ${value >= k ? "bg-amber-400" : "bg-[#6b5a35]"}`} />
+            <span className={`w-px h-[5px] ${shown >= k ? "bg-amber-400" : "bg-[#6b5a35]"}`} />
             <span className="font-mono text-[6px] leading-none text-[#8a6d3b]">{k}</span>
           </span>
         ))}
@@ -434,10 +436,14 @@ function Counter({ label, value }) {
 // ---------- Antenne : manette graduée moletée, throttle 10 Hz + envoi final ----------
 function AntennaLever({ label, value, min, max, unit, onCommit }) {
   const lastSent = useRef(0);
-  const onInput = (e) => {
+  const [live, setLive] = useState(null);
+  const send = (v, final) => {
+    if (final) { lastSent.current = 0; onCommit(v); return; }
     const t = performance.now();
-    if (t - lastSent.current > 100) { lastSent.current = t; onCommit(+e.target.value); }
+    if (t - lastSent.current > 100) { lastSent.current = t; onCommit(v); }
   };
+  const shown = live != null ? live : value;
+  const finish = (e) => { setLive(null); send(+e.target.value, true); };
   return (
     <div className="flex items-center gap-2">
       <span className="engrave w-[52px] shrink-0 text-[8.5px] uppercase tracking-wider">{label}</span>
@@ -447,19 +453,17 @@ function AntennaLever({ label, value, min, max, unit, onCommit }) {
             <span key={i} className={`w-px ${i % 3 === 0 ? "h-[7px] bg-[#c9b48a]" : "h-[4px] bg-[#6b5a35]"}`} />
           ))}
         </div>
-        <input type="range" min={min} max={max} value={value} onInput={onInput} onChange={(e) => onCommit(+e.target.value)} className="rngbig w-full" />
+        <input type="range" min={min} max={max} value={shown}
+          onChange={(e) => { setLive(+e.target.value); send(+e.target.value, false); }}
+          onPointerUp={finish} onPointerCancel={finish} onKeyUp={finish}
+          className="rngbig w-full" />
       </div>
       <span className="w-[44px] shrink-0 rounded border border-[#5c3a1a] bg-[#08090a] py-0.5 text-center font-mono text-[11px] font-bold text-amber-300"
-        style={{ textShadow: "0 0 7px rgba(251,191,36,0.55)" }}>{value}{unit}</span>
+        style={{ textShadow: "0 0 7px rgba(251,191,36,0.55)" }}>{shown}{unit}</span>
     </div>
   );
 }
 
-// Radio muette si : ni surface, ni immersion+périscope, ou batteries à 0.
-const radioOk = (snap) => {
-  const p = snap.player;
-  return (p.location === "surface" || (p.location === "underwater" && p.periscope)) && p.battery > 0;
-};
 const view_antHeading = (snap) => (snap.view || {}).antHeading ?? ((snap.player.heading + snap.player.antOrient + 720) % 360);
 
 // ---------- Poste radio VHF : logique VhfKeypad réutilisée, habillage cuivre ----------
@@ -475,7 +479,7 @@ function RadioSet({ snap, cmd, dial, setDial, radioMode, setRadioMode }) {
   const az = (view_antHeading(snap) + 720) % 360;
   const beam = player.antBeam;
   const hr = (beam / 2) * Math.PI / 180;
-  const radioOn = radioOk(snap);
+  const radioOn = radioOk(player);
   const by = new Map();
   for (const sg of [...(player.signals || [])].reverse()) {
     const cur = by.get(sg.beaconId);
@@ -499,6 +503,13 @@ function RadioSet({ snap, cmd, dial, setDial, radioMode, setRadioMode }) {
       setLedUntil(Date.now() + 2000);
     }
   }, [sigKey]);
+  // Extinction par timer : sans re-rendu forcé, la LED traînait jusqu'au
+  // snapshot suivant (1 Hz).
+  useEffect(() => {
+    if (!ledUntil) return;
+    const id = setTimeout(() => setLedUntil(0), Math.max(0, ledUntil - Date.now()));
+    return () => clearTimeout(id);
+  }, [ledUntil]);
   // Émission : chaque bouton appelle tx() avant d'émettre.
   const tx = () => setLedUntil(Date.now() + 2000);
   const ledOn = Date.now() < ledUntil;
@@ -875,8 +886,7 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
   const player = snap.player;
   const weather = snap.weather;
   const view = snap.view || {};
-  const d = new Date(snap.epoch + snap.t * MS_PER_MIN);
-  const hour = d.getHours() + d.getMinutes() / 60;
+  const hour = gameHour(snap.t); // repère moteur : ciel synchronisé avec le serveur, sauts de temps inclus
   const [dial, setDial] = useState("");
   const [radioMode, setRadioMode] = useState("prive");
   const [logFilter, setLogFilter] = useState("tout");
@@ -1045,7 +1055,7 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
         </div>
 
         <p className="mt-4 text-center font-serif text-[11px] italic text-amber-200/50">
-          Poste de barre — branche experimental
+          Poste de barre — Pacific Chase
         </p>
       </div>
     </div>

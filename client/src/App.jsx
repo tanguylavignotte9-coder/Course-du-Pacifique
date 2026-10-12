@@ -2,17 +2,12 @@ import React, { useEffect, useRef, useState } from "react";
 import { login, GameSocket } from "./net.js";
 import Manual from "./Manual.jsx";
 import Helm from "./Helm.jsx";
-import { nextPhase } from "./NavMap.jsx";
 import {
-  MAP, DEG_KM, distKm, MS_PER_MIN, DELIVERY_R_KM, WX_HORIZON_H, DOUGLAS_LABEL,
+  MAP, DEG_KM, distKm, DELIVERY_R_KM, WX_HORIZON_H, DOUGLAS_LABEL, clamp, nextPhase,
 } from "../../shared/engine.js";
+import { fmtParis, fmtParisLong } from "./time.js";
+import { hexLerp } from "./color.js";
 
-const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-const mixHex = (a, b, t) => {
-  const pa = [1, 3, 5].map((i) => parseInt(a.slice(i, i + 2), 16));
-  const pb = [1, 3, 5].map((i) => parseInt(b.slice(i, i + 2), 16));
-  return "#" + pa.map((v, i) => Math.round(v + (pb[i] - v) * t).toString(16).padStart(2, "0")).join("");
-};
 
 // ---------- Écran de connexion (inchangé) ----------
 function Login({ onLogin }) {
@@ -162,7 +157,7 @@ export default function App() {
                 <div className="max-h-56 space-y-0.5 overflow-y-auto">
                   {[...snap.networkLog].reverse().map((e, i) => (
                     <p key={i} className="font-mono text-[10px] leading-snug tabular-nums text-amber-100/75">
-                      {new Date(snap.epoch + e.t * MS_PER_MIN).toLocaleString("fr-FR")} · {e.who} (navire {e.code}) — {e.place.kind === "port" ? "au port" : e.place.kind === "avant-poste" ? `à l'avant-poste ${e.place.id + 1}` : `à la balise ${e.place.id} (code ${e.place.code})`}
+                      {fmtParis(e.t, snap.epoch)} · {e.who} (navire {e.code}) — {e.place.kind === "port" ? "au port" : e.place.kind === "avant-poste" ? `à l'avant-poste ${e.place.id + 1}` : `à la balise ${e.place.id} (code ${e.place.code})`}
                     </p>
                   ))}
                 </div>
@@ -195,7 +190,7 @@ export default function App() {
             {[...(snap.news?.items || [])].reverse().map((n) => (
               <div key={n.seq} className="space-y-2.5 rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 p-3">
                 <p className="text-center font-serif text-[13px] font-bold text-amber-200">
-                  {new Date(snap.epoch + n.t * MS_PER_MIN).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })} — édition du {n.kind}
+                  {fmtParisLong(n.t, snap.epoch)} — édition du {n.kind}
                 </p>
                 <div>
                   <p className="engrave mb-1 text-[8.5px] uppercase tracking-[0.18em]">Classement officiel — balises livrées</p>
@@ -262,7 +257,7 @@ export default function App() {
                 const S = 10;
                 const px = (x) => x * S, py = (y) => (MAP - y) * S;
                 const color = c.storm ? "#dc2626" : c.fog ? "#cbd5e1" : c.rain > 55 ? "#3b82f6" : c.rain > 20 ? "#64748b"
-                  : mixHex("#fde68a", "#94a3b8", clamp(c.clouds / 100, 0, 1));
+                  : hexLerp("#fde68a", "#94a3b8", clamp(c.clouds / 100, 0, 1));
                 return <rect key={`${c.x}-${c.y}`} x={px(c.x) - S} y={py(c.y) - S} width={S * 2} height={S * 2} fill={color} />;
               })}
               <polygon points={snap.world.continent.map(([vx, vy]) => `${vx * 10},${(MAP - vy) * 10}`).join(" ")} fill="none" stroke="rgba(248,250,252,0.35)" strokeWidth="1" />

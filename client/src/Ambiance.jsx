@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
-// La visibilité météo est déjà exprimée en km (plus d'import nécessaire).
+import { mulberry32 } from "../../shared/engine.js";
+import { hexLerp } from "./color.js";
 
 // ============================================================
 // Scène d'ambiance — fenêtre d'ambiance embarquée dans le poste de barre.
@@ -14,11 +15,6 @@ const SKY_STOPS = [
   [8, "#075985", "#0ea5e9"], [13, "#0369a1", "#38bdf8"], [18, "#075985", "#0ea5e9"],
   [19.5, "#581c87", "#f97316"], [21, "#020617", "#0b2447"], [24, "#020617", "#0b2447"],
 ];
-function hexLerp(a, b, f) {
-  const pa = [1, 3, 5].map((i) => parseInt(a.slice(i, i + 2), 16));
-  const pb = [1, 3, 5].map((i) => parseInt(b.slice(i, i + 2), 16));
-  return `rgb(${pa.map((v, i) => Math.round(v + (pb[i] - v) * f)).join(",")})`;
-}
 function skyColors(h) {
   let i = 0;
   while (i < SKY_STOPS.length - 2 && h >= SKY_STOPS[i + 1][0]) i++;
@@ -29,14 +25,6 @@ function skyColors(h) {
 }
 
 // Décor déterministe (étoiles, bulles, nuages) — mêmes positions à chaque partie.
-function mulberry32(a) {
-  return function () {
-    a |= 0; a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 const STARS = (() => { const r = mulberry32(90210); return Array.from({ length: 46 }, () => ({ x: r() * 100, y: r() * 52, s: 1 + Math.round(r() * 2), d: Math.round(r() * 30) / 10 })); })();
 const BUBBLES = (() => { const r = mulberry32(31415); return Array.from({ length: 14 }, () => ({ x: r() * 100, s: 3 + Math.round(r() * 6), dur: 7 + Math.round(r() * 9), del: Math.round(r() * 10) })); })();
 const CLOUDS = (() => {

@@ -1,9 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
-import { MAP, DEG_KM, distKm, PINS_MAX } from "../../shared/engine.js";
+import { MAP, DEG_KM, distKm, PINS_MAX, clamp } from "../../shared/engine.js";
 // ---------- NavMap : carte papier (punaises, mesures, tracé, pilote, trace, zoom/pan/pinch) ----------
 // Extrait TEL QUEL de l'ancien App.jsx — logique interne intacte (clics francs,
 // letterbox, pincement, suppression), habillage cuivre de la table à cartes.
-const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 function ToolBtn({ active, onClick, disabled, children, title }) {
   return (
@@ -326,12 +325,4 @@ export default function NavMap({ snap, sock }) {
       </div>
     </div>
   );
-}
-
-// Minutes à simuler pour atteindre la prochaine heure cible (0-23) du jeu.
-export function nextPhase(tMin, targetHour) {
-  const cur = tMin / 60;
-  let delta = (targetHour - (cur % 24) + 24) % 24;
-  if (delta === 0) delta = 24; // pile sur l'heure cible : prochaine occurrence = demain
-  return delta * 60;            // sinon : on saute les quelques minutes restantes (plus de 24 h à 6 min de la cible)
 }
