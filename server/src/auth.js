@@ -8,6 +8,7 @@ export function hashPassword(password, salt = crypto.randomBytes(16).toString("h
 }
 export function verifyPassword(password, salt, hash) {
   const h = crypto.scryptSync(password, salt, 32).toString("hex");
+  if (h.length !== hash.length) return false; // save corrompue : pas d'exception de timingSafeEqual
   return crypto.timingSafeEqual(Buffer.from(h, "hex"), Buffer.from(hash, "hex"));
 }
 export const newToken = () => crypto.randomBytes(24).toString("hex");
@@ -38,9 +39,5 @@ export class Auth {
   }
   accountOf(token) {
     return this.store.data.tokens[token] || null;
-  }
-  logout(token) {
-    delete this.store.data.tokens[token];
-    this.store.save();
   }
 }

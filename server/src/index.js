@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, systemsAt, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SPAWN_DIGEST_MIN, BEAST_SPAWN_DIGEST_MAX, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, coastStep, PATROL_BERTH_KM, tracePush, condFactor, damagePart, DAMAGE_HIT_PCT } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, systemsAt, radioOk, notify, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SPAWN_DIGEST_MIN, BEAST_SPAWN_DIGEST_MAX, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, PATROL_BERTH_KM, tracePush, condFactor, damagePart, DAMAGE_HIT_PCT } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -223,6 +223,7 @@ function loadOrCreateRace() {
     store.data.races["default"] = r;
     store.save();
   }
+  delete r.spawnOrder; // persistance morte : le spawn vit par takenSpawns
   const world = buildWorld(r.seed);
   if (!fresh && r.beacons) {
     for (const b of world.BEACONS) {
@@ -424,6 +425,7 @@ for (const [id, saved] of Object.entries(race.players || {})) {
   if (saved) {
     states.set(id, saved);
     states.get(id).t = gameMinutesNow();
+    delete states.get(id).ffEvents; // champ mort (plus écrit par le moteur) : purge des vieilles sauvegardes
     // migration : un état ancien sans consigne prend son cap actuel
     if (states.get(id).headingOrder == null) states.get(id).headingOrder = states.get(id).heading;
     if (!Array.isArray(states.get(id).waypoints)) {
@@ -502,8 +504,7 @@ let lastNpcT = gameMinutesNow();
 // cargos et au SOS d'un bateau attaqué (famille longue — un SOS porte loin).
 const radioSend = (fromX, fromY, deliver, decayKm = LONG_DECAY_KM) => {
   for (const [oid, ost] of states) {
-    const radioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
-    if (!radioOk) continue;
+    if (!radioOk(ost)) continue;
     const dKm = distKm(ost.x, ost.y, fromX, fromY);
     const strength = strengthKm(dKm, decayKm);
     if (strength < RADIO_MIN_STRENGTH) continue;
@@ -620,8 +621,7 @@ function npcPass(now) {
     f.lastChatIdx = idx;
     const line = pool[idx];
     radioSend(f.x, f.y, (ost, cap) => {
-      ost.notifSeq = (ost.notifSeq || 0) + 1;
-      ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: `📻 Navire ${f.code} : « ${line} »`, kind: "info", cat: "radio" });
+      notify(ost, `📻 Navire ${f.code} : « ${line} »`, "info", "radio");
     }, SHORT_DECAY_KM);
   }
   // Cargos : message PRIVÉ vers un autre cargo — les joueurs ne sont jamais
@@ -630,9 +630,8 @@ function npcPass(now) {
     if (now < c.nextMsgMin) continue;
     c.nextMsgMin = nextNpcEventMin(now, CARGO_MSG_MEAN_MIN);
     radioSend(c.x, c.y, (ost, cap) => {
-      ost.notifSeq = (ost.notifSeq || 0) + 1;
       const info = scrambledIntercept(Math.round(cap.strength), cap.source, cap.side);
-      ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: info.text, kind: "info", cat: info.cat });
+      notify(ost, info.text, "info", info.cat);
     });
   }
   // Chant de baleine : bruit sonar passif (kind « biologique », retard réel)
@@ -715,8 +714,7 @@ function beastPass(now) {
       // position déclarée — un vrai SOS, il sert à retrouver l'épave.
       const sosText = `🆘 SOS du navire ${eaten.code} — position déclarée : ${eaten.y.toFixed(2)}°N ${eaten.x.toFixed(2)}°E — quelque chose nous percute, on coule !`;
       radioSend(eaten.x, eaten.y, (ost, cap) => {
-        ost.notifSeq = (ost.notifSeq || 0) + 1;
-        ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: sosText, kind: "bad", cat: "radio" });
+        notify(ost, sosText, "bad", "radio");
         // Télémetre caché : le SOS (position déclarée) est consigné — la
         // compagnie lit aussi les ondes de sa propre flotte.
         telemeter(ost, { k: "sos", x: eaten.x, y: eaten.y, t: ost.t });
@@ -765,13 +763,9 @@ function beastPass(now) {
       // Télémetre caché : une trace découverte est un POINT QUASI EXACT
       // pour la carte de la compagnie — la preuve la plus forte qui soit.
       telemeter(st, { k: "trace", x: tr.x, y: tr.y, t: st.t });
-      st.notifSeq = (st.notifSeq || 0) + 1;
-      st.notifications.unshift({
-        id: st.notifSeq, t: st.t, kind: "info", cat: "vision",
-        text: tr.kind === "epave"
-          ? "🚢 Une épave dérive — coque déchiquetée, aucun survivant en vue."
-          : "🩸 La mer est rouge de sang sur des centaines de mètres — une carcasse tourne lentement.",
-      });
+      notify(st, tr.kind === "epave"
+        ? "🚢 Une épave dérive — coque déchiquetée, aucun survivant en vue."
+        : "🩸 La mer est rouge de sang sur des centaines de mètres — une carcasse tourne lentement.", "info", "vision");
     }
   }
 }
@@ -871,11 +865,7 @@ function patrolPass(now) {
     const det = Math.min(w.visibility, night ? PATROL_VIS_NUIT_KM : PATROL_VIS_KM);
     const visible = distKm(st.x, st.y, patrol.x, patrol.y) <= det;
     if (visible && !st.sawPatrol) {
-      st.notifSeq = (st.notifSeq || 0) + 1;
-      st.notifications.unshift({
-        id: st.notifSeq, t: st.t, kind: "info", cat: "vision",
-        text: `🚢 Frégate de la Patrouille repérée : ~${Math.round(distKm(st.x, st.y, patrol.x, patrol.y))} km — grande coque grise, marque MaxMedia.`,
-      });
+      notify(st, `🚢 Frégate de la Patrouille repérée : ~${Math.round(distKm(st.x, st.y, patrol.x, patrol.y))} km — grande coque grise, marque MaxMedia.`, "info", "vision");
     }
     st.sawPatrol = visible;
   }
@@ -1003,12 +993,6 @@ function ensureState(id) {
     // Météo UNIFORME : le seed météo est celui de la course — tous les
     // joueurs vivent le même ciel aux mêmes positions.
     // Spawn : slot d'amarrage unique par joueur (pas de chevauchement).
-    if (!race.spawnOrder) race.spawnOrder = {};
-    if (race.spawnOrder[id] == null) {
-      race.spawnOrder[id] = Object.keys(race.spawnOrder).length;
-      store.save();
-    }
-    const spawnIdx = race.spawnOrder[id];
     // Le poste de la frégate est réservé : jamais de spawn joueur dessus.
     if (race.patrol && !takenSpawns.some((t) => t.x === race.patrol.x && t.y === race.patrol.y))
       takenSpawns.push({ x: race.patrol.x, y: race.patrol.y });
@@ -1069,8 +1053,7 @@ function proxPass(now) {
     if (next != null && now < next) continue;
     proxNextMin.set(b.code, now + proxPingIntervalS(dMin) / 60);
     for (const st of states.values()) {
-      const radioOk = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
-      if (!radioOk) continue;
+      if (!radioOk(st)) continue;
       const cap = detectBeacon(st, b, world, SHORT_DECAY_KM);
       if (cap) onProximityPing(st, b, cap);
     }
@@ -1186,15 +1169,13 @@ function multiplayerPass(now) {
       if (!before.includes(tid)) {
         const ti = infos.get(tid).st;
         const km = distKm(st.x, st.y, ti.x, ti.y);
-        st.notifSeq = (st.notifSeq || 0) + 1;
         const az = Math.round((Math.atan2(ti.x - st.x, ti.y - st.y) * 180) / Math.PI + 360) % 360;
-        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⛵ Navire repéré (${infos.get(tid).st.code}) : ~${Math.round(km)} km, azimut ${az}°.`, kind: "info", cat: "vision" });
+        notify(st, `⛵ Navire repéré (${infos.get(tid).st.code}) : ~${Math.round(km)} km, azimut ${az}°.`, "info", "vision");
       }
     }
     for (const tid of before) {
       if (!seen.includes(tid)) {
-        st.notifSeq = (st.notifSeq || 0) + 1;
-        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `👁️ Navire ${infos.get(tid).st.code} perdu de vue.`, kind: "info", cat: "vision" });
+        notify(st, `👁️ Navire ${infos.get(tid).st.code} perdu de vue.`, "info", "vision");
       }
     }
     st.sawShips = seen;
@@ -1209,8 +1190,7 @@ function multiplayerPass(now) {
       if (shipsCollide(a.x, a.y, a.heading + (a.compDev || 0), b.x, b.y, b.heading + (b.compDev || 0))) {
         for (const st of [a, b]) {
           if (!st.collided) {
-            st.notifSeq = (st.notifSeq || 0) + 1;
-            st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "💥 Contact avec un autre navire — vitesse stoppée. Écartez-vous en changeant de cap.", kind: "warn", cat: "alertes" });
+            notify(st, "💥 Contact avec un autre navire — vitesse stoppée. Écartez-vous en changeant de cap.", "warn", "alertes");
           }
           st.collided = true;
           st.vkmh = 0;
@@ -1239,17 +1219,15 @@ function multiplayerPass(now) {
 function broadcastScrambledFrom(fromX, fromY, exceptId) {
   for (const [oid, ost] of states) {
     if (oid === exceptId) continue;
-    const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
-    if (!otherRadioOk) continue;
+    if (!radioOk(ost)) continue;
     const dKm = distKm(fromX, fromY, ost.x, ost.y);
     const strength = longStrengthKm(dKm);
     if (strength < RADIO_MIN_STRENGTH) continue;
     const brg = bearingTo(ost.x, ost.y, fromX, fromY);
     const cap = recvCapture(ost, brg, strength);
     if (!cap) continue; // ne capte pas : silence
-    ost.notifSeq = (ost.notifSeq || 0) + 1;
     const info = scrambledIntercept(Math.round(strength), cap.source, cap.side);
-    ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: info.text, kind: "info", cat: info.cat });
+    notify(ost, info.text, "info", info.cat);
   }
 }
 
@@ -1282,9 +1260,7 @@ function rescueShip(id, st) {
   st.vkmh = 0; st.anchored = true; st.grounded = false;
   st.groundHitArmed = true; st.needsRescue = false;
   st.beaconLock = null; st.lockBrg = null; st.autopilot = false;
-  st.notifSeq = (st.notifSeq || 0) + 1;
-  st.notifications.unshift({ id: st.notifSeq, t: st.t, kind: "warn", cat: "navire",
-    text: "🚢 Coque brisée — remorquage par la compagnie : navire remis à neuf au port. Stock de codes perdu : les balises correspondantes redeviennent capturables." });
+  notify(st, "🚢 Coque brisée — remorquage par la compagnie : navire remis à neuf au port. Stock de codes perdu : les balises correspondantes redeviennent capturables.", "warn", "navire");
   store.save();
 }
 
@@ -1377,10 +1353,23 @@ function publicSnapshot(id) {
   };
 }
 
+const loginFails = new Map(); // compte -> { n, until } : 5 échecs → 15 min de verrou
+
 app.post("/api/login", (req, res) => {
   const { name, password } = req.body || {};
+  const id0 = String(name || "").trim().toLowerCase();
+  const f = loginFails.get(id0);
+  if (f && Date.now() < f.until)
+    return res.status(429).json({ error: "compte temporairement verrouillé (trop d'essais)" });
   const token = auth.login(name, password);
-  if (!token) return res.status(401).json({ error: "identifiants invalides" });
+  if (!token) {
+    const rec = loginFails.get(id0) || { n: 0, until: 0 };
+    rec.n += 1;
+    if (rec.n >= 5) { rec.until = Date.now() + 15 * 60000; rec.n = 0; }
+    loginFails.set(id0, rec);
+    return res.status(401).json({ error: "identifiants invalides" });
+  }
+  loginFails.delete(id0);
   const id = auth.accountOf(token);
   ensureState(id);
   res.setHeader("Set-Cookie", `pc_token=${token}; Path=/; HttpOnly; SameSite=Lax`);
@@ -1529,6 +1518,10 @@ wss.on("connection", (ws, req) => {
     try { msg = JSON.parse(buf.toString()); } catch { return; }
     const st = ensureState(id);
     if (msg.type === "command") {
+      const nowMs = Date.now();
+      if (nowMs > ws._budgetReset) { ws._cmdBudget = 20; ws._budgetReset = nowMs + 1000; }
+      if ((ws._cmdBudget ?? 20) <= 0) return; // rafale : ignorée, le snapshot suivant rétablit la vérité
+      ws._cmdBudget = (ws._cmdBudget ?? 20) - 1;
       const c = msg.data || {};
       // Pilotage par CONSIGNE : le curseur fixe headingOrder, le moteur
       // fait converger le cap réel (giration bornée). L'ancien champ
@@ -1562,8 +1555,7 @@ wss.on("connection", (ws, req) => {
       if (c.capture === true) {
         const r = captureBeacon(st, world);
         if (!r.ok) {
-          st.notifSeq = (st.notifSeq || 0) + 1;
-          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⚠️ ${r.error}`, kind: "warn", cat: "radio" });
+          notify(st, `⚠️ ${r.error}`, "warn", "radio");
         }
       }
       // Sonar actif : UN clic = UN ping (plongée uniquement, 1 % batterie).
@@ -1590,8 +1582,7 @@ wss.on("connection", (ws, req) => {
           ((race.npcs || {}).whales || []).concat(carcasses),
         );
         if (!res.ok) {
-          st.notifSeq = (st.notifSeq || 0) + 1;
-          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `⚠️ Sonar : ${res.error}`, kind: "warn", cat: "sonar" });
+          notify(st, `⚠️ Sonar : ${res.error}`, "warn", "sonar");
         } else {
           const pend = sonarPending.get(id) || [];
           for (const e of res.echoes) pend.push({ kind: e.kind, az: e.az, distKm: e.dKm, arriveMin: e.arriveMin });
@@ -1610,8 +1601,7 @@ wss.on("connection", (ws, req) => {
             });
             sonarNoisePending.set(oid, q);
           }
-          st.notifSeq = (st.notifSeq || 0) + 1;
-          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🔊 Ping émis (1 % batteries).", kind: "info", cat: "sonar" });
+          notify(st, "🔊 Ping émis (1 % batteries).", "info", "sonar");
         }
       }
       if (c.dive === true) { st.location = "underwater"; st.mast = false; st.engineOn = false; }
@@ -1633,11 +1623,9 @@ wss.on("connection", (ws, req) => {
       // quotidienne. Chaque REconnexion écrit une nouvelle entrée.
       if (c.network === true) {
         if (!netZone(st)) {
-          st.notifSeq = (st.notifSeq || 0) + 1;
-          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "⚠️ NETWORK : aucune station à portée (port, avant-poste ou balise à ≤ 500 m).", kind: "warn", cat: "radio" });
+          notify(st, "⚠️ NETWORK : aucune station à portée (port, avant-poste ou balise à ≤ 500 m).", "warn", "radio");
         } else if (st.networked) {
-          st.notifSeq = (st.notifSeq || 0) + 1;
-          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🌐 NETWORK : déjà connecté.", kind: "info", cat: "radio" });
+          notify(st, "🌐 NETWORK : déjà connecté.", "info", "radio");
         } else {
           st.networked = true;
           let place;
@@ -1660,9 +1648,7 @@ wss.on("connection", (ws, req) => {
             st.telemetry = [];
           }
           store.save();
-          st.notifSeq = (st.notifSeq || 0) + 1;
-          st.notifications.unshift({ id: st.notifSeq, t: st.t, kind: "good", cat: "radio",
-            text: "🌐 Connecté au NETWORK — identité et code enregistrés dans le journal global. Météo 48 h disponible." });
+          notify(st, "🌐 Connecté au NETWORK — identité et code enregistrés dans le journal global. Météo 48 h disponible.", "good", "radio");
         }
       }
       // Appel « Position ? » : coût batteries, réponse privée de la balise,
@@ -1672,24 +1658,20 @@ wss.on("connection", (ws, req) => {
       // de l'émission double chemin. Le contenu inclut la position ESTIMÉE
       // de l'émetteur (ce qu'il croit — ses instruments, pas la vérité).
       if (c.sos === true) {
-        const radioOkSos = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
-        if (radioOkSos) {
+        if (radioOk(st)) {
           st.battery = Math.max(0, st.battery - CALL_BATTERY_COST);
           const sosText = `🆘 SOS du navire ${st.code} — position déclarée : ${st.estY.toFixed(2)}°N ${st.estX.toFixed(2)}°E (±${Math.round(st.unc)} km).`;
-          st.notifSeq = (st.notifSeq || 0) + 1;
-          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `${sosText} Diffusion émise.`, kind: "warn", cat: "radio" });
+          notify(st, `${sosText} Diffusion émise.`, "warn", "radio");
           for (const [oid, ost] of states) {
             if (oid === id) continue;
-            const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
-            if (!otherRadioOk) continue;
+            if (!radioOk(ost)) continue;
             const dKm = distKm(ost.x, ost.y, st.x, st.y);
             const brg = bearingTo(ost.x, ost.y, st.x, st.y);
             const strength = longStrengthKm(dKm) * condFactor(st.antH); // émission navire : omni, longue — antenne avariée : émission affaiblie
             if (strength < RADIO_MIN_STRENGTH) continue;
             const cap = recvCapture(ost, brg, strength); // lire exige capter
             if (!cap) continue;
-            ost.notifSeq = (ost.notifSeq || 0) + 1;
-            ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: sosText, kind: "bad", cat: "radio" });
+            notify(ost, sosText, "bad", "radio");
           }
         }
       }
@@ -1699,18 +1681,14 @@ wss.on("connection", (ws, req) => {
       // automatiquement (c'est leur fonction).
       // shipMsg: { kind: "posq" | "mypos", to?: "1234" } — sans `to` : diffusion.
       if (c.shipMsg && ["posq", "mypos"].includes(c.shipMsg.kind)) {
-        const radioOkMsg = (st.location === "surface" || (st.location === "underwater" && st.periscope)) && st.battery > 0;
-        if (radioOkMsg) {
+        if (radioOk(st)) {
           st.battery = Math.max(0, st.battery - CALL_BATTERY_COST);
           const isBroadcast = !c.shipMsg.to;
-          const buildText = (recipientEst) => {
-            if (c.shipMsg.kind === "posq") return `❓ Navire ${st.code} demande : « Position ? »`;
-            return `📍 Navire ${st.code} communique sa position : ${st.estY.toFixed(2)}°N ${st.estX.toFixed(2)}°E (±${Math.round(st.unc)} km)`;
-          };
-          const text = buildText();
+          const text = c.shipMsg.kind === "posq"
+            ? `❓ Navire ${st.code} demande : « Position ? »`
+            : `📍 Navire ${st.code} communique sa position : ${st.estY.toFixed(2)}°N ${st.estX.toFixed(2)}°E (±${Math.round(st.unc)} km)`;
           const label = c.shipMsg.kind === "posq" ? "« Position ? »" : "« Ma position »";
-          st.notifSeq = (st.notifSeq || 0) + 1;
-          st.notifications.unshift({ id: st.notifSeq, t: st.t, text: `📡 Message ${label} ${isBroadcast ? "diffusé" : `émis vers ${c.shipMsg.to}`} (0,5 % batteries).`, kind: "info", cat: "radio" });
+          notify(st, `📡 Message ${label} ${isBroadcast ? "diffusé" : `émis vers ${c.shipMsg.to}`} (0,5 % batteries).`, "info", "radio");
           // « Position ? » adressé : si le code composé est une BALISE, elle
           // l'interprète automatiquement et répond (réponse gratuite : le coût
           // a déjà été débité par l'émission du message). Si c'est un navire,
@@ -1722,48 +1700,52 @@ wss.on("connection", (ws, req) => {
           }
           for (const [oid, ost] of states) {
             if (oid === id) continue;
-            const otherRadioOk = (ost.location === "surface" || (ost.location === "underwater" && ost.periscope)) && ost.battery > 0;
-            if (!otherRadioOk) continue;
+            if (!radioOk(ost)) continue;
             const dKm = distKm(ost.x, ost.y, st.x, st.y);
             const brg = bearingTo(ost.x, ost.y, st.x, st.y);
             const strength = longStrengthKm(dKm) * condFactor(st.antH); // émission navire : omni, longue — antenne avariée : émission affaiblie
             if (strength < RADIO_MIN_STRENGTH) continue;
             const cap = recvCapture(ost, brg, strength); // lire exige capter
             if (!cap) continue;
-            ost.notifSeq = (ost.notifSeq || 0) + 1;
             if (isBroadcast) {
               // diffusion : contenu lisible par tous
-              ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text, kind: "info", cat: "radio" });
+              notify(ost, text, "info", "radio");
             } else if (ost.code === c.shipMsg.to) {
               // destinataire : contenu privé lisible
-              ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text, kind: "good", cat: "radio" });
+              notify(ost, text, "good", "radio");
             } else {
               // tiers : transmission brouillée, aucun contenu
               const info = scrambledIntercept(Math.round(strength), cap.source, cap.side);
-              ost.notifications.unshift({ id: ost.notifSeq, t: ost.t, text: info.text, kind: "info", cat: info.cat });
+              notify(ost, info.text, "info", info.cat);
             }
           }
         }
       }
       // Avitaillement uniquement à quai (port ou avant-poste) : contrôle
       // serveur — le client masquant le bouton ne suffit pas (anti-triche)
-      if (c.refuel === true && st.location === "surface" &&
-          (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
-           world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM))) {
-        st.fuel = 100; st.food = 100;
-        st.notifSeq = (st.notifSeq || 0) + 1;
-        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🛒 Avitaillement complet : carburant et vivres à 100 %.", kind: "good", cat: "navire" });
+      if (c.refuel === true) {
+        if (st.location === "surface" &&
+            (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
+             world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM))) {
+          st.fuel = 100; st.food = 100;
+          notify(st, "🛒 Avitaillement complet : carburant et vivres à 100 %.", "good", "navire");
+        } else {
+          notify(st, "⚠️ Avitaillement refusé : il faut être en surface, à quai (port ou avant-poste).", "warn", "navire");
+        }
       }
 
       // Radoub (réparation santé) : gratuit et instantané, uniquement à quai —
       // même garde anti-triche serveur que l'avitaillement (le client masquant
       // le bouton ne suffit pas).
-      if (c.repair === true && st.location === "surface" &&
-          (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
-           world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM))) {
-        st.hullH = 100; st.sailH = 100; st.antH = 100; st.groundHitArmed = true; st.needsRescue = false;
-        st.notifSeq = (st.notifSeq || 0) + 1;
-        st.notifications.unshift({ id: st.notifSeq, t: st.t, text: "🛠️ Radoub complet : coque, voilure et antenne réparées (100 %).", kind: "good", cat: "navire" });
+      if (c.repair === true) {
+        if (st.location === "surface" &&
+            (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
+             world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM))) {
+          st.hullH = 100; st.sailH = 100; st.antH = 100; st.groundHitArmed = true; st.needsRescue = false;
+          notify(st, "🛠️ Radoub complet : coque, voilure et antenne réparées (100 %).", "good", "navire");
+        } else {
+          notify(st, "⚠️ Radoub refusé : il faut être en surface, à quai (port ou avant-poste).", "warn", "navire");
+        }
       }
       // Planificateur : points de passage (max 30, coordonnées bornées à la
       // carte). Toute modification de route relance la visée au 1er point.
@@ -1799,9 +1781,7 @@ wss.on("connection", (ws, req) => {
         // seulement le maître de course.
         const dur = mins % 60 === 0 ? `+${mins / 60} h` : `+${mins} min`;
         for (const [, pst] of states) {
-          pst.notifSeq = (pst.notifSeq || 0) + 1;
-          pst.notifications.unshift({ id: pst.notifSeq, t: pst.t, text: `⏱️ Saut de temps du maître de course : ${dur}.`, kind: "info", cat: "navire" });
-          if (pst.notifications.length > NOTIF_MAX) pst.notifications.pop();
+          notify(pst, `⏱️ Saut de temps du maître de course : ${dur}.`, "info", "navire");
         }
       }
       // Reset de la course : nouvelle graine (nouveau monde, nouvelles
@@ -1816,7 +1796,6 @@ wss.on("connection", (ws, req) => {
         race.beacons = undefined;
         race.npcs = undefined; // nouvelle population régénérée en fin de reset, sur le nouveau monde
         race.network = [];      // nouvelle course : journal global réinitialisé
-        race.spawnOrder = {};   // réattribué ci-dessous, dans l'ordre actuel
         takenSpawns = [];       // nouvelle course : quai vidé
         const fresh = buildWorld(race.seed);
         world.PORT = fresh.PORT; world.CONTINENT = fresh.CONTINENT;
@@ -1826,10 +1805,8 @@ wss.on("connection", (ws, req) => {
         // Réattribution des slots d'amarrage (espacement 50 m) et de codes
         // radio NEUFS, garantis sans collision avec les STATIONS (balises,
         // port, avant-postes) de la NOUVELLE graine ni entre navires.
-        let slotIdx = 0;
         const usedCodes = new Set([world.PORT.code, ...world.OUTPOSTS.map((o) => o.code), ...world.BEACONS.map((b) => b.code)]);
         for (const [pid] of states) {
-          race.spawnOrder[pid] = slotIdx;
           let shipCode;
           do {
             shipCode = randomCode();
@@ -1843,7 +1820,6 @@ wss.on("connection", (ws, req) => {
           nst.t = gameMinutesNow();
           states.set(pid, nst);
           race.players[pid] = nst;
-          slotIdx++;
         }
         // Sonar : l'état éphémère suit la remise à neuf
         for (const m of [noiseHistory, sonarPending, sonarLive, sonarNoisePending, sonarHeard, bioPending, bioHeard]) m.clear();
@@ -1877,8 +1853,7 @@ wss.on("connection", (ws, req) => {
         // remplacé dans `states` par le rebuild ci-dessus (sinon : notif perdue)
         const newSt = states.get(id);
         if (newSt) {
-          newSt.notifSeq = (newSt.notifSeq || 0) + 1;
-          newSt.notifications.unshift({ id: newSt.notifSeq, t: newSt.t, text: "🔄 Course réinitialisée : nouveau monde, nouvelles balises, navires à quai. Horloge re-synchronisée sur Paris.", kind: "good", cat: "navire" });
+          notify(newSt, "🔄 Course réinitialisée : nouveau monde, nouvelles balises, navires à quai. Horloge re-synchronisée sur Paris.", "good", "navire");
         }
       }
       persistPlayer(id);
@@ -1890,6 +1865,7 @@ wss.on("connection", (ws, req) => {
 
   ws.on("close", () => {
     sockets.get(id)?.delete(ws);
+    if (sockets.get(id)?.size === 0) sockets.delete(id); // l'entrée vide ne s'accumule pas
     persistPlayer(id);
   });
 });

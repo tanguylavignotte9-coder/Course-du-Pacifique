@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 // Persistance JSON simple : courses, joueurs, états. Écriture atomique
 // (fichier temporaire + rename) pour survivre à un arrêt brutal du PC.
