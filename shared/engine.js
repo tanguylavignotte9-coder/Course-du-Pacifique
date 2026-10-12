@@ -2241,6 +2241,13 @@ export function tick(st, dtMin, world) {
     notify(st, `Situation météo : ${st.weatherName} → ${w.name}.`, "info", "meteo");
   }
   st.weatherName = w.name;
+  // Anémomètre de pont : le vent apparent est lu à CHAQUE tick, hors de toute
+  // condition de mât, d'ancre ou de propulsion. Avant, la lecture ne vivait
+  // QUE via la poussée de voile en navigation : à quai (ancre jetée) ou mât
+  // rentré, l'instrument restait figé à sa dernière valeur — 0 au départ.
+  const awRead = apparentWind(st, w);
+  st.awSpd = Math.round(awRead.aw * 10) / 10;
+  st.awRel = awRead.side === "T" ? Math.round(awRead.g) : -Math.round(awRead.g);
   const hour = (st.t / 60) % 24;
   const daylight = hour >= 6 && hour < 20;
 

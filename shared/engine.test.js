@@ -1656,6 +1656,31 @@ test("surface : le moteur ÉLECTRIQUE consomme les batteries en surface (régime
     `décharge ≥ BATT_PERISCOPE_PCT_H × 0,5 en surface (obtenu ${b0 - st.battery})`);
 });
 
+test("anémomètre de pont : le vent apparent est lu À QUAI (ancre jetée, mât rentré)", () => {
+  const w = buildWorld(42);
+  const st = newPlayerState(w); // naît à quai : anchored=true, mast=false
+  for (let i = 0; i < 10; i++) tick(st, 1, w); // 10 min à quai, mât rentré
+  // Ancien bug : awSpd n'était mis à jour QUE via la poussée de voile en
+  // navigation (speedKmh) — à quai l'instrument restait figé à 0.
+  const wt = weatherAt(st.x, st.y, st.t, st.weatherSeed, w);
+  const ref = apparentWind(st, wt); // bateau à l'arrêt : apparent = vent vrai
+  assert.ok(ref.aw > 0, "la météo garantit du vent (plancher)");
+  assert.ok(st.awSpd > 0, `l'anémomètre vit à quai (obtenu ${st.awSpd})`);
+  assert.equal(st.awSpd, Math.round(ref.aw * 10) / 10);
+  assert.equal(st.awRel, ref.side === "T" ? Math.round(ref.g) : -Math.round(ref.g));
+});
+
+test("compteur kilométrique journalier : repart de zéro au changement de jour (minuit)", () => {
+  const w = buildWorld(42);
+  const st = shipAtSea(w, {}); // en mer, cible thermique 30 km/h
+  st.t = 1439; st.dayIdx = 0; // 23 h 59 du jour 0
+  st.travelledKm = 10; st.dailyKm = 10;
+  tick(st, 1, w); // passage de 23 h 59 à 00 h 00
+  assert.equal(st.dayIdx, 1, "changement de jour");
+  assert.ok(st.dailyKm < 1, `km du jour repart de ~0 à minuit (obtenu ${st.dailyKm})`);
+  assert.ok(st.travelledKm > 10, "le total cumulé ne se remet jamais à zéro");
+});
+
 test("saut de temps (rejeu moteur) : 6 h par pas de 5 min → les 6 pulsations horaires, aucune manquée", () => {
   const w = buildWorld(42);
   const b = w.BEACONS[0];

@@ -938,11 +938,25 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
                 )}
               </button>
               {superBlock}
+              {/* Avitaillement + NETWORK : haut DROITE de la page, bord
+                  extérieur de l'en-tête, juste au-dessus de la fenêtre */}
+              <div className="ml-auto flex flex-wrap items-center gap-2">
+                {canShop && <button onClick={onShop} className="plate rounded px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider hover:brightness-110">📦 Avitaillement</button>}
+                {snap.networkZone && <button onClick={onNetwork} className="plate rounded px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider hover:brightness-110">📡 NETWORK</button>}
+              </div>
             </div>
           </div>
           <div className="flex flex-col items-center gap-3 xl:flex-row">
             <div className="w-full xl:w-[30%]">
               <WindowsBand hour={hour} w={weather} dive={uw} peri={player.periscope} snap={snap} />
+              {/* Compteurs de navigation : incertitude, distance cumulée,
+                  km du jour (reset à minuit) — SOUS la fenêtre d'ambiance,
+                  sur l'extérieur de son cadre */}
+              <div className="mt-2 flex flex-wrap items-center justify-center gap-2 rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 px-2 py-2">
+                <Counter label="incertitude km" value={player.unc.toFixed(1)} />
+                <Counter label="distance km" value={Math.round(player.travelledKm)} />
+                <Counter label="km du jour" value={Math.round(player.dailyKm ?? 0)} />
+              </div>
             </div>
             <div className="w-full xl:flex-1">
               <div className="flex items-center justify-center gap-2">
@@ -961,10 +975,6 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
             <div className="w-full xl:w-[34%]">
               <LogBook snap={snap} filter={logFilter} setFilter={setLogFilter} />
             </div>
-          </div>
-          <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
-            {canShop && <button onClick={onShop} className="plate rounded px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider hover:brightness-110">📦 Avitaillement</button>}
-            {snap.networkZone && <button onClick={onNetwork} className="plate rounded px-2.5 py-1 text-[9px] font-bold uppercase tracking-wider hover:brightness-110">📡 NETWORK</button>}
           </div>
         </div>
 
@@ -991,7 +1001,7 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
               </p>
 
               {/* Rangée navigation de base : vitesse · drisse de voile ·
-                  interrupteurs voile et ancre (l'un au-dessus de l'autre) */}
+                  interrupteurs mât et ancre (l'un au-dessus de l'autre) */}
               <div className="mt-2.5 flex items-center justify-center gap-2.5">
                 <Dial label="Vitesse" value={player.vkmh} max={VMAX_KMH} unit="km/h" color="#38bdf8" />
                 <RopeHandle value={player.sail} onCommit={(v) => cmd({ sail: v })} />
@@ -1036,11 +1046,6 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
                 <Dial label="🍲 Vivres" value={player.food} max={100} unit="%" color="#e879f9" />
               </div>
 
-              <div className="mt-2 flex flex-wrap items-center justify-center gap-2 rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 px-2 py-2">
-                <Counter label="incertitude km" value={player.unc.toFixed(1)} />
-                <Counter label="distance km" value={Math.round(player.travelledKm)} />
-              </div>
-
               <div className="mt-2.5 flex justify-center">
                 <button onClick={() => cmd({ capture: true })} disabled={!canCapture}
                   className={`flex items-center gap-2 rounded-full border-2 py-1 pl-1.5 pr-3 transition-transform hover:scale-[1.03] ${canCapture
@@ -1069,11 +1074,11 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
             </div>
           </div>
 
-          {/* RADIO + SONAR + INSTRUMENTS DE PONT */}
+          {/* INSTRUMENTS DE PONT + RADIO + SONAR */}
           <div className="col-span-12 space-y-3 xl:col-span-4">
+            <WeatherBoard snap={snap} />
             <RadioSet snap={snap} cmd={cmd} dial={dial} setDial={setDial} radioMode={radioMode} setRadioMode={setRadioMode} />
             <SonarScope snap={snap} cmd={cmd} />
-            <WeatherBoard snap={snap} />
           </div>
         </div>
 
