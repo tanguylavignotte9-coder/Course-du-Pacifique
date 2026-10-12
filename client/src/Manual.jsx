@@ -21,10 +21,18 @@ import {
   NAVFIX_CLOUD_KM, NAVFIX_SEA_KM, NAVFIX_VIS_KM, NAVFIX_VIS_REF_KM,
   HORIZON_KM, SAIL_DEFAULT, SHIP_VIS_LIGHT,
   SAIL_EFF_CURVE, SAIL_FURL_DEG, STORM_SAIL_MAX, WIND_FACTOR_CAP,
+  WIND_FLOOR_KMH, GEN_HORIZON_H, SWELL_KMH, LEEWAY_K, CUR_EKMAN_DEG,
+  VISFIX_ISLE_KM, VISFIX_BEACON_KM, VISFIX_PORT_KM, VISFIX_COAST_KM, SOLAR_CLOUD_REF_PCT,
+  DAMAGE_HIT_PCT, DAMAGE_ROLL_MIN, DAMAGE_ROLL_PCT, DAMAGE_WIND_KMH, DAMAGE_SPEED_KMH, DAMAGE_SEA_MIN,
+  BEAST_SPD_KMH, BEAST_DIGEST_MIN, BEAST_DIGEST_MAX, BEAST_STRIKE_KM,
+  BEAST_FLEE_LONG_KMH, BEAST_FLEE_LONG_MIN, BEAST_FLEE_SHORT_KM, BEAST_FLEE_SILENCE_MIN,
+  BEAST_TRACE_PERSIST_MIN, BEAST_CRY_MEAN_MIN, PATROL_SPD_KMH, PATROL_VIS_KM, PATROL_VIS_NUIT_KM,
+  FISHER_CHAT_MEAN_MIN, NEWSLETTER_MIN, NEWS_MAX,
+  BEACON_COUNTS, ISLAND_COUNT, OUTPOST_COUNT,
   SOUND_KMH, SOUND_DECAY_KM, SONAR_RANGE_KM, SONAR_PING_BATTERY_COST, SONAR_ECHO_PERSIST_S,
   NPC_FISHERMEN, NPC_CARGOS, NPC_WHALES, FISHER_RANGE_KM, FISHER_SPD_KMH,
   CARGO_SPD_KMH, WHALE_SPD_KMH,
-  RARITY_MIN, RARITY_STYLE, VIS_BASE, VIS_NUIT,
+  RARITY_MIN, RARITY_STYLE, VIS_BASE, VIS_NUIT, clamp, sailAutoDrive,
 } from "../../shared/engine.js";
 
 const fmt = (v) => (typeof v === "number" ? String(Math.round(v * 10) / 10).replace(".", ",") : String(v));
@@ -35,6 +43,22 @@ const DIR_LONG_KM = LONG_DECAY_KM * (1 - dirSensitivity(1) / 100);  // lecture d
 const SONAR_MAX_RANGE_KM = Math.max(...Object.values(SONAR_RANGE_KM)); // portée max du ping (îles/côte)
 const ECHO_FULL_MIN = (2 * SONAR_MAX_RANGE_KM) / (SOUND_KMH / 60);     // aller-retour plein portée
 const SONG_FULL_MIN = SOUND_DECAY_KM.biologique / (SOUND_KMH / 60);    // chant au bord de sa portée
+
+// Vitesses stabilisées par allure à vent de référence (point fixe du vent
+// apparent, calculé depuis sailAutoDrive du moteur — jamais figé)
+const ALLURES = [["au près serré", 45], ["au travers", 90], ["au largue", 135], ["au vent arrière", 180]];
+function steadySpeed(awAngle, windSpd) {
+  const st = { heading: 0, compDev: 0, vkmh: 0, boom: 0 };
+  const w = { windSpd, windDir: awAngle, storm: false };
+  let v = 0;
+  for (let i = 0; i < 200; i++) {
+    st.vkmh = v;
+    const { drive, aw } = sailAutoDrive(st, w);
+    const target = Math.min(SAIL_SPD_KMH * clamp(aw / WIND_REF_KMH, 0, WIND_FACTOR_CAP) * drive, VMAX_KMH);
+    v = v + (target - v) * 0.3; // amortissement : convergence du point fixe oscillant
+  }
+  return v;
+}
 
 function Sec({ t, children, open }) {
   return (
@@ -70,7 +94,8 @@ const ANNEX = [
     rows: [
       ["Carte", MAP + "° × " + MAP + "° — " + fmt(MAP * DEG_KM) + " km de côté (1° = " + fmt(DEG_KM) + " km)"],
       ["Séparation minimale des îles", fmt(ISLAND_SEP_KM) + " km"],
-      ["Balises", "40 : 20 communes, 10 rares, 5 légendaires, 5 inconnues"],
+      ["Balises", Object.values(BEACON_COUNTS).reduce((a, b) => a + b, 0) + " : " + Object.entries(BEACON_COUNTS).map(([r, n]) => n + " " + r).join(", ")],
+      ["Îles / avant-postes", ISLAND_COUNT + " îles · " + Math.min(OUTPOST_COUNT, ISLAND_COUNT) + " avant-postes"],
       ["Points", "commune " + RARITY_STYLE.commune.pts + " · rare " + RARITY_STYLE.rare.pts + " · légendaire " + RARITY_STYLE.legendaire.pts + " · inconnue " + RARITY_STYLE.inconnue.pts],
       ...Object.entries(RARITY_MIN).map(([r, m]) => [
         "Placement " + r, "≥ " + m.port + " km du port · ≥ " + m.outpost + " km d'un avant-poste · ≥ " + m.beacon + " km d'une autre balise",
@@ -132,9 +157,14 @@ const ANNEX = [
     rows: [
       ["Déviation de compas", "± " + fmt(COMP_DEV_MIN_DEG) + " à " + fmt(COMP_DEV_MAX_DEG) + "°"],
       ["Erreur de loch", "± " + fmt(LOG_ERR_MIN_PCT) + " à " + fmt(LOG_ERR_MAX_PCT) + " %"],
-      ["Courant", fmt(CUR_SPD_MIN_KMH) + " à " + fmt(CUR_SPD_MAX_KMH) + " km/h (jamais intégré à l'estime)"],
+      ["Courant", fmt(CUR_SPD_MIN_KMH) + " à " + fmt(CUR_SPD_MAX_KMH) + " km/h — couplé au régime météo (offset d'Ekman " + fmt(CUR_EKMAN_DEG) + "°), jamais intégré à l'estime"],
       ["Croissance de l'incertitude", "+ " + fmt(UNC_PER_KM) + " km par km parcouru · + " + fmt(UNC_PER_H) + " km par heure"],
       ["Point aux étoiles", fmt(NAVFIX_MIN) + " min · plancher " + fmt(NAVFIX_BASE_KM) + " km · + " + fmt(NAVFIX_CLOUD_KM) + " km par % de nuages · + " + fmt(NAVFIX_SEA_KM) + " km par m de houle · + " + fmt(NAVFIX_VIS_KM) + " km par km de visibilité sous " + fmt(NAVFIX_VIS_REF_KM) + " km · nouvelle tentative " + fmt(NAVFIX_RETRY_MIN) + " min après échec"],
+      ["Point visuel — plancher île", fmt(VISFIX_ISLE_KM) + " km"],
+      ["Point visuel — plancher balise / avant-poste", fmt(VISFIX_BEACON_KM) + " km"],
+      ["Point visuel — plancher port", fmt(VISFIX_PORT_KM) + " km"],
+      ["Point visuel — plancher côte", fmt(VISFIX_COAST_KM) + " km"],
+      ["Leeway", "≈ " + fmt(LEEWAY_K * 100) + " % de la vitesse du vent, jamais intégré à l'estime"],
       ...Object.entries(VIS_BASE).map(([kind, d]) => [
         "Point visuel " + kind, "jour : " + fmt(d) + " km · nuit : " + fmt(VIS_NUIT[kind]) + " km",
       ]),
@@ -146,7 +176,7 @@ const ANNEX = [
       ["Carburant (moteur plein)", fmt(FUEL_RATE_PCT_H) + " %/h"],
       ["Batteries en plongée", fmt(BATT_SUB_PCT_H) + " %/h"],
       ["Batteries en périscope", fmt(BATT_PERISCOPE_PCT_H) + " %/h"],
-      ["Solaire (de jour)", "+ " + fmt(SOLAR_PCT_H) + " %/h"],
+      ["Solaire (de jour)", "+ " + fmt(SOLAR_PCT_H) + " %/h, atténué par la couverture nuageuse, nul à " + fmt(SOLAR_CLOUD_REF_PCT) + " %"],
       ["Vivres", fmt(FOOD_PCT_H) + " %/h"],
       ["Alerte ressources", fmt(RES_WARN_PCT) + " % — réarmée au-dessus de " + fmt(RES_WARN_RESET_PCT) + " %"],
     ],
@@ -155,7 +185,7 @@ const ANNEX = [
     titre: "Sonar",
     rows: [
       ["Vitesse du son (eau)", "≈ " + fmt(SOUND_KMH) + " km/h"],
-      ["Décroissance des bruits", "par type — moteur " + fmt(SOUND_DECAY_KM.moteur) + " · pêcheur " + fmt(SOUND_DECAY_KM.pecheur) + " · cargo " + fmt(SOUND_DECAY_KM.cargo) + " · ping " + fmt(SOUND_DECAY_KM.ping) + " · biologique " + fmt(SOUND_DECAY_KM.biologique) + " km"],
+      ["Décroissance des bruits", "par type — " + Object.entries(SOUND_DECAY_KM).map(([k, d]) => k + " " + fmt(d)).join(" · ") + " km"],
       ["Portée du ping actif", "par écho — île " + fmt(SONAR_RANGE_KM.ile) + " · côte " + fmt(SONAR_RANGE_KM.cote) + " · balise " + fmt(SONAR_RANGE_KM.balise) + " · navire " + fmt(SONAR_RANGE_KM.navire) + " · biologique " + fmt(SONAR_RANGE_KM.biologique) + " km"],
       ["Coût d'un ping", fmt(SONAR_PING_BATTERY_COST) + " % de batterie"],
       ["Affichage d'un écho", fmt(SONAR_ECHO_PERSIST_S) + " s"],
@@ -169,6 +199,46 @@ const ANNEX = [
       ["Pêcheurs", fmt(NPC_FISHERMEN) + " — transit " + fmt(FISHER_SPD_KMH) + " km/h, jusqu'à " + fmt(FISHER_RANGE_KM) + " km au large"],
       ["Cargos", fmt(NPC_CARGOS) + " — traversée " + fmt(CARGO_SPD_KMH) + " km/h"],
       ["Baleines", fmt(NPC_WHALES) + " — errance " + fmt(WHALE_SPD_KMH) + " km/h"],
+      ["Bafouillage radio des pêcheurs", "toutes les " + fmt(FISHER_CHAT_MEAN_MIN) + " min en moyenne (diffusion lisible par tous, famille courte)"],
+      ["Bête — chasse", fmt(BEAST_SPD_KMH) + " km/h · cri toutes les " + fmt(BEAST_CRY_MEAN_MIN) + " min en moyenne"],
+      ["Bête — digestion", fmt(BEAST_DIGEST_MIN / 60) + " à " + fmt(BEAST_DIGEST_MAX / 60) + " h"],
+      ["Bête — frappe", "à ≤ " + fmt(BEAST_STRIKE_KM) + " km : − " + fmt(DAMAGE_HIT_PCT) + " % coque, voilure et antenne"],
+      ["Bête — fuite post-engagement", fmt(BEAST_FLEE_LONG_KMH) + " km/h pendant " + fmt(BEAST_FLEE_LONG_MIN / 60) + " h, ou " + fmt(BEAST_FLEE_SHORT_KM) + " km d'un coup · silence " + fmt(BEAST_FLEE_SILENCE_MIN / 60) + " h"],
+      ["Bête — traces", fmt(BEAST_TRACE_PERSIST_MIN / 60) + " h de visibilité"],
+      ["Frégate de patrouille", fmt(PATROL_SPD_KMH) + " km/h · visible jour " + fmt(PATROL_VIS_KM) + " km / nuit " + fmt(PATROL_VIS_NUIT_KM) + " km (feux)"],
+    ],
+  },
+  {
+    titre: "Santé du navire",
+    rows: [
+      ["Jauges", "coque · voilure · antenne — 100 % → 0 %, efficacité × 1 → × 0,5"],
+      ["Tirage des avaries", "toutes les " + fmt(DAMAGE_ROLL_MIN) + " min de jeu, " + fmt(DAMAGE_ROLL_PCT) + " % par tirage"],
+      ["Avarie de toile", "voilure hissée sous vent ≥ " + fmt(DAMAGE_WIND_KMH) + " km/h ou tempête"],
+      ["Avarie de coque (mer)", "vitesse ≥ " + fmt(DAMAGE_SPEED_KMH) + " km/h dans un état de mer ≥ " + fmt(DAMAGE_SEA_MIN)],
+      ["Avarie d'antenne", "en tempête"],
+      ["Dégât par coup", "− " + fmt(DAMAGE_HIT_PCT) + " % (échouement et heurt de limite inclus)"],
+      ["Coque 0 %", "remorquage : retour au port, navire neuf, stock de codes perdu"],
+      ["Radoub", "gratuit, instantané, à quai uniquement (port ou avant-poste, en surface)"],
+    ],
+  },
+  {
+    titre: "Météo & océan",
+    rows: [
+      ["Vent plancher", fmt(WIND_FLOOR_KMH) + " km/h (aucune latitude innavigable)"],
+      ["Houle propagée", fmt(SWELL_KMH) + " km/h — la mer se dégrade avant le vent local"],
+      ["Leeway (dérive de coque)", "≈ " + fmt(LEEWAY_K * 100) + " % de la vitesse du vent, jamais intégré à l'estime"],
+      ["Courant — offset d'Ekman", fmt(CUR_EKMAN_DEG) + "° sur la direction du régime (prévisible)"],
+      ["Histoire météo par graine", fmt(GEN_HORIZON_H / 24) + " jours"],
+      ["Horizon des prévisions", fmt(WX_HORIZON_H) + " h (port, avant-postes, NETWORK)"],
+    ],
+  },
+  {
+    titre: "Bulletin officiel",
+    rows: [
+      ["Éditions", Math.round(NEWSLETTER_MIN[0] / 60) + " h et " + Math.round(NEWSLETTER_MIN[1] / 60) + " h (heure de Paris)"],
+      ["Réception", "tous les navigateurs, même hors ligne (badge de non-lus)"],
+      ["Contenu", "classement officiel (livrés) · classement officieux (en cale) · météo des 4 quadrants · zone d'exclusion publiée"],
+      ["Archive", NEWS_MAX + " dernières éditions"],
     ],
   },
 ];
@@ -204,7 +274,8 @@ export default function Manual({ onClose }) {
           <Sec t="1 · Le monde" open>
             <P>
               L'océan couvre {MAP}° × {MAP}°, soit {fmt(MAP * DEG_KM)} km de côté (1° = {fmt(DEG_KM)} km).
-              On y trouve un continent, un port de départ, 10 îles et 5 avant-postes — les îles sont
+              On y trouve un continent, un port de départ, {ISLAND_COUNT} îles et
+              {" "}{Math.min(OUTPOST_COUNT, ISLAND_COUNT)} avant-postes — les îles sont
               séparées d'au moins {fmt(ISLAND_SEP_KM)} km les unes des autres.
             </P>
             <P>
@@ -220,9 +291,9 @@ export default function Manual({ onClose }) {
 
           <Sec t="2 · Balises & capture">
             <P>
-              40 balises flottent en pleine eau : 20 communes ({RARITY_STYLE.commune.pts} pt),
-              10 rares ({RARITY_STYLE.rare.pts} pts), 5 légendaires ({RARITY_STYLE.legendaire.pts} pts)
-              et 5 inconnues ({RARITY_STYLE.inconnue.pts} pts). Chacune possède un code radio à 4 chiffres.
+              {Object.values(BEACON_COUNTS).reduce((a, b) => a + b, 0)} balises flottent en pleine eau :
+              {" "}{Object.entries(BEACON_COUNTS).map(([r, n]) => `${n} ${r} (${RARITY_STYLE[r].pts} ${RARITY_STYLE[r].pts > 1 ? "pts" : "pt"})`).join(", ")}.
+              Chacune possède un code radio à 4 chiffres.
             </P>
             <P>
               Chaque balise émet un ping toutes les {PULSE_MIN} min (famille longue). Le ping porte son
@@ -275,8 +346,9 @@ export default function Manual({ onClose }) {
               un no-go, il n'y a pas de marche arrière.
             </P>
             <P>
-              Ordres de grandeur par vent fort : environ 15 km/h au près serré, 33 km/h au travers,
-              40 km/h au largue (l'allure la plus rapide) et 29 km/h au vent arrière. En tempête, le
+              Par vent de {fmt(WIND_REF_KMH)} km/h : {" "}
+              {ALLURES.map(([l, a]) => `${fmt(steadySpeed(a, WIND_REF_KMH))} km/h ${l}`).join(", ")} —
+              l'allure la plus rapide reste calculée depuis le moteur. En tempête, le
               rendement est plafonné à × {fmt(STORM_SAIL_MAX)} (voilure réduite).
             </P>
             <P>
@@ -292,8 +364,27 @@ export default function Manual({ onClose }) {
               Elle est donc identique pour tous les navires, et prévisible exactement.
             </P>
             <P>
-              Les prévisions sont parfaites sur {fmt(WX_HORIZON_H)} h et accessibles via le service
-              météo du NETWORK, en zone (port, avant-poste ou balise).
+              Quatre couches se superposent :
+              1) un régime de vents par latitude — les grandes bandes de la carte ont chacune leur
+              régime, avec un méandre lent ;
+              2) des perturbations advectées qui traversent la carte ;
+              3) des systèmes rares — cyclones (œil calme, demi-cercle dangereux : ne jamais couper
+              un cyclone par l'avant) et anticyclones — qui décroissent à terre ;
+              4) une houle PROPAGÉE à {fmt(SWELL_KMH)} km/h : la mer se dégrade AVANT l'arrivée du
+              vent local — la douleur est le signal.
+            </P>
+            <P>
+              Garde-fou : le vent ne descend jamais sous {fmt(WIND_FLOOR_KMH)} km/h — aucune latitude
+              innavigable.
+            </P>
+            <P>
+              Tempête = archétype d'orage OU influence cyclonique forte, SAUF sous anticyclone (la
+              voile y est plafonnée à × {fmt(STORM_SAIL_MAX)}).
+            </P>
+            <P>
+              Chaque graine porte {fmt(GEN_HORIZON_H / 24)} jours d'histoire météo. Les prévisions
+              sont parfaites sur {fmt(WX_HORIZON_H)} h et accessibles via le service météo du
+              NETWORK, en zone (port, avant-poste ou balise).
             </P>
             <P>
               La météo agit sur : la vitesse à la voile (vent), le point aux étoiles (nuages, houle,
@@ -308,24 +399,34 @@ export default function Manual({ onClose }) {
               jamais votre vraie position, et l'écart grandit sans cesse.
             </P>
             <P>
-              Trois sources de divergence : la déviation de compas (± {fmt(COMP_DEV_MIN_DEG)} à
+              Quatre sources de divergence : la déviation de compas (± {fmt(COMP_DEV_MIN_DEG)} à
               {" "}{fmt(COMP_DEV_MAX_DEG)}°), l'erreur de loch (± {fmt(LOG_ERR_MIN_PCT)} à
-              {" "}{fmt(LOG_ERR_MAX_PCT)} % sur la distance parcourue) et le courant
-              ({" "}{fmt(CUR_SPD_MIN_KMH)} à {fmt(CUR_SPD_MAX_KMH)} km/h), qui déporte le navire réel
-              mais n'est jamais intégré à l'estime.
+              {" "}{fmt(LOG_ERR_MAX_PCT)} % sur la distance parcourue), le courant
+              ({" "}{fmt(CUR_SPD_MIN_KMH)} à {fmt(CUR_SPD_MAX_KMH)} km/h — couplé au régime météo :
+              direction du régime décalée d'un offset d'Ekman de {fmt(CUR_EKMAN_DEG)}°, donc
+              prévisible) et la dérive de coque (leeway : environ {fmt(LEEWAY_K * 100)} % de la
+              vitesse du vent). Courant et leeway déportent le navire réel mais ne sont jamais
+              intégrés à l'estime.
             </P>
             <P>
               Le cercle d'incertitude affiché grandit de {fmt(UNC_PER_KM)} km par km parcouru et de
-              {" "}{fmt(UNC_PER_H)} km par heure (dérives lentes). À 30 km/h, l'incertitude croît
-              d'environ 2,6 km par heure de route.
+              {" "}{fmt(UNC_PER_H)} km par heure (dérives lentes). À {fmt(DIESEL_SPD_KMH)} km/h,
+              l'incertitude croît d'environ {fmt(UNC_PER_KM * DIESEL_SPD_KMH + UNC_PER_H)} km par
+              heure de route.
             </P>
             <P>
               Deux moyens de recentrer l'estime : le point aux étoiles ({fmt(NAVFIX_MIN)} min
               d'observation, de nuit, ciel suffisamment dégagé — plancher {fmt(NAVFIX_BASE_KM)} km,
               aggravé par les nuages, la houle et la brume, nouvelle tentative {fmt(NAVFIX_RETRY_MIN)} min
-              après un échec) et le point visuel : reconnaître un repère connu (île, balise, port,
-              avant-poste, côte) recentre l'estime sous les seuils de détection ci-dessous.
+              après un échec) et le point visuel : reconnaître un repère connu recentre l'estime
+              avec un plancher propre —
             </P>
+            <Kv rows={[
+              ["Point visuel — plancher île", fmt(VISFIX_ISLE_KM) + " km"],
+              ["Point visuel — plancher balise / avant-poste", fmt(VISFIX_BEACON_KM) + " km"],
+              ["Point visuel — plancher port", fmt(VISFIX_PORT_KM) + " km"],
+              ["Point visuel — plancher côte", fmt(VISFIX_COAST_KM) + " km"],
+            ]} />
             <Kv rows={Object.entries(VIS_BASE).map(([kind, d]) => [
               "Détection " + kind, "jour : " + fmt(d) + " km · nuit : " + fmt(VIS_NUIT[kind]) + " km",
             ])} />
@@ -407,7 +508,7 @@ export default function Manual({ onClose }) {
               ["Carburant (moteur plein)", fmt(FUEL_RATE_PCT_H) + " %/h"],
               ["Batteries en plongée", fmt(BATT_SUB_PCT_H) + " %/h"],
               ["Batteries en périscope", fmt(BATT_PERISCOPE_PCT_H) + " %/h"],
-              ["Solaire (de jour)", "+ " + fmt(SOLAR_PCT_H) + " %/h"],
+              ["Solaire (de jour)", "+ " + fmt(SOLAR_PCT_H) + " %/h, atténué par la couverture nuageuse, nul à " + fmt(SOLAR_CLOUD_REF_PCT) + " %"],
               ["Vivres", fmt(FOOD_PCT_H) + " %/h"],
               ["Appel / message radio", fmt(CALL_BATTERY_COST) + " %"],
               ["Ping sonar", fmt(SONAR_PING_BATTERY_COST) + " %"],
@@ -420,14 +521,40 @@ export default function Manual({ onClose }) {
 
           </Sec>
 
-          <Sec t="11 · Sonar">
+          <Sec t="11 · Santé du navire">
+            <P>
+              Trois jauges — coque, voilure, antenne — descendent de 100 % à 0 %. L'efficacité est
+              linéaire : × 1 à 100 %, × 0,5 à 0 %. La coque frappe TOUTE la propulsion, la voilure
+              la poussée de voile, l'antenne les émissions ET les réceptions radio.
+            </P>
+            <P>
+              Avaries de mer : un tirage toutes les {DAMAGE_ROLL_MIN} min de jeu, {fmt(DAMAGE_ROLL_PCT)} %
+              de chance par tirage — voilure hissée sous vent ≥ {fmt(DAMAGE_WIND_KMH)} km/h ou
+              tempête → la toile ; vitesse ≥ {fmt(DAMAGE_SPEED_KMH)} km/h dans un état de mer
+              ≥ {DAMAGE_SEA_MIN} → la coque ; tempête → l'antenne. Chaque coup retire
+              {" "}{fmt(DAMAGE_HIT_PCT)} %.
+            </P>
+            <P>
+              Échouement et heurt de la limite de zone : − {fmt(DAMAGE_HIT_PCT)} % de coque.
+            </P>
+            <P>
+              Coque à 0 % : remorquage immédiat par la compagnie — retour au port, navire remis à
+              neuf, MAIS stock de codes perdu (les balises correspondantes redeviennent capturables
+              par tous).
+            </P>
+            <P>
+              Radoub : gratuit, instantané, à quai uniquement (port ou avant-poste, en surface) —
+              coque, voilure et antenne à 100 %.
+            </P>
+
+          </Sec>
+
+          <Sec t="12 · Sonar">
             <P>
               Passif (hydrophone) : continu, gratuit, en surface comme en plongée. Il ne donne qu'un
               gisement — aucune distance. Les icônes se placent au bord du cercle, l'opacité traduit la
-              force, qui tombe à zéro à une distance propre à chaque bruit : moteur
-              {" "}{fmt(SOUND_DECAY_KM.moteur)} km, pêcheur en transit {fmt(SOUND_DECAY_KM.pecheur)} km,
-              cargo {fmt(SOUND_DECAY_KM.cargo)} km, ping {fmt(SOUND_DECAY_KM.ping)} km, chant
-              biologique {fmt(SOUND_DECAY_KM.biologique)} km. Un navire à la voile ou en
+              force, qui tombe à zéro à une distance propre à chaque bruit :
+              {" "}{Object.entries(SOUND_DECAY_KM).map(([k, d]) => `${k} ${fmt(d)} km`).join(", ")}. Un navire à la voile ou en
               propulsion électrique est silencieux. Et la terre est un mur : un bruit ne s'entend
               qu'en champ libre — une île ou le continent entre la source et l'auditeur coupe le son.
             </P>
@@ -454,7 +581,7 @@ export default function Manual({ onClose }) {
 
           </Sec>
 
-          <Sec t="12 · Vie du monde">
+          <Sec t="13 · Vie du monde">
             <P>
               La mer est habitée : {NPC_FISHERMEN} pêcheurs travaillent autour des côtes (jusqu'à
               {" "}{fmt(FISHER_RANGE_KM)} km au large, transit à {fmt(FISHER_SPD_KMH)} km/h —
@@ -464,15 +591,57 @@ export default function Manual({ onClose }) {
             </P>
             <P>
               À la radio : les pêcheurs bavardent en diffusion (lisible par tous dans la zone de
-              réception), les cargos s'échangent des messages privés — interceptables en brouillé
-              comme toute émission. Au sonar, les chants de baleines s'affichent comme signaux
-              biologiques.
+              réception, cadence moyenne d'un message toutes les {fmt(FISHER_CHAT_MEAN_MIN)} min),
+              les cargos s'échangent des messages privés — interceptables en brouillé comme toute
+              émission. Au sonar, les chants de baleines s'affichent comme signaux biologiques.
+            </P>
+            <P>
+              La Bête : une créature chasse en pleine eau. Ses cris s'entendent très loin (voir
+              sonar : son « inconnu », en moyenne toutes les {fmt(BEAST_CRY_MEAN_MIN)} min en
+              chasse). Après un repas elle digère ({fmt(BEAST_DIGEST_MIN / 60)} à
+              {" "}{fmt(BEAST_DIGEST_MAX / 60)} h — elle ralentit, puis repart), puis chasse à
+              nouveau à {fmt(BEAST_SPD_KMH)} km/h. À ≤ {fmt(BEAST_STRIKE_KM)} km :
+              − {fmt(DAMAGE_HIT_PCT)} % sur coque, voilure ET antenne — la coque peut y rester.
+              Après un engagement, elle fuit ({fmt(BEAST_FLEE_LONG_KMH)} km/h pendant
+              {" "}{fmt(BEAST_FLEE_LONG_MIN / 60)} h, ou {fmt(BEAST_FLEE_SHORT_KM)} km d'un coup)
+              et se tait {fmt(BEAST_FLEE_SILENCE_MIN / 60)} h.
+            </P>
+            <P>
+              Traces : épaves et carcasses restent visibles {fmt(BEAST_TRACE_PERSIST_MIN / 60)} h
+              (voir « trace » dans les portées visuelles).
+            </P>
+            <P>
+              La frégate de patrouille : navire de guerre de la compagnie, visible de jour à
+              {" "}{fmt(PATROL_VIS_KM)} km et de nuit à {fmt(PATROL_VIS_NUIT_KM)} km (feux),
+              moteur audible et tirs de canon au sonar. Elle vaque à ses opérations à
+              {" "}{fmt(PATROL_SPD_KMH)} km/h ; on la croise, on l'entend, on ne la commande pas.
             </P>
             <P>Cette population est persistante : elle survit aux redémarrages du serveur.</P>
 
           </Sec>
 
-                    <Sec t="13 · Poste de barre">
+          <Sec t="14 · Bulletin officiel">
+            <P>
+              La compagnie publie un bulletin à {Math.round(NEWSLETTER_MIN[0] / 60)} h et
+              {" "}{Math.round(NEWSLETTER_MIN[1] / 60)} h (heure de Paris) — reçu par TOUS les
+              navigateurs, même hors ligne (badge de non-lus à la reconnexion). Il ne s'écrit
+              jamais dans le journal de bord : un bouton dédié l'ouvre.
+            </P>
+            <P>
+              Contenu : classement officiel (points livrés au port), classement officieux (points
+              potentiels des codes en cale), météo dominante des quatre quadrants de la carte
+              (N-O / N-E / S-O / S-E), et zone d'exclusion PUBLIÉE — le seul canal de mise à jour
+              de la zone pour les joueurs. Archive des {NEWS_MAX} dernières éditions.
+            </P>
+            <P>
+              La zone d'exclusion délimite un périmètre autour de la position estimée de la Bête —
+              le pourquoi en reste à la discrétion de la compagnie. Navigation dans le secteur à
+              vos risques et périls.
+            </P>
+
+          </Sec>
+
+          <Sec t="15 · Poste de barre">
             <P>
               L'interface est le poste de barre du navire : vue de dessus, fenêtre d'ambiance,
               console de barre, table à cartes, poste radio, sonar, journal de bord. Tout y est
@@ -480,7 +649,7 @@ export default function Manual({ onClose }) {
             </P>
             <Kv rows={[
               ["Fenêtre d'ambiance", "habillage PUR — aucune détection n'y est calculée : ciel, soleil, étoiles, nuages, pluie, brouillard, éclairs, mer qui tangue, immersion — pilotés par l'heure de jeu et la météo du serveur"],
-              ["Vue de dessus", "disque horizon 20 km, zoom ×1–×16 (molette, pincement) : côte, îles, port, avant-postes, balises, traces, navires détectés — servis par le serveur depuis la position vraie ; c'est LA vue d'observation du jeu"],
+              ["Vue de dessus", "disque horizon " + fmt(HORIZON_KM) + " km, zoom ×1–×16 (molette, pincement) : côte, îles, port, avant-postes, balises, traces, navires détectés — servis par le serveur depuis la position vraie ; c'est LA vue d'observation du jeu"],
               ["Source unique des observations visuelles", "le périscope — surface OU (plongée + périscope sorti) ; périscope rentré en plongée = volets anti-pression baissés, aucune vue extérieure"],
               ["Volets anti-pression", "en plongée périscope rentré, lamelles cuivre ; la colonne d'eau et les bulles restent visibles à ~50 % entre les lames"],
               ["Œilleton du périscope", "en plongée périscope sorti : masque radial laiton + réticule croix + teinte cyan sur la fenêtre d'ambiance — habillage pur, aucune détection n'y est calculée"],
@@ -494,7 +663,7 @@ export default function Manual({ onClose }) {
               ["Phare la nuit", `feu visible à ${fmt(SHIP_VIS_LIGHT)} km`],
             ]} />
           </Sec>
-          <Sec t="14 · Annexe technique — équilibrage">
+          <Sec t="16 · Annexe technique — équilibrage">
             <P>
               Toutes les valeurs de ce manuel proviennent des constantes du moteur, importées
               directement : elles reflètent l'équilibrage exact de la version en cours, sans copie

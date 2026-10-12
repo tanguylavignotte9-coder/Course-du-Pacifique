@@ -46,6 +46,9 @@ export const SIGNAL_LOG_MAX = 10;       // journal : les 10 derniers pings de ba
 export const PROX_ARM_KM = SHORT_DECAY_KM * (1 - OMNI_DETECT_PCT / 100); // rayon de VEILLE émergent : armée ⇔ un navire à ≤ ~125 km (force omni 75 %)
 
 // Monde et gameplay
+export const BEACON_COUNTS = { commune: 20, rare: 10, legendaire: 5, inconnue: 5 }; // comptes de balises par rareté (buildWorld)
+export const ISLAND_COUNT = 10;   // îles générées par buildWorld
+export const OUTPOST_COUNT = 5;  // avant-postes (max, sur les îles)
 export const ISLAND_SEP_KM = 200;         // séparation minimale entre îles
 export const BEACON_MAX_TRIES = 200000;   // garde-fou placement balises
 export const RES_WARN_PCT = 15;           // seuil alerte ressources
@@ -277,7 +280,7 @@ export function buildWorld(seed) {
   ISLANDS = (() => {
     const out = [];
     let guard = 0;
-    while (out.length < 10 && guard++ < 2000) {
+    while (out.length < ISLAND_COUNT && guard++ < 2000) {
       let best = null, bestScore = -1;
       for (let k = 0; k < 12; k++) {
         const x = 12 + rng() * 46;
@@ -303,7 +306,7 @@ export function buildWorld(seed) {
   OUTPOSTS = (() => {
     const out = [];
     const taken = [];
-    const target = Math.min(5, ISLANDS.length);
+    const target = Math.min(OUTPOST_COUNT, ISLANDS.length);
     // Placement glouton « point le plus éloigné » : chaque nouvel
     // avant-poste est posé sur l'île qui maximise son écart minimal aux
     // avant-postes déjà placés (au port pour le premier → garantit une
@@ -341,7 +344,7 @@ export function buildWorld(seed) {
     // une nouvelle position est tirée. Garde-fou : 200 000 essais.
     // Entre deux balises, le seuil le PLUS STRICT des deux s'applique
     // (une légendaire interdit 350 km à quiconque, même posée en premier).
-    const counts = { commune: 20, rare: 10, legendaire: 5, inconnue: 5 };
+    const counts = BEACON_COUNTS;
     const minBcnOf = (r) => RARITY_MIN[r].beacon;
     for (const [rarity, n] of Object.entries(counts)) {
       const m = RARITY_MIN[rarity];
@@ -454,6 +457,10 @@ export const HS_K = 0.0212;                    // hauteur significative : hs = K
 // leeway + courant couplé
 export const LEEWAY_K = 0.025;      // dérive coque ∝ vent (~2,5 %)
 export const CUR_EKMAN_DEG = 75;    // offset d'Ekman sur la direction du régime
+
+// Bulletin officiel de la course (serveur) : éditions et archive
+export const NEWSLETTER_MIN = [7 * 60, 19 * 60]; // éditions : 07:00 et 19:00 (heure de jeu = Paris)
+export const NEWS_MAX = 6;                       // archive : les 6 derniers bulletins
 
 // Couche 1 — régime à la latitude y (lisse par ancrages + méandre lent)
 const phaseOf = (seed) => 1.3 + (seed || 0) * 0.618;
