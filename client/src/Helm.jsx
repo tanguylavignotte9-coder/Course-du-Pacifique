@@ -870,7 +870,7 @@ function WeatherBoard({ snap }) {
   );
 }
 
-export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, superBlock, canShop }) {
+export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, onNews, superBlock, canShop }) {
   const cmd = (data) => sock && sock.command(data);
   const player = snap.player;
   const weather = snap.weather;
@@ -910,6 +910,12 @@ export default function Helm({ snap, sock, status, onManual, onShop, onNetwork, 
               <Gear size={22} />
               <Gear size={14} reverse />
               <button onClick={onManual} className="plate rounded px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider hover:brightness-110">📖 Livre des systèmes</button>
+              <button onClick={onNews} className="plate relative rounded px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider hover:brightness-110">
+                📰 Bulletin
+                {snap.news?.unread > 0 && (
+                  <span className="absolute -right-1.5 -top-1.5 rounded-full bg-red-600 px-1 text-[8px] font-bold leading-4 text-white shadow-[0_0_6px_rgba(220,38,38,0.8)]">{snap.news.unread}</span>
+                )}
+              </button>
               {superBlock}
             </div>
           </div>

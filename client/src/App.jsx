@@ -63,6 +63,7 @@ export default function App() {
   const [shopOpen, setShopOpen] = useState(false);
   const [wxOpen, setWxOpen] = useState(false);
   const [netOpen, setNetOpen] = useState(false);
+  const [newsOpen, setNewsOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const [wxH, setWxH] = useState(0);
   const [wxData, setWxData] = useState(null);
@@ -130,6 +131,7 @@ export default function App() {
         onManual={() => setManualOpen(true)}
         onShop={() => setShopOpen(true)}
         onNetwork={() => setNetOpen(true)}
+        onNews={() => { setNewsOpen(true); cmd({ newsRead: true }); }}
         canShop={atDock}
       />
 
@@ -174,6 +176,68 @@ export default function App() {
               </div>
             )}
             <button onClick={() => setNetOpen(false)} className="plate rounded px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:brightness-110">Reprendre la navigation</button>
+          </div>
+        </div>
+      )}
+
+      {/* Bulletin officiel de la course (newsletter 7 h/19 h) : reçu par
+          tous les navigateurs, bouton dédié — JAMAIS dans le journal de bord */}
+      {newsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setNewsOpen(false)}>
+          <div className="max-h-[92vh] w-full max-w-xl space-y-3 overflow-y-auto rounded-xl border-2 border-[#241a0e] p-5 shadow-[0_6px_16px_rgba(0,0,0,0.55)]"
+            style={{ background: "linear-gradient(180deg, #4a3421, #33230f)" }} onClick={(e) => e.stopPropagation()}>
+            <h2 className="plate rounded px-2.5 py-1 text-center text-[12px] font-bold uppercase tracking-[0.14em]">📰 Bulletin de la course — MaxMedia</h2>
+            <p className="engrave text-[9px] uppercase tracking-[0.14em]">Éditions 07:00 et 19:00 — classements, météo des zones, zone d'exclusion en vigueur.</p>
+            {(snap.news?.items || []).length === 0 && (
+              <p className="text-center text-xs text-amber-100/75">Aucun bulletin reçu pour l'instant — première édition à 07:00 ou 19:00.</p>
+            )}
+            {[...(snap.news?.items || [])].reverse().map((n) => (
+              <div key={n.seq} className="space-y-2.5 rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 p-3">
+                <p className="text-center font-serif text-[13px] font-bold text-amber-200">
+                  {new Date(snap.epoch + n.t * MS_PER_MIN).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })} — édition du {n.kind}
+                </p>
+                <div>
+                  <p className="engrave mb-1 text-[8.5px] uppercase tracking-[0.18em]">Classement officiel — balises livrées</p>
+                  {n.standings.length === 0 && <p className="font-mono text-[10px] italic text-amber-100/50">aucun navigateur au départ</p>}
+                  {n.standings.map((p, i) => (
+                    <p key={p.code} className="font-mono text-[10px] leading-snug tabular-nums text-amber-100/85">
+                      {i + 1}. {p.who} (navire {p.code}) — {p.score} pts
+                    </p>
+                  ))}
+                </div>
+                <div>
+                  <p className="engrave mb-1 text-[8.5px] uppercase tracking-[0.18em]">Classement officieux — codes en cale, non livrés</p>
+                  {n.unofficial.length === 0
+                    ? <p className="font-mono text-[10px] italic text-amber-100/50">aucun code en cale</p>
+                    : n.unofficial.map((p, i) => (
+                      <p key={p.code} className="font-mono text-[10px] leading-snug tabular-nums text-amber-100/85">
+                        {i + 1}. {p.who} (navire {p.code}) — {p.held} pts potentiels
+                      </p>
+                    ))}
+                </div>
+                <div>
+                  <p className="engrave mb-1 text-[8.5px] uppercase tracking-[0.18em]">Météo dominante par zone</p>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {n.zones.map((z) => (
+                      <p key={z.id} className="rounded border border-[#4a3820] bg-[#241b0e]/60 px-2 py-1 font-mono text-[10px] leading-snug text-amber-100/85">
+                        {z.id} : {z.wx} · vent {z.wind} km/h · vis. {z.vis} km
+                      </p>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="engrave mb-1 text-[8.5px] uppercase tracking-[0.18em]">Zone d'exclusion en vigueur</p>
+                  {n.exclusion ? (
+                    <p className="font-mono text-[10px] leading-snug tabular-nums text-amber-100/85">
+                      ⚠️ {n.exclusion.y.toFixed(1)}°N {n.exclusion.x.toFixed(1)}°E — rayon {Math.round(n.exclusion.rKm)} km (opérations hydrographiques — navigation à vos risques et périls)
+                    </p>
+                  ) : (
+                    <p className="font-mono text-[10px] italic text-amber-100/50">⚖️ aucune zone d'exclusion en vigueur</p>
+                  )}
+                </div>
+              </div>
+            ))}
+            <button onClick={() => setNewsOpen(false)} className="plate rounded px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:brightness-110">Reprendre la navigation</button>
           </div>
         </div>
       )}

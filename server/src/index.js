@@ -244,6 +244,16 @@ if (!Array.isArray(race.network)) race.network = [];
 // lissé) est publique.
 if (!Array.isArray(race.evidence)) race.evidence = [];
 
+// Bulletins officiels de la course (newsletter 7 h / 19 h) : persistés dans
+// la course, reçus par TOUS les navigateurs — y compris hors ligne (badge
+// de non-lus à la reconnexion, contenu servi dans le snapshot). Le bulletin
+// est le SEUL canal public de la zone d'exclusion : il n'écrit JAMAIS dans
+// le journal de bord — les navigateurs le lisent via un bouton dédié.
+if (!Array.isArray(race.newsletters)) race.newsletters = [];
+// Migration : une course existante garde sa dernière zone visible jusqu'à
+// la première édition publiée par la nouvelle passe.
+if (race.exclusionPub == null && race.exclusion) race.exclusionPub = { ...race.exclusion };
+
 // Zone NETWORK (calculée serveur, jamais déductible côté client : le client
 // ne connaît ni sa position vraie ni celle des balises) : port, avant-poste
 // ou balise à portée de capture (500 m — capturée ou non). Sert à la
@@ -871,12 +881,16 @@ function patrolPass(now) {
   }
 }
 
-// ---------- Zone d'exclusion officielle (bulletins périodiques) ----------
-// La compagnie publie, à cadence fixe, la zone estimée en AVIS OFFICIEL à
-// TOUS (advisory : entrer = à ses risques, aucune sanction). Le prétexte
-// est INVÉRIFIABLE (« opérations hydrographiques ») : la compagnie ne
-// ment que sur le sens, jamais sur les faits. Le retard de la zone EST
-// le gameplay : croyance, jamais clôture — elle est toujours en retard.
+// ---------- Zone d'exclusion : estimation INTERNE de la compagnie ----------
+// Recalcul à cadence fixe (EXCLUSION_BULLETIN_MIN) de la zone estimée.
+// Cette estimation interne nourrit la PATROUILLE (bulletin-gating : la
+// frégate vit sur race.exclusion — cadence et routine inchangées). Côté
+// joueurs, elle n'est JAMAIS publiée ici : la zone publique
+// (race.exclusionPub → snapshot → carte) ne bouge qu'aux éditions du
+// bulletin 7 h/19 h (newsletterPass) — le bulletin est le SEUL canal.
+// Le prétexte reste INVÉRIFIABLE (« opérations hydrographiques ») : la
+// compagnie ne ment que sur le sens, jamais sur les faits. Le retard de
+// la zone EST le gameplay : croyance, jamais clôture.
 let nextBulletinMin = gameMinutesNow();
 function exclusionPass(now) {
   if (now < nextBulletinMin) return;
@@ -885,27 +899,99 @@ function exclusionPass(now) {
   race.evidence = race.evidence.filter((e) => now - e.t < EVIDENCE_MAX_AGE_MIN);
   const est = estimateZone(race.evidence, now);
   if (!est) {
-    // Plus de relevés vivants : la zone est LEVÉE — un avis qui traîne
-    // indéfiniment sans preuve vivante est pire qu'aucune zone (et la
-    // patrouille, qui vit sur la zone publiée, regagne son quai).
+    // Plus de relevés vivants : la zone interne est levée (la patrouille
+    // regagne son quai). Côté joueurs, la levée ne paraît qu'à la prochaine
+    // édition du bulletin — plus AUCUN avis dans le journal de bord.
     if (race.exclusion) {
       race.exclusion = null;
       store.save();
-      const text = `⚖️ AVIS OFFICIEL — la zone d'exclusion est levée (plus de relevés hydrographiques vivants).`;
-      for (const [, st] of states) {
-        st.notifSeq = (st.notifSeq || 0) + 1;
-        st.notifications.unshift({ id: st.notifSeq, t: st.t, text, kind: "good", cat: "radio" });
-      }
     }
     return;
   }
   race.exclusion = { x: est.x, y: est.y, rKm: est.rKm, t: now };
   store.save();
-  const text = `⚠️ AVIS OFFICIEL — zone d'exclusion ${est.y.toFixed(1)}°N ${est.x.toFixed(1)}°E, rayon ${Math.round(est.rKm)} km (opérations hydrographiques en cours). Navigation dans le secteur à vos risques et périls.`;
-  for (const [, st] of states) {
-    st.notifSeq = (st.notifSeq || 0) + 1;
-    st.notifications.unshift({ id: st.notifSeq, t: st.t, text, kind: "warn", cat: "radio" });
+}
+
+// ---------- Bulletin officiel de la course (newsletter 7 h / 19 h) ----------
+// Le journal de la compagnie, reçu par TOUS les navigateurs, y compris
+// hors ligne (badge de non-lus à la reconnexion). Pas de gate NETWORK,
+// aucune écriture dans le journal de bord : un BOUTON dédié côté client
+// ouvre le bulletin. Contenu : classement officiel (points LIVRÉS au
+// port), classement officieux (points potentiels des codes en cale,
+// non livrés), météo dominante des 4 zones de la carte (quadrants
+// N-O / N-E / S-O / S-E), et zone d'exclusion PUBLIÉE — le seul biais
+// de mise à jour de la zone pour les joueurs.
+const NEWSLETTER_MIN = [7 * 60, 19 * 60]; // éditions : 07:00 et 19:00 (heure de jeu = Paris)
+const NEWS_MAX = 6;                       // archive : les 6 derniers bulletins
+
+// Prochaine édition (minutes de jeu) : t mod 1440 = minute du jour de Paris
+// (l'epoch est minuit Paris) — 07:00 ou 19:00, la suivante sinon.
+function nextNewsMin(t) {
+  const m = ((t % 1440) + 1440) % 1440;
+  const base = t - m;
+  if (m < NEWSLETTER_MIN[0]) return base + NEWSLETTER_MIN[0];
+  if (m < NEWSLETTER_MIN[1]) return base + NEWSLETTER_MIN[1];
+  return base + 1440 + NEWSLETTER_MIN[0];
+}
+let nextNewsAtMin = nextNewsMin(gameMinutesNow());
+
+// Météo dominante d'un quadrant (grille 5×5 = 25 relevés déterministes
+// weatherAt au centre des cellules) : archétype majoritaire + vent et
+// visibilité moyens. Seed météo = celui de la course (météo uniforme).
+function quadWeather(x0, y0, now) {
+  const counts = new Map();
+  let wind = 0, vis = 0;
+  for (let ix = 0; ix < 5; ix++) {
+    for (let iy = 0; iy < 5; iy++) {
+      const x = x0 + ((ix + 0.5) * MAP) / 10;
+      const y = y0 + ((iy + 0.5) * MAP) / 10;
+      const w = weatherAt(x, y, now, race.seed % 1000);
+      counts.set(w.name, (counts.get(w.name) || 0) + 1);
+      wind += w.windSpd;
+      vis += w.visibility;
+    }
   }
+  let wx = "?", best = -1;
+  for (const [name, c] of counts) if (c > best) { best = c; wx = name; }
+  return { wx, wind: Math.round(wind / 25), vis: Math.round((vis / 25) * 10) / 10 };
+}
+
+function newsletterPass(now) {
+  if (now < nextNewsAtMin) return;
+  nextNewsAtMin = nextNewsMin(now);
+  race.newsSeq = (race.newsSeq || 0) + 1;
+  // Zone d'exclusion PUBLIÉE : copie figée de l'estimation interne à
+  // l'instant de l'édition — la carte des joueurs ne bouge qu'ici.
+  race.exclusionPub = race.exclusion
+    ? { x: race.exclusion.x, y: race.exclusion.y, rKm: race.exclusion.rKm, t: now }
+    : null;
+  // Classements : officiel = points LIVRÉS au port (st.score) ; officieux =
+  // points potentiels des codes en cale (capturés, pas encore livrés).
+  const rows = [...states.entries()].map(([id, st]) => ({
+    who: id,
+    code: st.code,
+    score: st.score || 0,
+    held: (st.codes || []).reduce((a, c) => a + (c.pts || 0), 0),
+  }));
+  const standings = [...rows].sort((a, b) => b.score - a.score || a.code.localeCompare(b.code));
+  const unofficial = rows.filter((p) => p.held > 0).sort((a, b) => b.held - a.held || a.code.localeCompare(b.code));
+  const half = MAP / 2;
+  race.newsletters.push({
+    seq: race.newsSeq,
+    t: now,
+    kind: (now % 1440) < 720 ? "matin" : "soir",
+    standings,
+    unofficial,
+    zones: [
+      { id: "N-O", ...quadWeather(0, half, now) },
+      { id: "N-E", ...quadWeather(half, half, now) },
+      { id: "S-O", ...quadWeather(0, 0, now) },
+      { id: "S-E", ...quadWeather(half, 0, now) },
+    ],
+    exclusion: race.exclusionPub,
+  });
+  while (race.newsletters.length > NEWS_MAX) race.newsletters.shift();
+  store.save();
 }
 
 function persistPlayer(id) {
@@ -1028,6 +1114,7 @@ function simulateTo(now) {
     beastPass(simT);
     patrolPass(simT);
     exclusionPass(simT);
+    newsletterPass(simT);
     proxPass(simT);
     // NETWORK : coupure automatique dès que le navire quitte la zone —
     // revenir = se RECONNECTER = nouvelle entrée dans le journal global.
@@ -1251,11 +1338,19 @@ function publicSnapshot(id) {
     // UNIQUEMENT aux joueurs connectés ET encore en zone.
     networkZone: netZone(st),
     networkLog: st.networked && netZone(st) ? race.network : null,
-    // Zone d'exclusion officielle : donnée PUBLIQUE de la compagnie (comme
-    // la météo) — coordonnées absolues, dessinables sur la carte papier.
-    // C'est le résultat lissé de l'estimation, toujours en retard sur le
-    // réel. Le tampon du télémetre, lui, n'est JAMAIS exposé.
-    exclusion: race.exclusion || null,
+    // Zone d'exclusion PUBLIÉE : copie figée de l'estimation interne à la
+    // dernière édition du bulletin (7 h/19 h) — le bulletin est le seul
+    // canal de mise à jour pour les joueurs. L'estimation interne (6 h)
+    // nourrit la patrouille, pas la carte. Le tampon du télémetre, lui,
+    // n'est JAMAIS exposé.
+    exclusion: race.exclusionPub || null,
+    // Bulletin officiel de la course (newsletter 7 h/19 h) : dernières
+    // éditions + compteur de non-lus pour le bouton dédié (le bulletin
+    // n'écrit JAMAIS dans le journal de bord).
+    news: {
+      items: (race.newsletters || []).slice(-NEWS_MAX),
+      unread: Math.max(0, (race.newsSeq || 0) - (st.newsRead || 0)),
+    },
     // Position PUBLIÉE du patrouilleur : réservée aux abonnés connectés en
     // zone (service NETWORK) — « qui est allé où, quand » inclut la flotte.
     patrolPub: st.networked && netZone(st) && race.patrol ? race.patrol.pub : null,
@@ -1526,6 +1621,10 @@ wss.on("connection", (ws, req) => {
       if (typeof c.autoguide === "string" && AUTOGUIDE_MODES.includes(c.autoguide)) {
         st.autoguide = c.autoguide;
       }
+      // Bulletin de la course : ouvrir le bulletin marque TOUT comme lu
+      // (le badge du bouton dédié disparaît). Le contenu vit dans le
+      // snapshot (snap.news), jamais dans le journal de bord.
+      if (c.newsRead === true) st.newsRead = race.newsSeq || 0;
       // NETWORK : connexion depuis la zone d'un port / avant-poste / balise
       // (capturée ou non). Le coût : l'identité et le code du joueur sont
       // révélés et enregistrés dans le journal global, consulté par tous les
@@ -1761,10 +1860,15 @@ wss.on("connection", (ws, req) => {
         race.patrol = undefined;
         ensurePatrol();
         lastPatrolT = gameMinutesNow();
-        // Relevés et zone d'exclusion : la nouvelle course repart à vide.
+        // Relevés, zone d'exclusion et bulletins : la nouvelle course
+        // repart à vide (aucune édition, aucun non-lu, zone effacée).
         race.evidence = [];
         race.exclusion = null;
+        race.exclusionPub = null;
+        race.newsletters = [];
+        race.newsSeq = 0;
         nextBulletinMin = gameMinutesNow();
+        nextNewsAtMin = nextNewsMin(gameMinutesNow());
         simT = gameMinutesNow(); // curseur monde : la nouvelle course part de l'instant présent
         proxNextMin.clear();     // vigies : réarmement → premier ping immédiat
         store.save();
