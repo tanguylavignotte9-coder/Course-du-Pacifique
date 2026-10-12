@@ -92,12 +92,12 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  // Anti-gel + fluidité : le serveur COALESCÉ désormais ses réponses de
-  // commande (au plus 1 snapshot par 250 ms et par socket, voir index.js),
-  // donc le flux entrant reste raisonnable (~5/s en plein drag, 1/s au
-  // repos). On garde le mécanisme « dernier snapshot gagne » — re-rendu
-  // plafonné à un toutes les 80 ms, jamais de file d'attente — mais le
-  // plafond remonté de 200 à 80 ms rend la console réactive au drag.
+  // Anti-gel + fluidité : le serveur COALESCÉ ses réponses de commande
+  // (au plus 1 snapshot par SNAP_FLUSH_MS = 100 ms et par socket, voir
+  // index.js) — le débit en plein drag reste plafonné (~10/s) mais l'écho
+  // d'une commande revient en ~100-200 ms : fluidité d'origine. On garde
+  // le mécanisme « dernier snapshot gagne » — re-rendu plafonné à un
+  // toutes les 60 ms, jamais de file d'attente.
   const snapBuf = useRef(null); // dernier snapshot non encore rendu
   const snapTimer = useRef(0);
   const pushSnap = useCallback((data) => {
@@ -114,7 +114,7 @@ export default function App() {
       // roue, ♥ du strip — restent figés. Si le gel disparaît entièrement,
       // flushSync DEVIENT le correctif (léger : ≤ 6 snapshots/s).
       if (d) flushSync(() => setSnap(d));
-    }, 80);
+    }, 60);
   }, []);
 
   useEffect(() => {

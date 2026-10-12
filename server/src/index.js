@@ -16,7 +16,7 @@ const TIME_MULT = process.env.TIME_MULT ? Number(process.env.TIME_MULT) : 1;
 const TICK_MS = 1000; // tick serveur : 1 s réelle
 const MAX_STEP_MIN = 5; // pas de simulation max 5 min de jeu (design)
 const PERSIST_MS = MS_PER_MIN; // persistance disque : 1 min réelle
-const SNAP_FLUSH_MS = 250; // flush des snapshots de réponse aux commandes (coalescence anti-tempête, voir boucle en fin de fichier)
+const SNAP_FLUSH_MS = 100; // flush des snapshots de réponse aux commandes : coalescence (débit plafonné en rafale) + fluidité (écho d'une commande en ~100-200 ms), voir boucle en fin de fichier
 
 // Bafouillage des pêcheurs (diffusion) : petites phrases de la vie à bord.
 // JAMAIS de coordonnées dans le texte (règle : pas de position vraie dans
