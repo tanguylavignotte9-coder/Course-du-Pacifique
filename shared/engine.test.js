@@ -89,7 +89,7 @@ test("météo déterministe, en km/h et km", () => {
   const a = weatherAt(30, 30, 1000, 42);
   const b = weatherAt(30, 30, 1000, 42);
   assert.deepEqual(a, b);
-  assert.ok(a.windSpd > 3 && a.windSpd < 90, "vent en km/h plausible");
+  assert.ok(a.windSpd >= 8 && a.windSpd < 90, "vent en km/h plausible (plancher 8)");
   assert.ok(a.visibility <= 25, "visibilité en km");
 });
 
@@ -199,7 +199,7 @@ test("inertie surface : convergence vers la vitesse cible", () => {
 
 test("point aux étoiles : réussit la nuit sous ciel clair et réduit l'incertitude", () => {
   const w = buildWorld(7);
-  const st = newPlayerState(w, { weatherSeed: 0 });
+  const st = newPlayerState(w, { weatherSeed: 13 });
   st.t = 1500; st.x = 45; st.y = 45; st.heading = 90;
   st.unc = 25;
   for (let i = 0; i < 200; i++) tick(st, 1, w);

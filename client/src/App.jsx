@@ -4,7 +4,7 @@ import Manual from "./Manual.jsx";
 import Helm from "./Helm.jsx";
 import { nextPhase } from "./NavMap.jsx";
 import {
-  MAP, DEG_KM, distKm, MS_PER_MIN, DELIVERY_R_KM, WX_HORIZON_H,
+  MAP, DEG_KM, distKm, MS_PER_MIN, DELIVERY_R_KM, WX_HORIZON_H, DOUGLAS_LABEL,
 } from "../../shared/engine.js";
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -62,6 +62,7 @@ export default function App() {
   const [status, setStatus] = useState("connecting");
   const [shopOpen, setShopOpen] = useState(false);
   const [wxOpen, setWxOpen] = useState(false);
+  const [wxTab, setWxTab] = useState("prev");
   const [netOpen, setNetOpen] = useState(false);
   const [newsOpen, setNewsOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
@@ -152,7 +153,7 @@ export default function App() {
             ) : (
               <div className="space-y-2 rounded-lg border border-emerald-800/60 bg-[#0a1410]/70 p-3">
                 <p className="text-xs text-emerald-300">● Connecté — accès au réseau météo et au journal global.</p>
-                <button onClick={() => { setWxOpen(true); setWxH(0); }} className="rounded border border-[#5c3a1a] bg-gradient-to-b from-[#b87333] to-[#7c4a1a] px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide text-[#1c130a] hover:from-[#d08a4a]">🌦️ Afficher la météo (48 h)</button>
+                <button onClick={() => { setWxOpen(true); setWxH(0); }} className="rounded border border-[#5c3a1a] bg-gradient-to-b from-[#b87333] to-[#7c4a1a] px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide text-[#1c130a] hover:from-[#d08a4a]">🌦️ Météo</button>
               </div>
             )}
             {(snap.networkLog || []).length > 0 && (
@@ -249,6 +250,13 @@ export default function App() {
             style={{ background: "linear-gradient(180deg, #4a3421, #33230f)" }} onClick={(e) => e.stopPropagation()}>
             <h2 className="plate rounded px-2.5 py-1 text-center text-[12px] font-bold uppercase tracking-[0.14em]">🌦️ Prévisions météo — NETWORK</h2>
             <p className="engrave text-[9px] uppercase tracking-[0.14em]">Bulletin du NETWORK, reçu en zone (port, avant-poste ou balise). Prévision parfaite sur 48 h · Instant : <b className="font-mono">+{wxH} h</b></p>
+            <div className="flex justify-center gap-2">
+              <button onClick={() => setWxTab("prev")}
+                className={wxTab === "prev" ? "rounded border border-amber-200/60 bg-[#3a2a12] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-100" : "rounded border border-[#5c3a1a] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-100/60"}>Prévisions météo</button>
+              <button onClick={() => setWxTab("vent")}
+                className={wxTab === "vent" ? "rounded border border-amber-200/60 bg-[#3a2a12] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-100" : "rounded border border-[#5c3a1a] px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-100/60"}>Carte des vents</button>
+            </div>
+            {wxTab === "prev" && (
             <svg viewBox={`0 0 600 600`} className="mx-auto w-full max-w-[440px] rounded-lg border border-[#4a3820] bg-[#0a2033]">
               {(wxData?.cells || []).map((c) => {
                 const S = 10;
@@ -265,6 +273,44 @@ export default function App() {
               {snap.world.outposts.map((o, i) => <circle key={i} cx={o.x * 10} cy={(MAP - o.y) * 10} r="4" fill="#34d399" />)}
               <circle cx={snap.player.estX * 10} cy={(MAP - snap.player.estY) * 10} r="7" fill="none" stroke="#f8fafc" strokeWidth="2" />
             </svg>
+            )}
+            {wxTab === "vent" && (
+            <svg viewBox={`0 0 600 600`} className="mx-auto w-full max-w-[440px] rounded-lg border border-[#4a3820] bg-[#0a2033]">
+              {(wxData?.cells || []).map((c) => {
+                const S = 10;
+                const cx = c.x * S, cy = (MAP - c.y) * S;
+                const flow = ((c.windDir + 180) * Math.PI) / 180; // vers où ça souffle
+                const col = c.windSpd < 15 ? "#94a3b8" : c.windSpd < 30 ? "#34d399" : c.windSpd < 45 ? "#fbbf24" : "#ef4444";
+                const L = 6 + Math.min(9, (c.windSpd - 8) * 0.3);
+                const dx = Math.sin(flow) * L, dy = -Math.cos(flow) * L;
+                return (
+                  <g key={`w${c.x}-${c.y}`} stroke={col} fill={col} strokeWidth="1.3" strokeLinecap="round" opacity="0.9">
+                    <line x1={cx - dx / 2} y1={cy - dy / 2} x2={cx + dx / 2} y2={cy + dy / 2} />
+                    <polygon points={`${cx + dx},${cy + dy} ${cx + dx * 0.4 - dy * 0.35},${cy + dy * 0.4 + dx * 0.35} ${cx + dx * 0.4 + dy * 0.35},${cy + dy * 0.4 - dx * 0.35}`} />
+                  </g>
+                );
+              })}
+              {(wxData?.systems || []).filter((s) => s.x > -10 && s.x < 70 && s.y > -10 && s.y < 70).map((s, i) => {
+                const col = s.label === "ANTICYCLONE" ? "#34d399" : "#ef4444";
+                const R = (s.rKm / DEG_KM) * 10;
+                return (
+                  <g key={`sys${i}`}>
+                    <circle cx={s.x * 10} cy={(MAP - s.y) * 10} r={R} fill="none" stroke={col} strokeWidth="1.5" strokeDasharray="6 4" opacity="0.85" />
+                    <circle cx={s.x * 10} cy={(MAP - s.y) * 10} r="2.5" fill={col} />
+                    <text x={s.x * 10 + R * 0.72} y={(MAP - s.y) * 10 - R * 0.72} fontSize="9" fill={col} fontWeight="bold">{s.label} · {s.effKmh} km/h</text>
+                  </g>
+                );
+              })}
+              <polygon points={snap.world.continent.map(([vx, vy]) => `${vx * 10},${(MAP - vy) * 10}`).join(" ")} fill="none" stroke="rgba(248,250,252,0.35)" strokeWidth="1" />
+              {snap.world.islands.map((verts, i) => (
+                <polygon key={i} points={verts.map(([vx, vy]) => `${vx * 10},${(MAP - vy) * 10}`).join(" ")} fill="none" stroke="rgba(248,250,252,0.35)" strokeWidth="1" />
+              ))}
+              <circle cx={snap.world.port.x * 10} cy={(MAP - snap.world.port.y) * 10} r="5" fill="#34d399" />
+              {snap.world.outposts.map((o, i) => <circle key={i} cx={o.x * 10} cy={(MAP - o.y) * 10} r="4" fill="#34d399" />)}
+              <circle cx={snap.player.estX * 10} cy={(MAP - snap.player.estY) * 10} r="7" fill="none" stroke="#f8fafc" strokeWidth="2" />
+            </svg>
+            )}
+            <p className="engrave text-center text-[8.5px] uppercase tracking-widest">calme &lt;15 · brise 15-30 · fort 30-45 · tempête &gt;45 km/h · pointillé = système</p>
             <div className="flex items-center gap-3">
               <span className="engrave text-[8.5px] uppercase tracking-widest">Maintenant</span>
               <input type="range" min={0} max={WX_HORIZON_H} step={2} value={Math.min(wxH, WX_HORIZON_H)} onChange={(e) => setWxH(+e.target.value)} className="rng w-full" />
@@ -272,7 +318,7 @@ export default function App() {
             </div>
             {wxData?.here && (
               <p className="rounded-lg border border-[#4a3820] bg-[#0a0f16]/60 p-2.5 text-center text-xs text-amber-100/85">
-                À votre position à cet instant : vent <b className="text-sky-300">{wxData.here.windSpd.toFixed(0)} km/h</b> · nuages <b className="text-sky-300">{wxData.here.clouds.toFixed(0)} %</b> · pluie <b className="text-sky-300">{wxData.here.rain.toFixed(0)} %</b> · visibilité <b className="text-sky-300">{wxData.here.visibility.toFixed(1)} km</b> · houle <b className="text-sky-300">{wxData.here.hs.toFixed(1)} m</b>
+                À votre position à cet instant : vent <b className="text-sky-300">{wxData.here.windSpd.toFixed(0)} km/h de {wxData.here.windDir.toFixed(0)}°</b> · <b className="text-sky-300">{wxData.here.regime}</b> · mer <b className="text-sky-300">{DOUGLAS_LABEL[wxData.here.douglas]}</b> (<b className="text-sky-300">{wxData.here.hs.toFixed(1)} m</b>) · nuages <b className="text-sky-300">{wxData.here.clouds.toFixed(0)} %</b> · pluie <b className="text-sky-300">{wxData.here.rain.toFixed(0)} %</b> · visibilité <b className="text-sky-300">{wxData.here.visibility.toFixed(1)} km</b>
                 {wxData.here.storm ? " · ⛈️ TEMPÊTE" : wxData.here.fog ? " · 🌫️ BROUILLARD" : ""}
               </p>
             )}

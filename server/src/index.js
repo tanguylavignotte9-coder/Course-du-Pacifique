@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocketServer } from "ws";
-import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SPAWN_DIGEST_MIN, BEAST_SPAWN_DIGEST_MAX, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, coastStep, PATROL_BERTH_KM, tracePush, condFactor, damagePart, DAMAGE_HIT_PCT } from "../../shared/engine.js";
+import { buildWorld, newPlayerState, tick, weatherAt, computeView, clamp, systemsAt, distKm, DELIVERY_R_KM, CAPTURE_R_KM, WX_HORIZON_H, AUTOGUIDE_MODES, AUTOGUIDE_DEFAULT, shipVisibleKm, shipsCollide, callPosition, scrambledIntercept, longStrengthKm, LONG_DECAY_KM, bearingTo, spawnPosition, MAP, CALL_BATTERY_COST, RADIO_MIN_STRENGTH, randomCode, MS_PER_MIN, NOTIF_MAX, PINS_MAX, SAIL_DEFAULT, SPAWN_SEP_KM, HULL_HIST_KM, recvCapture, detectBeacon, onProximityPing, proxPingIntervalS, captureBeacon, SHORT_DECAY_KM, PROX_ARM_KM, sonarPing, sonarPassiveHear, soundBlocked, shipNoisy, soundTravelMin, strengthKm, SOUND_DECAY_KM, SONAR_ECHO_PERSIST_S, generateNpcs, npcsTick, npcNoisy, npcBackPos, nextNpcEventMin, FISHER_CHAT_MEAN_MIN, CARGO_MSG_MEAN_MIN, WHALE_SONG_MEAN_MIN, detectKm, beastSpawn, beastTick, makeFisherman, makeCargo, makeWhale, BEAST_CRY_MEAN_MIN, BEAST_SPAWN_DIGEST_MIN, BEAST_SPAWN_DIGEST_MAX, BEAST_SONG_MEMORY_MIN, BEAST_TRACE_PERSIST_MIN, estimateZone, patrolTick, beastFlee, EXCLUSION_BULLETIN_MIN, EVIDENCE_MAX_AGE_MIN, TELEMETRY_MAX, BEACON_HEAR_KM, PATROL_HEAR_KM, PATROL_PUBLISH_MIN, PATROL_VIS_KM, PATROL_VIS_NUIT_KM, BEAST_FLEE_SILENCE_MIN, CANNON_DECAY_KM, DEG_KM, findStation, coastStep, PATROL_BERTH_KM, tracePush, condFactor, damagePart, DAMAGE_HIT_PCT } from "../../shared/engine.js";
 import { Store } from "./store.js";
 import { Auth, hashPassword } from "./auth.js";
 
@@ -751,7 +751,7 @@ function beastPass(now) {
   }
   // Vue des traces : première détection visuelle → notification
   for (const [id, st] of states) {
-    const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
+    const w = weatherAt(st.x, st.y, st.t, st.weatherSeed, world);
     const hour = (st.t / 60) % 24;
     const night = hour < 6 || hour >= 20;
     const canSee = st.location === "surface" || st.periscope;
@@ -865,7 +865,7 @@ function patrolPass(now) {
   for (const [, st] of states) {
     const canSee = st.location === "surface" || st.periscope;
     if (!canSee) { st.sawPatrol = false; continue; }
-    const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
+    const w = weatherAt(st.x, st.y, st.t, st.weatherSeed, world);
     const hour = (st.t / 60) % 24;
     const night = hour < 6 || hour >= 20;
     const det = Math.min(w.visibility, night ? PATROL_VIS_NUIT_KM : PATROL_VIS_KM);
@@ -945,7 +945,7 @@ function quadWeather(x0, y0, now) {
     for (let iy = 0; iy < 5; iy++) {
       const x = x0 + ((ix + 0.5) * MAP) / 10;
       const y = y0 + ((iy + 0.5) * MAP) / 10;
-      const w = weatherAt(x, y, now, race.seed % 1000);
+      const w = weatherAt(x, y, now, race.seed % 1000, world);
       counts.set(w.name, (counts.get(w.name) || 0) + 1);
       wind += w.windSpd;
       vis += w.visibility;
@@ -1154,7 +1154,7 @@ function multiplayerPass(now) {
   const infos = new Map();
   for (const id of ids) {
     const st = states.get(id);
-    const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
+    const w = weatherAt(st.x, st.y, st.t, st.weatherSeed, world);
     const hour = (st.t / 60) % 24;
     infos.set(id, {
       st, w,
@@ -1290,7 +1290,7 @@ function rescueShip(id, st) {
 
 function publicSnapshot(id) {
   const st = ensureState(id);
-  const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
+  const w = weatherAt(st.x, st.y, st.t, st.weatherSeed, world);
   return {
     t: st.t,
     epoch: race.displayEpoch ?? race.epoch ?? new Date(race.startedAt).getTime(),
@@ -1414,11 +1414,12 @@ app.get("/api/wx", (req, res) => {
   const cells = [];
   for (let gx = 0; gx < 30; gx++)
     for (let gy = 0; gy < 30; gy++) {
-      const w = weatherAt(gx * 2 + 1, gy * 2 + 1, st.t + h * 60, st.weatherSeed);
-      cells.push({ x: gx * 2 + 1, y: gy * 2 + 1, clouds: w.clouds, rain: w.rain, storm: w.storm, fog: w.fog });
+      const w = weatherAt(gx * 2 + 1, gy * 2 + 1, st.t + h * 60, st.weatherSeed, world);
+      cells.push({ x: gx * 2 + 1, y: gy * 2 + 1, clouds: w.clouds, rain: w.rain, storm: w.storm, fog: w.fog, windSpd: w.windSpd, windDir: w.windDir });
     }
-  const here = weatherAt(st.x, st.y, st.t + h * 60, st.weatherSeed);
-  res.json({ t: st.t, h, cells, here });
+  const here = weatherAt(st.x, st.y, st.t + h * 60, st.weatherSeed, world);
+  const systems = systemsAt(st.t + h * 60, st.weatherSeed, world);
+  res.json({ t: st.t, h, cells, here, systems });
 });
 
 // ---------- API d'administration (interface /admin) ----------

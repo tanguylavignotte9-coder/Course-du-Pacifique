@@ -357,15 +357,27 @@ export function buildWorld(seed) {
   return { seed, CONTINENT, PORT, ISLANDS, OUTPOSTS, BEACONS, COAST, isLand };
 }
 
-// ---------- Météo ----------
+// ---------- Météo — « Pacifique crédible » : 4 couches + houle propagée ----------
+// Le vent ne vient PLUS des archétypes : ARCHETYPES = CONDITIONS uniquement
+// (nuages/pluie/visibilité/température). Vent total = couche 1 RÉGIME (climat
+// par latitude) × couche 2 PERTURBATION (fBm quantile advecté LE LONG du
+// régime, qui MODULE le régime) × couche 3 DÉTAIL LOCAL, ⊕ couche 4 SYSTÈMES
+// RARES (cyclogenèse déterministe : cyclones, anticyclones). Le MÊME uq
+// advecté pilote en parallèle le vent (7 classes) et les conditions
+// (6 archétypes) : la pluie voyage avec le vent, par construction.
+// Houle = mer du vent local ⊕ houle des orages lointains (échantillonnée en
+// amont sur le VENT TOTAL, retardée par la distance) → UN SEUL Douglas lu
+// par tout le monde (affichage, tangage, pénalité du point aux étoiles).
+// Courant couplé au régime (Ekman). Leeway : dérive coque ∝ vent, hors
+// estime. Tout est pur/déterministe, graine en paramètre, robuste aux sauts.
+
 export const ARCHETYPES = [
-  { name: "Soleil calme", clouds: 10, wind: 11.1, rain: 0, vis: 25, temp: 4, storm: false, fog: false },
-  { name: "Brouillard", clouds: 55, wind: 5.6, rain: 0, vis: 0.6, temp: 1, storm: false, fog: true },
-  { name: "Soleil venteux", clouds: 20, wind: 37.0, rain: 0, vis: 20, temp: 2, storm: false, fog: false },
-  { name: "Nuageux", clouds: 70, wind: 22.2, rain: 0, vis: 12, temp: 0, storm: false, fog: false },
-  { name: "Nuageux pluie faible", clouds: 85, wind: 29.6, rain: 35, vis: 8, temp: -2, storm: false, fog: false },
-  { name: "Pluie forte", clouds: 95, wind: 48.2, rain: 80, vis: 4, temp: -3, storm: false, fog: false },
-  { name: "Orage", clouds: 98, wind: 81.5, rain: 100, vis: 1.5, temp: -5, storm: true, fog: true },
+  { name: "Soleil calme",          clouds: 10, rain: 0,   vis: 25,  temp: 4,  storm: false },
+  { name: "Soleil venteux",        clouds: 20, rain: 0,   vis: 20,  temp: 2,  storm: false },
+  { name: "Nuageux",              clouds: 70, rain: 0,   vis: 12,  temp: 0,  storm: false },
+  { name: "Nuageux pluie faible", clouds: 85, rain: 35,  vis: 8,   temp: -2, storm: false },
+  { name: "Pluie forte",          clouds: 95, rain: 80,  vis: 4,   temp: -3, storm: false },
+  { name: "Orage",                clouds: 98, rain: 100, vis: 1.5, temp: -5, storm: true },
 ];
 export const DOUGLAS_LABEL = ["calme", "belle", "peu agitée", "agitée", "forte", "très forte", "grosse", "très grosse", "énorme", "monstrueuse"];
 export const douglasOf = (hs) =>
@@ -379,51 +391,315 @@ const vnoise = (x, y, s) => {
   const xi = Math.floor(x), yi = Math.floor(y);
   const xf = x - xi, yf = y - yi;
   const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
-  const a = hash2(xi, yi, s), b = hash2(xi + 1, yi, s), c = hash2(xi, yi + 1, s), d = hash2(xi + 1, yi + 1, s);
+  const a = hash2(xi, yi, s), b = hash2(xi + 1, yi, s),
+        c = hash2(xi, yi + 1, s), d = hash2(xi + 1, yi + 1, s);
   return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 };
 const fbm = (x, y, s) =>
   0.6 * vnoise(x, y, s) + 0.3 * vnoise(x * 2.1, y * 2.1, s + 1.3) + 0.1 * vnoise(x * 4.3, y * 4.3, s + 2.7);
 
-// Météo à (x, y) au temps tMin (minutes de jeu). Champs fBm 3 octaves avec
-// advection ouest→est, remappage quantile vers les archétypes. Déterministe :
-// identique serveur/client. Le brouillard est uniquement l'archétype dédié.
-export function weatherAt(x, y, tMin, seed) {
-  const p = seed || 0;
-  const h = tMin / 60;
-  const xs = (x - 0.2 * h) / 13;
-  const ys = (y + 0.03 * h) / 13;
-  const uq = clamp(fbm(xs, ys, p), 0, 1);
-  const UBP = [0, 0.366, 0.387, 0.509, 0.618, 0.689, 0.766];
+// --- constantes du modèle (toutes nommées, équilibrage audité) ---
+export const WIND_FLOOR_KMH = 8;  // garde-fou gameplay : aucune latitude innavigable
+export const WIND_REGIME_ANCHORS = [
+  { y: 0,  name: "Alizés",     dir: 45,  spd: 22 },
+  { y: 18, name: "Variables", dir: 210, spd: 15 },
+  { y: 30, name: "Westerlies", dir: 270, spd: 30 },
+  { y: 60, name: "Westerlies", dir: 285, spd: 32 },
+];
+const VARS_SWING_DEG = 150;  // vraies Variables : swing lent de direction
+const VARS_FLOOR_KMH = 9;     // plancher de la molle équatoriale
+// steering unifié : perturbations ET systèmes voyagent au même rythme
+const advOf = (y) => (y <= 16 ? 0.8 : y >= 30 ? 1.4 : 0.8 + ((y - 16) / 14) * 0.6);
+const UBP_PERT = [0, 0.366, 0.387, 0.509, 0.618, 0.689, 0.766]; // 7 classes de vent
+const PERT_SPEED_FAC = [0.75, 0.8, 0.85, 0.95, 1.05, 1.35, 1.9];
+const PERT_DEV_DEG = [4, 6, 10, 14, 18, 26, 40];
+const UBP_COND = [0, 0.387, 0.509, 0.618, 0.689, 0.766]; // 6 archétypes de conditions
+// couche 4 — systèmes rares : cyclogenèse continue déterministe par graine
+export const GEN_HORIZON_H = 45 * 24; // 45 j d'histoire météo par graine
+const GENESIS = [
+  { zone: 0, ymin: 4,  ymax: 16, p: 0.055, kind: "cyclone" },      // ceinture des alizés
+  { zone: 1, ymin: 26, ymax: 46, p: 0.100, kind: "cyclone" },     // trajectoire des dépressions
+  { zone: 2, ymin: 40, ymax: 58, p: 0.045, kind: "anticyclone" }, // dorsales
+];
+export const TRACK_STEP_H = 3;       // intégration des trajectoires (h)
+export const SYS_CORE_REL = 0.45;    // sous 0.45 r : le système EST le vent
+export const SYS_EDGE_REL = 1.25;    // au-delà de 1.25 r : plus d'influence
+export const SYS_EYE_REL = 0.12;    // œil : vent de rotation annihilé
+export const SYS_LAND_DECAY = 0.75;  // décroissance d'intensité par pas de 3 h à terre
+// houle propagée
+export const SWELL_KMH = 40;                  // vitesse de propagation de la houle
+const SWELL_SAMPLES_KM = [250, 500, 750];     // distances amont échantillonnées
+const SWELL_WEIGHT = [0.8, 0.5, 0.3];          // contribution décroissante
+export const HS_K = 0.0212;                    // hauteur significative : hs = K·u² (u en m/s)
+// leeway + courant couplé
+export const LEEWAY_K = 0.025;      // dérive coque ∝ vent (~2,5 %)
+export const CUR_EKMAN_DEG = 75;    // offset d'Ekman sur la direction du régime
+
+// Couche 1 — régime à la latitude y (lisse par ancrages + méandre lent)
+const phaseOf = (seed) => 1.3 + (seed || 0) * 0.618;
+function regimeAt(y, h, seed) {
+  let a = WIND_REGIME_ANCHORS[0], b = WIND_REGIME_ANCHORS[WIND_REGIME_ANCHORS.length - 1];
+  for (let i = 0; i < WIND_REGIME_ANCHORS.length - 1; i++) {
+    if (y >= WIND_REGIME_ANCHORS[i].y && y <= WIND_REGIME_ANCHORS[i + 1].y) {
+      a = WIND_REGIME_ANCHORS[i]; b = WIND_REGIME_ANCHORS[i + 1]; break;
+    }
+  }
+  const t = clamp((y - a.y) / ((b.y - a.y) || 1), 0, 1);
+  const s = t * t * (3 - 2 * t);
+  const dd = ((b.dir - a.dir + 540) % 360) - 180;
+  const ph = phaseOf(seed);
+  let dir = a.dir + dd * s + 10 * Math.sin(h / 36 + y * 0.07 + ph); // méandre pluri-journalier
+  let spd = a.spd + (b.spd - a.spd) * s + 2 * Math.sin(h / 24 + y * 0.05);
+  // Vraies Variables : molles équatoriales versatiles, fondu lisse aux abords
+  const w = clamp(Math.min((y - 14) / 4, (34 - y) / 4), 0, 1);
+  if (w > 0) {
+    dir += w * VARS_SWING_DEG * Math.sin(h / 17 + y * 0.5 + ph);
+    spd = spd * (1 - w) + w * (VARS_FLOOR_KMH + 3 * Math.sin(h / 9 + y * 0.3));
+  }
+  return { dir: ((dir % 360) + 360) % 360, spd, name: t < 0.5 ? a.name : b.name, varsW: w };
+}
+
+// Couche 2 — perturbation advectée LE LONG du régime local (uq quantile)
+function perturbAt(x, y, h, seed) {
+  const reg = regimeAt(y, h, seed);
+  const flow = ((reg.dir + 180) * Math.PI) / 180;
+  const advK = reg.spd * advOf(y);             // km/h
+  const ax = (Math.sin(flow) * advK) / DEG_KM; // °/h
+  const ay = (Math.cos(flow) * advK) / DEG_KM;
+  const uq = clamp(fbm((x - ax * h) / 13, (y - ay * h) / 13, seed), 0, 1);
   let n = 6;
   for (let i = 0; i < 6; i++) {
-    if (uq < UBP[i + 1]) { n = i + (uq - UBP[i]) / (UBP[i + 1] - UBP[i]); break; }
+    if (uq < UBP_PERT[i + 1]) { n = i + (uq - UBP_PERT[i]) / (UBP_PERT[i + 1] - UBP_PERT[i]); break; }
   }
-  const i0 = Math.floor(n);
-  const i1 = Math.min(i0 + 1, ARCHETYPES.length - 1);
-  const f = n - i0;
+  const i0 = Math.floor(n), f = n - i0, i1 = Math.min(i0 + 1, 6);
+  return {
+    factor: PERT_SPEED_FAC[i0] + (PERT_SPEED_FAC[i1] - PERT_SPEED_FAC[i0]) * f,
+    dev: PERT_DEV_DEG[i0] + (PERT_DEV_DEG[i1] - PERT_DEV_DEG[i0]) * f,
+    uq,
+  };
+}
+
+// Vent de fond (couches 1-3) : régime × perturbation × détail local
+function backgroundWindAt(x, y, h, seed) {
+  const reg = regimeAt(y, h, seed);
+  const p = perturbAt(x, y, h, seed);
+  const spd = Math.max(WIND_FLOOR_KMH, reg.spd * p.factor + 3 * Math.sin(h * 0.5 + x * 0.25 + y * 0.2));
+  const dir = reg.dir + p.dev * Math.sin(x * 0.35 + y * 0.27 + h * 0.15);
+  return { spd, dir, reg, uq: p.uq };
+}
+
+// ---------- couche 4 : SYSTÈMES RARES ----------
+// Historique météo déterministe : chaque époque de 12 h, chaque zone de
+// genèse tire une naissance. Trajectoires INTÉGRÉES au régime pas à pas
+// (courbes, re-curvature émergente), AUCUN clamp (un système quitte le
+// monde, son empreinte reste perceptible au bord puis s'éteint). Intensité
+// à queue rare : beaucoup de systèmes faibles, le monstre rarissime.
+const sysCache = {};
+const trackCache = {};
+function systemsFor(seed) {
+  if (sysCache[seed]) return sysCache[seed];
+  const out = [];
+  const epochs = Math.ceil(GEN_HORIZON_H / 12);
+  for (let e = 0; e < epochs; e++) {
+    GENESIS.forEach((g) => {
+      if (hash2(seed + e * 0.373, g.zone * 3.77 + 1.13, 5.51) > g.p) return;
+      const R = (k, min, span) => min + hash2(seed, e * 1.7 + k, g.zone * 2.3 + 9.7) * span;
+      const kind = g.kind;
+      out.push({
+        id: out.length, kind, zone: g.zone,
+        birth: e * 12 + R(2, 0, 12),
+        life: (kind === "anticyclone" ? 120 : 84) + R(1, 0, kind === "anticyclone" ? 120 : 96),
+        x0: R(3, 4, 52), y0: R(4, g.ymin, g.ymax - g.ymin),
+        vmax: kind === "anticyclone" ? 7 + Math.pow(R(5, 0, 1), 2.6) * 5
+          : g.zone === 0 ? 38 + Math.pow(R(5, 0, 1), 2.6) * 52
+          : 34 + Math.pow(R(5, 0, 1), 2.6) * 46,
+        radius: (kind === "anticyclone" ? 6.5 : 4.5) + R(6, 0, 3.5),
+        // vitesses de translation réalistes : ~45 km/h (westerlies), ~18 (tropicaux), ~9 (anti)
+        adv: kind === "anticyclone" ? 0.3 : (g.zone === 1 ? 1.4 : 0.8),
+        pole: kind === "anticyclone" ? 0.01 : (g.zone === 0 ? 0.07 + R(7, 0, 0.07) : 0.008),
+        rot: kind === "cyclone" ? -90 : +90,
+      });
+    });
+  }
+  sysCache[seed] = out;
+  return out;
+}
+// Trace [x, y, decay] : un système affaibli sur terre (décroissance par pas)
+// — le cache est keyé par seed monde car weatherSeed ≠ seed du monde.
+function systemTrack(s, seed, world) {
+  const key = seed + "|" + s.id + "|" + (world ? world.seed : "noworld");
+  if (trackCache[key]) return trackCache[key];
+  const n = Math.ceil(s.life / TRACK_STEP_H);
+  const pts = [];
+  let x = s.x0, y = s.y0, decay = 1;
+  for (let k = 0; k <= n; k++) {
+    pts.push([x, y, decay]);
+    if (world && world.isLand(x, y)) decay *= SYS_LAND_DECAY;
+    const h = s.birth + k * TRACK_STEP_H;
+    const reg = regimeAt(y, h, seed);
+    const flow = ((reg.dir + 180) * Math.PI) / 180;
+    const spdK = reg.spd * s.adv;
+    const vx = (Math.sin(flow) * spdK) / DEG_KM;
+    const vy = (Math.cos(flow) * spdK) / DEG_KM + s.pole;
+    x = x + vx * TRACK_STEP_H; // PAS de clamp
+    y = y + vy * TRACK_STEP_H;
+  }
+  trackCache[key] = pts;
+  return pts;
+}
+// Le NOM suit l'intensité EFFECTIVE (vmax × enveloppe), terminologie réelle :
+// un vortex tropical faible = TROPICALE, il ne devient CYCLONE qu'au-delà
+// de 55 km/h effectifs ; idem PERTURBATION vs DÉPRESSION (40) extratropicaux.
+function systemState(s, seed, h, world) {
+  const age = h - s.birth;
+  if (age < 0 || age > s.life) return null;
+  const env0 = Math.min(clamp(age / 36, 0, 1), clamp((s.life - age) / 36, 0, 1));
+  const pts = systemTrack(s, seed, world);
+  const i = age / TRACK_STEP_H;
+  const i0 = Math.min(Math.floor(i), pts.length - 2);
+  const f = i - i0;
+  const env = env0 * (pts[i0][2] + (pts[i0 + 1][2] - pts[i0][2]) * f);
+  const du = ((pts[i0 + 1][0] - pts[i0][0]) * DEG_KM) / TRACK_STEP_H;
+  const dv = ((pts[i0 + 1][1] - pts[i0][1]) * DEG_KM) / TRACK_STEP_H;
+  const eff = s.vmax * env;
+  const label = s.kind === "anticyclone" ? "ANTICYCLONE"
+    : s.zone === 0 ? (eff < 55 ? "TROPICALE" : "CYCLONE")
+    : (eff < 40 ? "PERTURBATION" : "DÉPRESSION");
+  return {
+    x: pts[i0][0] + (pts[i0 + 1][0] - pts[i0][0]) * f,
+    y: pts[i0][1] + (pts[i0 + 1][1] - pts[i0][1]) * f,
+    r: s.radius, env, label, kind: s.kind, zone: s.zone, vmax: s.vmax, rot: s.rot, du, dv,
+  };
+}
+// Vent d'un système au point : flux tangentiel incliné de 25° (convergence /
+// divergence selon le sens), œil calme, PRISE DE CONTRÔLE du cœur (rel ≤
+// SYS_CORE_REL → poids 1 : le système EST le vent), fondu lisse jusqu'à
+// SYS_EDGE_REL. Le vent du système = rotation ⊕ TRANSLATION du centre →
+// demi-cercle dangereux/navigable émergent (ne jamais couper un cyclone
+// par l'avant devient vrai dans le jeu).
+function sysContribution(st, x, y) {
+  const dx = x - st.x, dy = y - st.y;
+  const d = Math.hypot(dx, dy);
+  const rel = d / st.r;
+  if (rel > SYS_EDGE_REL) return null;
+  let prof = 1;
+  if (rel > SYS_CORE_REL) {
+    const t = (rel - SYS_CORE_REL) / (SYS_EDGE_REL - SYS_CORE_REL);
+    prof = 1 - t * t * (3 - 2 * t);
+  }
+  const inf = prof * st.env;
+  if (inf < 0.01) return null;
+  const eye = rel < SYS_EYE_REL ? rel / SYS_EYE_REL : 1;
+  const vt = st.vmax * (rel / (0.22 + 0.78 * Math.min(rel, 1))) * eye;
+  const brgCenter = (Math.atan2(dx, dy) * 180) / Math.PI;
+  const fr = ((brgCenter + st.rot - 25) * Math.PI) / 180;
+  return { inf, u: Math.sin(fr) * vt + st.du, v: Math.cos(fr) * vt + st.dv };
+}
+// Vent TOTAL : fond (3 couches) ⊕ systèmes, mélange vectoriel pondéré par
+// l'influence. Suit aussi l'influence dominante cyclonique/anticyclonique
+// (pour les conditions et le flag tempête).
+function windAt(x, y, h, seed, world) {
+  const bg = backgroundWindAt(x, y, h, seed);
+  const fv = ((bg.dir + 180) * Math.PI) / 180;
+  let u = Math.sin(fv) * bg.spd;
+  let v = Math.cos(fv) * bg.spd;
+  let cyclInf = 0, antiInf = 0;
+  for (const s of systemsFor(seed)) {
+    const st = systemState(s, seed, h, world);
+    if (!st) continue;
+    const c = sysContribution(st, x, y);
+    if (!c) continue;
+    u = u * (1 - c.inf) + c.u * c.inf;
+    v = v * (1 - c.inf) + c.v * c.inf;
+    if (s.kind === "anticyclone") antiInf = Math.max(antiInf, c.inf);
+    else cyclInf = Math.max(cyclInf, c.inf);
+  }
+  return {
+    spd: Math.round(Math.hypot(u, v) * 10) / 10,
+    dir: ((Math.round((Math.atan2(u, v) * 180) / Math.PI) + 180) % 360 + 360) % 360,
+    regime: bg.reg, uq: bg.uq, cyclInf, antiInf,
+  };
+}
+// Relevé public des systèmes actifs (météo, positions absolues de PHÉNOMÈNES
+// — jamais de position de navire). Sert la carte des vents du NETWORK.
+export function systemsAt(tMin, seed, world) {
+  const h = tMin / 60;
+  return systemsFor(seed)
+    .map((s) => systemState(s, seed, h, world))
+    .filter(Boolean)
+    .map((st) => ({ x: st.x, y: st.y, rKm: st.r * DEG_KM, label: st.label, effKmh: Math.round(st.vmax * st.env) }));
+}
+
+// Houle propagée : mer du vent local ⊕ houle des orages lointains. Les
+// échantillons amont lisent le VENT TOTAL (fond + systèmes) au moment du
+// départ de la houle (retard distance ÷ SWELL_KMH) — un cyclone, premier
+// générateur de houle, envoie bien son forerunner : la mer se dégrade AVANT
+// le vent local, la douleur EST le signal. UN SEUL état de mer par position.
+function seaState(x, y, h, seed, world) {
+  const w = windAt(x, y, h, seed, world);
+  const u = w.spd / 3.6;
+  const hsLocal = HS_K * u * u;
+  const flow = ((w.dir + 180) * Math.PI) / 180;
+  let acc = 0;
+  for (let k = 0; k < SWELL_SAMPLES_KM.length; k++) {
+    const d = SWELL_SAMPLES_KM[k];
+    const lag = d / SWELL_KMH;
+    const wu = windAt(x - (Math.sin(flow) * d) / DEG_KM, y - (Math.cos(flow) * d) / DEG_KM, h - lag, seed, world);
+    const hu = HS_K * Math.pow(wu.spd / 3.6, 2);
+    acc += Math.pow(hu * SWELL_WEIGHT[k], 2); // combinaison énergétique
+  }
+  const swellHs = Math.sqrt(acc);
+  const hs = Math.sqrt(hsLocal * hsLocal + swellHs * swellHs);
+  return { wind: w, hs, period: Math.min(14, Math.max(2, 0.7 * u)) };
+}
+
+// Météo à (x, y) au temps tMin. `world` (optionnel) sert uniquement au
+// déclin terrestre des systèmes. Déterministe : identique serveur/client.
+export function weatherAt(x, y, tMin, seed, world) {
+  const p = seed || 0;
+  const h = tMin / 60;
+  const sea = seaState(x, y, h, p, world);
+  const w = sea.wind;
+  // --- conditions : 6 archétypes sur le MÊME uq (frères jumeaux du vent) ---
+  const uq = clamp(w.uq, 0, 1);
+  let nc = 5;
+  for (let i = 0; i < 5; i++) {
+    if (uq < UBP_COND[i + 1]) { nc = i + (uq - UBP_COND[i]) / (UBP_COND[i + 1] - UBP_COND[i]); break; }
+  }
+  const i0 = Math.floor(nc), f = nc - i0, i1 = Math.min(i0 + 1, ARCHETYPES.length - 1);
   const A = ARCHETYPES[i0], B = ARCHETYPES[i1];
   const mix = (a, b) => a + (b - a) * f;
-  const clouds = clamp(mix(A.clouds, B.clouds) + 6 * Math.sin(x * 0.3 + h * 0.1 + p), 0, 100);
-  const windSpd = Math.max(0, mix(A.wind, B.wind) + 3 * Math.sin(h * 0.5 + x * 0.25 + y * 0.2 + p * 1.3));
-  const rain = clamp(mix(A.rain, B.rain), 0, 100);
+  let clouds = clamp(mix(A.clouds, B.clouds) + 6 * Math.sin(x * 0.3 + h * 0.1 + p), 0, 100);
+  let rain = clamp(mix(A.rain, B.rain), 0, 100);
   let visibility = Math.max(0.3, mix(A.vis, B.vis));
-  const storm = mix(A.storm ? 1 : 0, B.storm ? 1 : 0) > 0.5;
-  const fog = visibility < 0.8 && !storm;
-  const windDir = (220 + 120 * Math.sin(x * 0.08 + y * 0.06 + h * 0.05 + p * 1.7) + 360) % 360;
   const temp = 22 + 6 * Math.sin(y * 0.1) + mix(A.temp, B.temp);
-  const curDir = (x * 7 + y * 13 + h * 1.2) % 360;
-  const curSpd = CUR_SPD_MIN_KMH + Math.abs(Math.sin(x * 0.3 + y * 0.2)) * (CUR_SPD_MAX_KMH - CUR_SPD_MIN_KMH); // 1,1 à 2,05 km/h
-  const u = windSpd / 3.6; // vent en m/s
-  const hs = Math.round(0.0212 * u * u * 10) / 10;
-  const period = Math.round(Math.min(14, Math.max(2, 0.7 * u)) * 10) / 10;
-  const douglas = douglasOf(hs);
+  const condStorm = mix(A.storm ? 1 : 0, B.storm ? 1 : 0) > 0.5;
+  let name = f < 0.5 ? A.name : B.name;
+  // --- conditions des systèmes (suivent la même influence que le vent) ---
+  clouds = Math.min(100, clouds + w.cyclInf * 30);
+  rain = Math.min(100, rain + w.cyclInf * 60);
+  visibility = Math.max(1, visibility - w.cyclInf * 3);
+  clouds = clouds * (1 - w.antiInf) + 10 * w.antiInf;
+  rain = rain * (1 - w.antiInf);
+  visibility = Math.min(25, visibility + w.antiInf * 10);
+  // --- tempête : perturbation d'orage OU cyclone actif, JAMAIS sous anticyclone ---
+  const storm = (condStorm || (w.cyclInf >= 0.35 && w.spd >= 45)) && !(w.antiInf >= 0.5);
+  // --- brume : UNIQUEMENT en calme anticyclonique ou dans la molle
+  //     équatoriale — la brume devient un signal (calme dans le secteur) ---
+  const calmGate = w.antiInf >= 0.4 || (w.regime.varsW >= 0.6 && w.spd < 15);
+  const fog = !storm && calmGate && vnoise((x + 0.03 * h) / 21, y / 21, p + 7.7) > 0.6;
+  if (fog) { name = "Brouillard"; clouds = Math.max(clouds, 55); visibility = 0.6; }
+  // --- courant couplé au régime (offset d'Ekman, plage 1,1-2,05 préservée) ---
+  const curDir = (w.regime.dir + CUR_EKMAN_DEG + 12 * Math.sin(h / 72 + x * 0.05) + 360) % 360;
+  const curSpd = CUR_SPD_MIN_KMH + clamp((w.regime.spd - 9) / 23, 0, 1) * (CUR_SPD_MAX_KMH - CUR_SPD_MIN_KMH);
+  const hs = Math.round(sea.hs * 10) / 10;
   return {
-    windSpd: Math.round(windSpd * 10) / 10, windDir: Math.round(windDir), clouds: clamp(Math.round(clouds), 0, 100),
-    storm, rain: Math.round(rain), fog, visibility: Math.round(visibility * 10) / 10,
+    windSpd: w.spd, windDir: w.dir,
+    clouds: clamp(Math.round(clouds), 0, 100), rain: Math.round(rain),
+    storm, fog, visibility: Math.round(visibility * 10) / 10,
     temp: Math.round(temp), curDir: Math.round(curDir), curSpd: Math.round(curSpd * 10) / 10,
-    hs, period, douglas,
-    name: f < 0.5 ? A.name : B.name,
+    hs, period: Math.round(sea.period * 10) / 10, douglas: douglasOf(hs),
+    name, regime: w.regime.name,
   };
 }
 
@@ -1704,7 +1980,7 @@ export function newPlayerState(world, opts = {}) {
     hullH: 100, sailH: 100, antH: 100, // santé : coque, voilure, antenne radio (100 % = neuf)
     waypoints: [], wpIdx: 0, autopilot: false,
     antBeam: 45, antOrient: 0, signals: [], notifications: [], notifSeq: 0,
-    grounded: false, wasStorm: false, warnedFood: false, warnedFuel: false, warnedBatt: false,
+    grounded: false, warnedFood: false, warnedFuel: false, warnedBatt: false,
     groundHitArmed: true, needsRescue: false, // avarie d'échouement armée / remorquage requis (coque 0 %)
     ffEvents: [], travelledKm: 0, dailyKm: 0, dayIdx: 0,
     weatherSeed: opts.weatherSeed ?? Math.floor(Math.random() * 1000), weatherName: null,
@@ -1793,7 +2069,7 @@ export function tick(st, dtMin, world) {
   const prevX = st.x, prevY = st.y, prevEstX = st.estX, prevEstY = st.estY;
   const prevT = st.t;
   st.t += dtMin;
-  const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
+  const w = weatherAt(st.x, st.y, st.t, st.weatherSeed, world);
   if (st.weatherName && st.weatherName !== w.name) {
     notify(st, `Situation météo : ${st.weatherName} → ${w.name}.`, "info", "meteo");
   }
@@ -1849,13 +2125,18 @@ export function tick(st, dtMin, world) {
       const rT = ((st.heading + st.compDev) * Math.PI) / 180;
       const cdr = (w.curDir * Math.PI) / 180;
       const rad = (st.heading * Math.PI) / 180; // cap affiché (estime)
+      // leeway : dérive coque ∝ vent, direction du flux, hors estime
+      const lwr = ((w.windDir + 180) * Math.PI) / 180;
+      const lwSpd = surface ? w.windSpd * LEEWAY_K : 0;
       const moored = surface &&
         (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
          world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM));
       st.x += Math.sin(rT) * (st.vkmh / 60 / DEG_KM) * minutes * (1 + st.logErr / 100)
-            + (moored ? 0 : Math.sin(cdr) * (w.curSpd / 60 / DEG_KM) * minutes);
+            + (moored ? 0 : Math.sin(cdr) * (w.curSpd / 60 / DEG_KM) * minutes)
+            + (moored ? 0 : Math.sin(lwr) * (lwSpd / 60 / DEG_KM) * minutes);
       st.y += Math.cos(rT) * (st.vkmh / 60 / DEG_KM) * minutes * (1 + st.logErr / 100)
-            + (moored ? 0 : Math.cos(cdr) * (w.curSpd / 60 / DEG_KM) * minutes);
+            + (moored ? 0 : Math.cos(cdr) * (w.curSpd / 60 / DEG_KM) * minutes)
+            + (moored ? 0 : Math.cos(lwr) * (lwSpd / 60 / DEG_KM) * minutes);
       // estime : même convention que le bloc mouvement (cap affiché, sans
       // logErr, sans courant) — l'estime doit couvrir les sous-pas aussi
       st.estX += Math.sin(rad) * (st.vkmh / 60 / DEG_KM) * minutes;
@@ -1896,16 +2177,18 @@ export function tick(st, dtMin, world) {
   const rad = (st.heading * Math.PI) / 180;
   const radT = ((st.heading + st.compDev) * Math.PI) / 180;
   const cdr = (w.curDir * Math.PI) / 180;
+  const lwr = ((w.windDir + 180) * Math.PI) / 180;
   const through = (st.vkmh / 60 / DEG_KM) * dtMin;
   const throughT = through * (1 + st.logErr / 100);
   const drift = (w.curSpd / 60 / DEG_KM) * dtMin;
+  const lwDrift = (surface ? w.windSpd * LEEWAY_K : 0) / 60 / DEG_KM * dtMin;
   const moored = surface &&
     (distKm(st.x, st.y, world.PORT.x, world.PORT.y) < DELIVERY_R_KM ||
      world.OUTPOSTS.some((o) => distKm(st.x, st.y, o.x, o.y) < DELIVERY_R_KM));
   const driftEff = moored ? 0 : drift;
   const anchored = !!st.anchored;
-  const nx = st.x + (anchored ? 0 : Math.sin(radT) * throughT + Math.sin(cdr) * driftEff);
-  const ny = st.y + (anchored ? 0 : Math.cos(radT) * throughT + Math.cos(cdr) * driftEff);
+  const nx = st.x + (anchored ? 0 : Math.sin(radT) * throughT + Math.sin(cdr) * driftEff + Math.sin(lwr) * (moored ? 0 : lwDrift));
+  const ny = st.y + (anchored ? 0 : Math.cos(radT) * throughT + Math.cos(cdr) * driftEff + Math.cos(lwr) * (moored ? 0 : lwDrift));
   st.travelledKm += st.vkmh * (dtMin / 60);
   const day = Math.floor(st.t / 1440);
   if (day !== st.dayIdx) { st.dayIdx = day; st.dailyKm = 0; }
@@ -1948,7 +2231,7 @@ export function tick(st, dtMin, world) {
     st.x = nx; st.y = ny; st.grounded = false;
     st.estX += Math.sin(rad) * through;
     st.estY += Math.cos(rad) * through;
-    st.unc += UNC_PER_KM * (st.vkmh * dtMin / 60) + UNC_PER_H * (dtMin / 60) + drift * DEG_KM;
+    st.unc += UNC_PER_KM * (st.vkmh * dtMin / 60) + UNC_PER_H * (dtMin / 60) + (drift + (moored ? 0 : lwDrift)) * DEG_KM;
     // Ré-armement de l'avarie d'échouement : plus aucune terre ni limite à
     // 100 m tout autour (anneau de 8 points) — le prochain échouement re-frappera.
     if (!(st.groundHitArmed ?? true)) {
@@ -1994,13 +2277,6 @@ export function tick(st, dtMin, world) {
     }
   }
 
-  // Orages
-  if (w.storm && !st.wasStorm) {
-    ev(st, "storm", "⚡ Tempête signalée sur votre zone", "meteo");
-    notify(st, "⚡ Tempête : rendement de la voile réduit à 30 % par l'équipage.", "warn", "meteo");
-  }
-  if (!w.storm && st.wasStorm) notify(st, "La tempête s'éloigne. Conditions améliorées.", "good", "meteo");
-  st.wasStorm = w.storm;
 
   if (st.seaDouglas != null) {
     if (w.douglas >= 5 && st.seaDouglas < 5)
@@ -2139,7 +2415,7 @@ export function tick(st, dtMin, world) {
 // race.beast. Elles se détectent comme tout objet physique : distance et
 // azimut depuis la position VRAIE (jamais de coordonnées absolues).
 export function computeView(st, world, traces = []) {
-  const w = weatherAt(st.x, st.y, st.t, st.weatherSeed);
+  const w = weatherAt(st.x, st.y, st.t, st.weatherSeed, world);
   const hour = (st.t / 60) % 24;
   const night = hour < 6 || hour >= 20;
   const canSee = st.location === "surface" || st.periscope;
