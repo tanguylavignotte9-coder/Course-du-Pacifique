@@ -76,22 +76,6 @@ export default function App() {
     return () => { cancel.dead = true; };
   }, [wxOpen, wxH, snap && Math.floor(snap.t / 60)]);
 
-  // SONDE v2 (PROVISOIRE — à retirer une fois le diagnostic bouclé) :
-  // battements de cœur pour localiser la couche qui fige. L'intervalle
-  // écrit DIRECTEMENT dans le DOM (test de la file de timers + du paint)
-  // ET passe par setState (test du pipeline de commit React). Le strip
-  // visible en bas à droite croise ces témoins avec t = dernier snapshot
-  // réellement APPLIQUÉ par setSnap (chaîne complète).
-  const [beat, setBeat] = useState(0);
-  useEffect(() => {
-    const id = setInterval(() => {
-      const el = document.getElementById("pc-dom-beat");
-      if (el) el.textContent = String(Date.now()).slice(-6);
-      setBeat((b) => b + 1);
-    }, 400);
-    return () => clearInterval(id);
-  }, []);
-
   // Anti-gel + fluidité : le serveur COALESCÉ ses réponses de commande
   // (au plus 1 snapshot par SNAP_FLUSH_MS = 100 ms et par socket, voir
   // index.js) — le débit en plein drag reste plafonné (~10/s) mais l'écho
@@ -161,13 +145,6 @@ export default function App() {
 
   return (
     <>
-      {/* SONDE v2 (PROVISOIRE) — strip de battements en bas à droite :
-          DOM = texte écrit DIRECTEMENT dans le DOM par setInterval (hors
-          React) ; ♥ = compteur rendu PAR React (pipeline de commit) ;
-          t = heure de jeu du dernier snapshot APPLIQUÉ (chaîne complète). */}
-      <div className="fixed bottom-1 right-2 z-[999] select-none pointer-events-none rounded bg-black/50 px-1 font-mono text-[9px] text-emerald-300/90">
-        DOM <span id="pc-dom-beat">—</span> · ♥{beat} · t={snap.t.toFixed(1)}
-      </div>
       <Helm
         snap={snap}
         sock={sock}
