@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { login, GameSocket } from "./net.js";
 import Manual from "./Manual.jsx";
 import Helm from "./Helm.jsx";
@@ -75,9 +75,30 @@ export default function App() {
     return () => { cancel.dead = true; };
   }, [wxOpen, wxH, snap && Math.floor(snap.t / 60)]);
 
+  // Anti-gel : pendant un drag (roue, manettes ~10 commandes/s), le serveur
+  // répond à CHAQUE commande par un snapshot complet → jusqu'à 10 re-rendus
+  // de TOUTE la console par seconde. Quand un rendu coûte plus cher que
+  // l'intervalle, la boucle d'événements ne se vide plus : l'interface fige
+  // (les animations CSS tournent, plus rien n'est traité) et seul F5 la
+  // dégèle, en jetant la file. Correctif : ne garder QUE le dernier
+  // snapshot reçu et plafonner les re-rendus à un toutes les 200 ms —
+  // jamais de file d'attente, donc jamais de dette à rembourser.
+  const snapBuf = useRef(null); // dernier snapshot non encore rendu
+  const snapTimer = useRef(0);
+  const pushSnap = useCallback((data) => {
+    snapBuf.current = data;
+    if (snapTimer.current) return; // un rendu est déjà planifié
+    snapTimer.current = setTimeout(() => {
+      snapTimer.current = 0;
+      const d = snapBuf.current;
+      snapBuf.current = null;
+      if (d) setSnap(d); // rend le PLUS RÉCENT — les intermédiaires sont jetés
+    }, 200);
+  }, []);
+
   useEffect(() => {
     if (!session) return;
-    const sock = new GameSocket(setSnap, setStatus);
+    const sock = new GameSocket(pushSnap, setStatus);
     sock.connect();
     sockRef.current = sock;
     return () => sock.close();
